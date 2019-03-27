@@ -9,6 +9,7 @@
 #include "Widgets/SNullWidget.h"
 #include "SlotBase.h"
 #include "Widgets/SWidget.h"
+#include "FlowDirection.h"
 
 /**
  * FChildren is an interface that must be implemented by all child containers.
@@ -64,7 +65,7 @@ public:
 		// Nobody should be getting a child when there aren't any children.
 		// We expect this to crash!
 		check( false );
-		return TSharedPtr<SWidget>(nullptr).ToSharedRef();
+		return SNullWidget::NullWidget;
 	}
 	
 	virtual TSharedRef<const SWidget> GetChildAt( int32 ) const override
@@ -72,7 +73,7 @@ public:
 		// Nobody should be getting a child when there aren't any children.
 		// We expect this to crash!
 		check( false );
-		return TSharedPtr<const SWidget>(nullptr).ToSharedRef();
+		return SNullWidget::NullWidget;
 	}
 
 private:
@@ -100,8 +101,19 @@ public:
 	}
 
 	virtual int32 Num() const override { return 1; }
-	virtual TSharedRef<SWidget> GetChildAt( int32 ChildIndex ) override { check(ChildIndex == 0); return FSlotBase::GetWidget(); }
-	virtual TSharedRef<const SWidget> GetChildAt( int32 ChildIndex ) const override { check(ChildIndex == 0); return FSlotBase::GetWidget(); }
+
+	virtual TSharedRef<SWidget> GetChildAt( int32 ChildIndex ) override
+	{
+		check(ChildIndex == 0);
+		return FSlotBase::GetWidget();
+	}
+
+	virtual TSharedRef<const SWidget> GetChildAt( int32 ChildIndex ) const override
+	{
+		check(ChildIndex == 0);
+		return FSlotBase::GetWidget();
+	}
+
 private:
 	virtual const FSlotBase& GetSlotAt(int32 ChildIndex) const override { check(ChildIndex == 0); return *this; }
 };
@@ -122,8 +134,18 @@ public:
 	}
 
 	virtual int32 Num() const override { return WidgetPtr.IsValid() ? 1 : 0 ; }
-	virtual TSharedRef<SWidget> GetChildAt( int32 ChildIndex ) override { check(ChildIndex == 0); return WidgetPtr.Pin().ToSharedRef(); }
-	virtual TSharedRef<const SWidget> GetChildAt( int32 ChildIndex ) const override { check(ChildIndex == 0); return WidgetPtr.Pin().ToSharedRef(); }
+
+	virtual TSharedRef<SWidget> GetChildAt( int32 ChildIndex ) override
+	{
+		check(ChildIndex == 0);
+		return GetWidget();
+	}
+
+	virtual TSharedRef<const SWidget> GetChildAt( int32 ChildIndex ) const override
+	{
+		check(ChildIndex == 0);
+		return GetWidget();
+	}
 
 private:
 	virtual const FSlotBase& GetSlotAt(int32 ChildIndex) const override { static FSlotBase NullSlot; check(ChildIndex == 0); return NullSlot; }
@@ -143,10 +165,32 @@ public:
 		}
 	}
 
+	void DetachWidget()
+	{
+		if (WidgetPtr.IsValid())
+		{
+			WidgetPtr.Reset();
+
+			if (Owner)
+			{
+				Owner->InvalidatePrepass();
+			}
+		}
+	}
+
 	TSharedRef<SWidget> GetWidget() const
 	{
+		ensure(Num() > 0);
 		TSharedPtr<SWidget> Widget = WidgetPtr.Pin();
 		return (Widget.IsValid()) ? Widget.ToSharedRef() : SNullWidget::NullWidget;
+	}
+
+private:
+	SWidget& GetWidgetRef() const
+	{
+		ensure(Num() > 0);
+		SWidget* Widget = WidgetPtr.Pin().Get();
+		return Widget ? *Widget : SNullWidget::NullWidget.Get();
 	}
 
 private:
@@ -223,6 +267,8 @@ public:
 };
 
 
+
+
 /**
  * A generic FChildren that stores children along with layout-related information.
  * The type containing Widget* and layout info is specified by ChildType.
@@ -278,6 +324,9 @@ public:
 	{
 		if ( !bEmptying )
 		{
+			// NOTE:
+			// We don't do any invalidating here, that's handled by the FSlotBase, which eventually calls ConditionallyDetatchParentWidget
+
 			TIndirectArray< SlotType >::RemoveAt(Index);
 		}
 	}
@@ -286,6 +335,9 @@ public:
 	{
 		if ( !bEmptying )
 		{
+			// NOTE:
+			// We don't do any invalidating here, that's handled by the FSlotBase, which eventually calls ConditionallyDetatchParentWidget
+
 			TGuardValue<bool> GuardEmptying(bEmptying, true);
 			TIndirectArray< SlotType >::Empty();
 		}
@@ -341,6 +393,12 @@ public:
 		::Sort(TIndirectArray< SlotType >::GetData(), TIndirectArray<SlotType>::Num(), Predicate);
 	}
 
+	template <class PREDICATE_CLASS>
+	void StableSort(const PREDICATE_CLASS& Predicate)
+	{
+		::StableSort(TIndirectArray< SlotType >::GetData(), TIndirectArray< SlotType >::Num(), Predicate);
+	}
+
 	void Swap( int32 IndexA, int32 IndexB )
 	{
 		TIndirectArray< SlotType >::Swap(IndexA, IndexB);
@@ -349,6 +407,121 @@ public:
 private:
 	bool bEmptying;
 };
+
+
+
+template<typename SlotType>
+class TPanelChildrenConstIterator
+{
+public:
+	TPanelChildrenConstIterator(const TPanelChildren<SlotType>& InContainer, EFlowDirection InLayoutFlow)
+		: Container(InContainer)
+		, LayoutFlow(InLayoutFlow)
+	{
+		Reset();
+	}
+
+	TPanelChildrenConstIterator(const TPanelChildren<SlotType>& InContainer, EOrientation InOrientation, EFlowDirection InLayoutFlow)
+		: Container(InContainer)
+		, LayoutFlow(InOrientation == Orient_Vertical ? EFlowDirection::LeftToRight : InLayoutFlow)
+	{
+		Reset();
+	}
+
+	/** Advances iterator to the next element in the container. */
+	TPanelChildrenConstIterator<SlotType>& operator++()
+	{
+		switch (LayoutFlow)
+		{
+		default:
+		case EFlowDirection::LeftToRight:
+			++Index;
+			break;
+		case EFlowDirection::RightToLeft:
+			--Index;
+			break;
+		}
+
+		return *this;
+	}
+
+	/** Moves iterator to the previous element in the container. */
+	TPanelChildrenConstIterator<SlotType>& operator--()
+	{
+		switch (LayoutFlow)
+		{
+		default:
+		case EFlowDirection::LeftToRight:
+			--Index;
+			break;
+		case EFlowDirection::RightToLeft:
+			++Index;
+			break;
+		}
+
+		return *this;
+	}
+
+	const SlotType& operator* () const
+	{
+		return Container[Index];
+	}
+
+	const SlotType* operator->() const
+	{
+		return &Container[Index];
+	}
+
+	/** conversion to "bool" returning true if the iterator has not reached the last element. */
+	FORCEINLINE explicit operator bool() const
+	{
+		return Container.IsValidIndex(Index);
+	}
+
+	/** Returns an index to the current element. */
+	int32 GetIndex() const
+	{
+		return Index;
+	}
+
+	/** Resets the iterator to the first element. */
+	void Reset()
+	{
+		switch (LayoutFlow)
+		{
+		default:
+		case EFlowDirection::LeftToRight:
+			Index = 0;
+			break;
+		case EFlowDirection::RightToLeft:
+			Index = Container.Num() - 1;
+			break;
+		}
+	}
+
+	/** Sets iterator to the last element. */
+	void SetToEnd()
+	{
+		switch (LayoutFlow)
+		{
+		default:
+		case EFlowDirection::LeftToRight:
+			Index = Container.Num() - 1;
+			break;
+		case EFlowDirection::RightToLeft:
+			Index = 0;
+			break;
+		}
+	}
+
+private:
+
+	const TPanelChildren<SlotType>& Container;
+	int32 Index;
+	EFlowDirection LayoutFlow;
+};
+
+
 
 /**
  * Some advanced widgets contain no layout information, and do not require slots.
@@ -490,4 +663,37 @@ public:
 
 private:
 	bool bChangesInvalidatePrepass;
+};
+
+
+/** Required to implement GetChildren() in a way that can dynamically return the currently active child. */
+template<typename SlotType>
+class TOneDynamicChild : public FChildren
+{
+public:
+	TOneDynamicChild(SWidget* InOwner, TPanelChildren<SlotType>* InAllChildren, const TAttribute<int32>* InWidgetIndex)
+		: FChildren(InOwner)
+		, AllChildren(InAllChildren)
+		, WidgetIndex(InWidgetIndex)
+	{ }
+
+	virtual int32 Num() const override { return AllChildren->Num() > 0 ? 1 : 0; }
+
+	virtual TSharedRef<SWidget> GetChildAt(int32 Index) override
+	{
+		check(Index == 0); return AllChildren->GetChildAt(WidgetIndex->Get());
+	}
+
+	virtual TSharedRef<const SWidget> GetChildAt(int32 Index) const override
+	{
+		check(Index == 0);
+		return AllChildren->GetChildAt(WidgetIndex->Get());
+	}
+
+private:
+
+	virtual const FSlotBase& GetSlotAt(int32 ChildIndex) const override { return (*AllChildren)[ChildIndex]; }
+
+	TPanelChildren<SlotType>* AllChildren;
+	const TAttribute<int32>* WidgetIndex;
 };

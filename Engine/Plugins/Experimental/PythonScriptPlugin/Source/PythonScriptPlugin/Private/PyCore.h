@@ -4,13 +4,17 @@
 
 #include "IncludePython.h"
 #include "PyConversion.h"
+#include "PyUtil.h"
 #include "PyWrapperBasic.h"
 #include "PyPtr.h"
 #include "CoreMinimal.h"
 #include "Misc/EnumClassFlags.h"
 #include "UObject/UObjectIterator.h"
+#include "Delegates/DelegateCombinations.h"
 
 #if WITH_PYTHON
+
+enum class EPythonLogOutputType : uint8;
 
 struct FSlowTask;
 
@@ -369,6 +373,9 @@ typedef TPyPtr<FPyUFunctionDef> FPyUFunctionDefPtr;
 namespace PyCore
 {
 	void InitializeModule();
+
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FPythonLogCapture, EPythonLogOutputType, const TCHAR*);
+	FPythonLogCapture& GetPythonLogCapture();
 }
 
 #endif	// WITH_PYTHON

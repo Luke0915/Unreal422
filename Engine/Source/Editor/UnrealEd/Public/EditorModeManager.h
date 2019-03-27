@@ -240,6 +240,13 @@ public:
 	/** Draws the HUD for all active modes */
 	void DrawHUD( FEditorViewportClient* InViewportClient,FViewport* Viewport,const FSceneView* View,FCanvas* Canvas );
 
+	/** 
+	 * Get a pivot point specified by any active modes around which the camera should orbit
+	 * @param	OutPivot	The custom pivot point returned by the mode/tool
+	 * @return	true if a custom pivot point was specified, false otherwise.
+	 */
+	bool GetPivotForOrbit( FVector& OutPivot ) const;
+
 	/** Calls PostUndo on all active modes */
 	// Begin FEditorUndoClient
 	virtual void PostUndo(bool bSuccess) override;
@@ -254,6 +261,15 @@ public:
 
 	/** Get a cursor to override the default with, if any */
 	bool GetCursor(EMouseCursor::Type& OutCursor) const;
+
+	/** Get override cursor visibility settings */
+	bool GetOverrideCursorVisibility(bool& bWantsOverride, bool& bHardwareCursorVisible, bool bSoftwareCursorVisible) const;
+
+	/** Called before converting mouse movement to drag/rot */
+	bool PreConvertMouseMovement(FEditorViewportClient* InViewportClient);
+
+	/** Called after converting mouse movement to drag/rot */
+	bool PostConvertMouseMovement(FEditorViewportClient* InViewportClient);
 
 	/**
 	 * Returns a good location to draw the widget at.

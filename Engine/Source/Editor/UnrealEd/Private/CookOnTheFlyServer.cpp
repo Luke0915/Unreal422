@@ -4361,9 +4361,11 @@ void GetVersionFormatNumbersForIniVersionStrings(TMap<FString, FString>& IniVers
 
 void GetAdditionalCurrentIniVersionStrings( const ITargetPlatform* TargetPlatform, TMap<FString, FString>& IniVersionMap )
 {
+	FConfigFile EngineSettings;
+	FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *TargetPlatform->PlatformName());
 
 	TArray<FString> VersionedRValues;
-	GConfig->GetArray(TEXT("CookSettings"), TEXT("VersionedIntRValues"), VersionedRValues, GEditorIni);
+	EngineSettings.GetArray(TEXT("/Script/UnrealEd.CookerSettings"), TEXT("VersionedIntRValues"), VersionedRValues);
 
 	for (const FString& RValue : VersionedRValues)
 	{
@@ -6878,7 +6880,7 @@ void UCookOnTheFlyServer::StartCookByTheBook( const FCookByTheBookStartupOptions
 	TArray<FName> FilesInPath;
 	TSet<FName> StartupSoftObjectPackages;
 
-	// Get the list of string asset references, for both empty package and all startup packages
+	// Get the list of soft references, for both empty package and all startup packages
 	GRedirectCollector.ProcessSoftObjectPathPackageList(NAME_None, false, StartupSoftObjectPackages);
 
 	for (const FName& StartupPackage : CookByTheBookOptions->StartupPackages)

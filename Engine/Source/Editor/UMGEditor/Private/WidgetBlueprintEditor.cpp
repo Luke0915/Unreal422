@@ -21,6 +21,7 @@
 
 #include "Tracks/MovieScenePropertyTrack.h"
 #include "ISequencerModule.h"
+#include "SequencerSettings.h"
 #include "ObjectEditorUtils.h"
 
 #include "PropertyCustomizationHelpers.h"
@@ -790,6 +791,8 @@ TSharedPtr<ISequencer>& FWidgetBlueprintEditor::GetSequencer()
 		};
 
 		Sequencer = FModuleManager::LoadModuleChecked<ISequencerModule>("Sequencer").CreateSequencer(SequencerInitParams);
+		// Never recompile the blueprint on evaluate as this can create an insidious loop
+		Sequencer->GetSequencerSettings()->SetCompileDirectorOnEvaluate(false);
 		Sequencer->OnMovieSceneDataChanged().AddSP( this, &FWidgetBlueprintEditor::OnMovieSceneDataChanged );
 		Sequencer->OnMovieSceneBindingsPasted().AddSP( this, &FWidgetBlueprintEditor::OnMovieSceneBindingsPasted );
 		// Change selected widgets in the sequencer tree view
@@ -1375,13 +1378,24 @@ void FWidgetBlueprintEditor::ReplaceTrackWithSelectedWidget(FWidgetReference Sel
 			}
 		);
 
+		if (!SourceBinding)
+		{
+			WidgetAnimation->BindPossessableObject(ObjectId, *PreviewWidget, GetAnimationPlaybackContext());
+
+			SourceBinding = WidgetAnimation->AnimationBindings.FindByPredicate(
+				[&](FWidgetAnimationBinding& In)
+			{
+				return In.AnimationGuid == ObjectId;
+			}
+			);
+		}
+
 		check(SourceBinding);
 
 		// Set binding names used for lookup
-		FName PredicateName = SourceBinding->WidgetName;
 		for (FWidgetAnimationBinding& Binding : WidgetAnimation->AnimationBindings)
 		{
-			if (Binding.WidgetName != PredicateName)
+			if (Binding.AnimationGuid != ObjectId)
 			{
 				continue;
 			}

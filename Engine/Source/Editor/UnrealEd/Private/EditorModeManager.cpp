@@ -779,6 +779,20 @@ bool FEditorModeTools::InputAxis(FEditorViewportClient* InViewportClient, FViewp
 	return bHandled;
 }
 
+bool FEditorModeTools::GetPivotForOrbit( FVector& Pivot ) const
+{
+	// Just return the first pivot point specified by a mode
+	for( int32 ModeIndex = 0; ModeIndex < Modes.Num(); ++ModeIndex )
+	{
+		const TSharedPtr<FEdMode>& Mode = Modes[ ModeIndex ];
+		if ( Mode->GetPivotForOrbit( Pivot ) )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool FEditorModeTools::MouseEnter( FEditorViewportClient* InViewportClient, FViewport* Viewport, int32 X, int32 Y )
 {
 	bool bHandled = false;
@@ -906,6 +920,36 @@ bool FEditorModeTools::GetCursor(EMouseCursor::Type& OutCursor) const
 	for( const auto& Mode : Modes)
 	{
 		bHandled |= Mode->GetCursor(OutCursor);
+	}
+	return bHandled;
+}
+
+bool FEditorModeTools::GetOverrideCursorVisibility(bool& bWantsOverride, bool& bHardwareCursorVisible, bool bSoftwareCursorVisible) const
+{
+	bool bHandled = false;
+	for (const auto& Mode : Modes)
+	{
+		bHandled |= Mode->GetOverrideCursorVisibility(bWantsOverride, bHardwareCursorVisible, bSoftwareCursorVisible);
+	}
+	return bHandled;
+}
+
+bool FEditorModeTools::PreConvertMouseMovement(FEditorViewportClient* InViewportClient)
+{
+	bool bHandled = false;
+	for (const auto& Mode : Modes)
+	{
+		bHandled |= Mode->PreConvertMouseMovement(InViewportClient);
+	}
+	return bHandled;
+}
+
+bool FEditorModeTools::PostConvertMouseMovement(FEditorViewportClient* InViewportClient)
+{
+	bool bHandled = false;
+	for (const auto& Mode : Modes)
+	{
+		bHandled |= Mode->PostConvertMouseMovement(InViewportClient);
 	}
 	return bHandled;
 }

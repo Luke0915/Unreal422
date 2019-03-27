@@ -222,11 +222,27 @@ public:
 #endif
 	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
+
+#if RHI_RAYTRACING
+	virtual bool IsRayTracingRelevant() const override final { return true; }
+
+	virtual bool IsRayTracingStaticRelevant() const override
+	{
+		return bRenderStatic;
+	}
+
+	virtual void GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances) final override;
+#endif // RHI_RAYTRACING
+
 	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
 	virtual bool CanBeOccluded() const override;
+	virtual bool IsUsingDistanceCullFade() const override;
 	
 	virtual bool HasDynamicIndirectShadowCasterRepresentation() const override;
 	virtual void GetShadowShapes(TArray<FCapsuleShape>& CapsuleShapes) const override;
+
+	/** Return the bounds for the pre-skinned primitive in local space */
+	virtual FBoxSphereBounds GetPreSkinnedLocalBounds() const override { return PreSkinnedLocalBounds; }
 
 	/** Returns a pre-sorted list of shadow capsules's bone indicies */
 	const TArray<uint16>& GetSortedShadowBoneIndices() const
@@ -251,7 +267,7 @@ public:
 	 */
 	virtual void DebugDrawPhysicsAsset(int32 ViewIndex, FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags) const;
 
-	/** Render the bones of the skeleton for debug display */
+	/** Render the bones of the skeleton for debug display */ 
 	void DebugDrawSkeleton(int32 ViewIndex, FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags) const;
 
 	virtual uint32 GetMemoryFootprint( void ) const override { return( sizeof( *this ) + GetAllocatedSize() ); }
@@ -342,6 +358,9 @@ protected:
 	/** Set of materials used by this scene proxy, safe to access from the game thread. */
 	TSet<UMaterialInterface*> MaterialsInUse_GameThread;
 	
+	/** The primitive's pre-skinned local space bounds. */
+	FBoxSphereBounds PreSkinnedLocalBounds;
+
 #if WITH_EDITORONLY_DATA
 	/** The component streaming distance multiplier */
 	float StreamingDistanceMultiplier;
@@ -352,6 +371,9 @@ protected:
 								   const FSectionElementInfo& SectionElementInfo, bool bInSelectable, FMeshElementCollector& Collector) const;
 
 	void GetMeshElementsConditionallySelectable(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, bool bInSelectable, uint32 VisibilityMap, FMeshElementCollector& Collector) const;
+
+private:
+	void CreateBaseMeshBatch(const FSceneView* View, const FSkeletalMeshLODRenderData& LODData, const int32 LODIndex, const int32 SectionIndex, const FSectionElementInfo& SectionElementInfo, FMeshBatch& Mesh) const;
 };
 
 /** Used to recreate all skinned mesh components for a given skeletal mesh */

@@ -1921,8 +1921,17 @@ SWindow::SWindow()
 
 int32 SWindow::PaintWindow( const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const
 {
+	// Create initial culture specific layout direction
+	EFlowDirection NewFlowDirection = GSlateFlowDirection;
+	if (GetFlowDirectionPreference() == EFlowDirectionPreference::Inherit)
+	{
+		NewFlowDirection = GSlateFlowDirectionShouldFollowCultureByDefault ? FLayoutLocalization::GetLocalizedLayoutDirection() : EFlowDirection::LeftToRight;
+	}
+
+	TGuardValue<EFlowDirection> FlowGuard(GSlateFlowDirection, NewFlowDirection);
+
 	LayerId = Paint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
-	//LayerId = OutDrawElements.PaintDeferred( LayerId );
+
 	return LayerId;
 }
 
@@ -2024,6 +2033,14 @@ void SWindow::BeginFullWindowOverlayTransition()
 void SWindow::EndFullWindowOverlayTransition()
 {
 	bShouldShowWindowContentDuringOverlay = false;
+}
+
+void SWindow::SetNativeWindowButtonsVisibility(bool bVisible)
+{
+	if (NativeWindow.IsValid())
+	{
+		NativeWindow->SetNativeWindowButtonsVisibility(bVisible);
+	}
 }
 
 EVisibility SWindow::GetWindowContentVisibility() const

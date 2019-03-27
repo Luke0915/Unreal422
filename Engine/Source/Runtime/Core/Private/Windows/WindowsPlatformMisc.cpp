@@ -529,6 +529,13 @@ void FWindowsPlatformMisc::PlatformPreInit()
 
 	FGenericPlatformMisc::PlatformPreInit();
 
+	// Load the bundled version of dbghelp.dll if necessary
+#if USE_BUNDLED_DBGHELP
+	// Try to load a bundled copy of dbghelp.dll. A bug with Windows 10 version 1709 
+	FString DbgHlpPath = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/DbgHelp/dbghelp.dll");
+	FPlatformProcess::GetDllHandle(*DbgHlpPath);
+#endif
+
 	// Use our own handler for pure virtuals being called.
 	DefaultPureCallHandler = _set_purecall_handler( PureCallHandler );
 
@@ -575,15 +582,30 @@ void FWindowsPlatformMisc::PlatformInit()
  *
  * @param Type Ctrl-C, Ctrl-Break, Close Console Log Window, Logoff, or Shutdown
  */
-static BOOL WINAPI ConsoleCtrlHandler( ::DWORD /*Type*/ )
+static BOOL WINAPI ConsoleCtrlHandler(DWORD CtrlType)
 {
-	// Once this function is called, Windows gives us about 5 seconds to clean up and exit.
-	// There's no way to cancel. Since console is shutting down, logging might not be reliable.
+	// Broadcast the termination the first time through.
+	bool IsRequestingExit = GIsRequestingExit;
+	static bool AppTermDelegateBroadcast = false;
+	if (!AppTermDelegateBroadcast)
+	{
+		GIsRequestingExit = true;
+		FCoreDelegates::ApplicationWillTerminateDelegate.Broadcast();
+		AppTermDelegateBroadcast = true;
+	}
 
-	GIsRequestingExit = true;
+	// Only "two-step Ctrl-C" if the termination event is Ctrl-C and the process
+	// is considered interactive. Hard-terminate on all other cases.
+	if (CtrlType != CTRL_C_EVENT || FApp::IsUnattended())
+	{
+		IsRequestingExit = true;
+	}
 
-	// Notify anyone listening that we're about to terminate
-	FCoreDelegates::ApplicationWillTerminateDelegate.Broadcast();
+	if (!IsRequestingExit)
+	{
+		UE_LOG(LogCore, Warning, TEXT("*** INTERRUPTED *** : SHUTTING DOWN"));
+		UE_LOG(LogCore, Warning, TEXT("*** INTERRUPTED *** : CTRL-C TO FORCE QUIT"));
+	}
 
 	// make sure as much data is written to disk as possible
 	if (GLog)
@@ -599,14 +621,67 @@ static BOOL WINAPI ConsoleCtrlHandler( ::DWORD /*Type*/ )
 		GError->Flush();
 	}
 
-	// Windows will now terminate this process with ExitCode = 0xC000013A
-	return true;
+	if (!IsRequestingExit)
+	{
+		// We'll two-step Ctrl-C events to give processes like servers time to
+		// correctly terminate. Note the GIsRequestingExit is true now.
+		return true;
+	}
+
+	// There's no guarantee that the process is paying attention to GIsRequestingExit
+	// (e.g. some long-running commandlets). Using that for shutdown is therefore not
+	// reliable. Deferring to the default CtrlHandler is also no good as that calls
+	// ExitProcess() which will terminate all threads and detach all DLLS. This can
+	// result in deadlocks and/or asserts as each DLL's atexit() is processed. So
+	// let's hard terminate the process. 0xc000013a is what Windows' default handler
+	// would normally pass to ExitProcess() and how ExitProc() terminates threads.
+	TerminateProcess(GetCurrentProcess(), 0xc000013au);
+	return false;
 }
 
 void FWindowsPlatformMisc::SetGracefulTerminationHandler()
 {
+	if (GetConsoleWindow() == nullptr)
+	{
+		return;
+	}
+
 	// Set console control handler so we can exit if requested.
 	SetConsoleCtrlHandler(ConsoleCtrlHandler, true);
+
+#if !UE_BUILD_SHIPPING && PLATFORM_CPU_X86_FAMILY
+	// There are many places that can register a Ctrl-C handler, some of which
+	// we are not in control of (third party Perforce libraries for example). This
+	// can result in Ctrl-C doing nothing, or an abrupt call to ExitProcess() which
+	// will cause asserts and/or deadlocks. So we're going to apply a patch so no
+	// one else can register a handler.
+	auto* SetCtrlCProc = (uint8*)SetConsoleCtrlHandler;
+	if (SetCtrlCProc[0] == 0xff && SetCtrlCProc[1] == 0x25)
+	{
+#if PLATFORM_64BITS
+		// Follow a possible "jmp [eip] + disp32" instruction to get to the actual
+		// implementation of the SetConsoleCtrlHandler function.
+		SetCtrlCProc = *(uint8**)(SetCtrlCProc + 6 + *(uint32*)(SetCtrlCProc + 2));
+#else
+		// Follow "jmp [disp32]"
+		uintptr_t Disp32 = *(uintptr_t*)(SetCtrlCProc + 2);
+		SetCtrlCProc = *(uint8**)(Disp32);
+#endif
+	}
+
+	// Patch the start of the SetConsoleCtrlHandler function.
+	uint8 Patch[] = {
+		0xb8, 0x01, 0x00, 0x00, 0x00,	// mov eax, 1
+		0xc3							// ret
+	};
+	DWORD PrevProtection;
+	if (VirtualProtect(SetCtrlCProc, sizeof(Patch), PAGE_EXECUTE_READWRITE, &PrevProtection))
+	{
+		memcpy(SetCtrlCProc, Patch, sizeof(Patch));
+		VirtualProtect(SetCtrlCProc, sizeof(Patch), PrevProtection, &PrevProtection);
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+	}
+#endif // !UE_BUILD_SHIPPING && PLATFORM_CPU_X86_FAMILY
 }
 
 int32 FWindowsPlatformMisc::GetMaxPathLength()
@@ -1619,7 +1694,23 @@ int32 FWindowsPlatformMisc::NumberOfWorkerThreadsToSpawn()
 
 	int32 MaxWorkerThreadsWanted = IsRunningDedicatedServer() ? MaxServerWorkerThreads : MaxWorkerThreads;
 	// need to spawn at least one worker thread (see FTaskGraphImplementation)
-	return FMath::Max(FMath::Min(NumberOfThreads, MaxWorkerThreadsWanted), 1);
+	return FMath::Max(FMath::Min(NumberOfThreads, MaxWorkerThreadsWanted), 2);
+}
+
+const TCHAR* FWindowsPlatformMisc::GetPlatformFeaturesModuleName()
+{
+	bool bModuleExists = FModuleManager::Get().ModuleExists(TEXT("WindowsPlatformFeatures"));
+	// If running a dedicated server then we use the default PlatformFeatures
+	if (bModuleExists && !IsRunningDedicatedServer())
+	{
+		UE_LOG(LogWindows, Log, TEXT("WindowsPlatformFeatures enabled"));
+		return TEXT("WindowsPlatformFeatures");
+	}
+	else
+	{
+		UE_LOG(LogWindows, Log, TEXT("WindowsPlatformFeatures disabled or dedicated server build"));
+		return nullptr;
+	}
 }
 
 bool FWindowsPlatformMisc::OsExecute(const TCHAR* CommandType, const TCHAR* Command, const TCHAR* CommandLine)

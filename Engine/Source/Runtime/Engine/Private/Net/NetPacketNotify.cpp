@@ -4,6 +4,12 @@
 #include "Serialization/BitWriter.h"
 #include "Serialization/BitReader.h"
 
+FNetPacketNotify::FNetPacketNotify()
+	: AckRecord(64)
+	, WrittenHistoryWordCount(0)
+{
+}
+
 SIZE_T FNetPacketNotify::GetCurrentSequenceHistoryLength() const
 {
 	if (InAckSeq >= InAckSeqAck)
@@ -15,6 +21,31 @@ SIZE_T FNetPacketNotify::GetCurrentSequenceHistoryLength() const
 		// Worst case send full history
 		return SequenceHistoryT::Size;
 	}
+}
+
+FNetPacketNotify::SequenceNumberT FNetPacketNotify::UpdateInAckSeqAck(SequenceNumberT::DifferenceT AckCount, SequenceNumberT AckedSeq)
+{
+	if ((SIZE_T)AckCount <= AckRecord.Count())
+	{
+		if (AckCount > 1)
+		{
+			AckRecord.PopNoCheck(AckCount - 1);
+		}
+
+		FSentAckData AckData = AckRecord.PeekNoCheck();
+		AckRecord.PopNoCheck();
+
+		// verify that we have a matching sequence number
+		if (AckData.OutSeq == AckedSeq)
+		{
+			return AckData.InAckSeq;
+		}
+	}
+
+	// Pessimistic view, should never occur but we do want to know about it if it would
+	ensureMsgf(false, TEXT("FNetPacketNotify::UpdateInAckSeqAck - Failed to find matching AckRecord for %u"), AckedSeq.Get());
+	
+	return SequenceNumberT(AckedSeq.Get() - MaxSequenceHistoryLength);
 }
 
 void FNetPacketNotify::Init(SequenceNumberT InitialInSeq, SequenceNumberT InitialOutSeq)
@@ -75,7 +106,7 @@ namespace
 }
 
 // These methods must always write and read the exact same number of bits, that is the reason for not using WriteInt/WrittedWrappedInt
-void FNetPacketNotify::WriteHeader(FBitWriter& Writer, bool bRefresh)
+bool FNetPacketNotify::WriteHeader(FBitWriter& Writer, bool bRefresh)
 {
 	// we always write at least 1 word
 	SIZE_T CurrentHistoryWordCount = FMath::Clamp<SIZE_T>((GetCurrentSequenceHistoryLength() + SequenceHistoryT::BitsPerWord - 1u) / SequenceHistoryT::BitsPerWord, 1u, SequenceHistoryT::WordCount);
@@ -83,7 +114,7 @@ void FNetPacketNotify::WriteHeader(FBitWriter& Writer, bool bRefresh)
 	// We can only do a refresh if we do not need more space for the history
 	if (bRefresh && (CurrentHistoryWordCount > WrittenHistoryWordCount))
 	{
-		return;
+		return false;
 	}
 
 	// How many words of ack data should we write? If this is a refresh we must write the same size as the original header
@@ -104,6 +135,8 @@ void FNetPacketNotify::WriteHeader(FBitWriter& Writer, bool bRefresh)
 	InSeqHistory.Write(Writer, WrittenHistoryWordCount);
 
 	UE_LOG_PACKET_NOTIFY(TEXT("FNetPacketNotify::WriteHeader - Seq %u, AckedSeq %u bReFresh %u HistorySizeInWords %u"), Seq, AckedSeq, bRefresh ? 1u : 0u, WrittenHistoryWordCount);
+
+	return true;
 }
 
 bool FNetPacketNotify::ReadHeader(FNotificationHeader& Data, FBitReader& Reader) const

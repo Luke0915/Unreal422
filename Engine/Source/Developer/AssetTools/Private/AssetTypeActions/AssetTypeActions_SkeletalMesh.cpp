@@ -648,7 +648,7 @@ void FAssetTypeActions_SkeletalMesh::GetSourceFileLabels(const TArray<UObject*>&
 		SkeletalMesh->AssetImportData->ExtractFilenames(SourceFilePaths);
 		for (int32 SourceIndex = 0; SourceIndex < SourceFilePaths.Num(); ++SourceIndex)
 		{
-			FText SourceIndexLabel = SourceIndex == 0 ? NSSkeletalMeshSourceFileLabels::GeoAndSkinningText() : SourceIndex == 1 ? NSSkeletalMeshSourceFileLabels::GeometryText() : NSSkeletalMeshSourceFileLabels::SkinningText();
+			FText SourceIndexLabel = USkeletalMesh::GetSourceFileLabelFromIndex(SourceIndex);
 			OutSourceFileLabels.Add(SourceIndexLabel.ToString());
 		}
 	}
@@ -660,7 +660,7 @@ void FAssetTypeActions_SkeletalMesh::GetLODMenu(class FMenuBuilder& MenuBuilder,
 	//Use the first object
 	USkeletalMesh* SkeletalMesh = Objects[0].Get();
 	int32 LODMax = SkeletalMesh->GetLODNum();
-	for(int32 LOD = 0; LOD < LODMax; ++LOD)
+	for(int32 LOD = 1; LOD <= LODMax; ++LOD)
 	{
 		const FText Description = FText::Format( LOCTEXT("LODLevel", "LOD {0}"), FText::AsNumber( LOD ) );
 		const FText ToolTip = ( LOD == LODMax ) ? LOCTEXT("NewImportTip", "Import new LOD") : LOCTEXT("ReimportTip", "Reimport over existing LOD");

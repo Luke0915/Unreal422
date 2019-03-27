@@ -4,6 +4,7 @@
 #include "Serialization/MemoryWriter.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectIterator.h"
 #include "EngineDefines.h"
 #include "Components/AudioComponent.h"
 #include "ContentStreaming.h"
@@ -19,7 +20,59 @@
 #include "EditorFramework/AssetImportData.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/FileManager.h"
 #include "AudioCompressionSettingsUtils.h"
+#include "DSP/SpectrumAnalyzer.h"
+#include "DSP/EnvelopeFollower.h"
+#include "DSP/BufferVectorOperations.h"
+#include "Misc/OutputDeviceArchiveWrapper.h"
+#include "Sound/SampleBuffer.h"
+
+#include "Misc/CommandLine.h"
+
+static int32 BypassVirtualizeWhenSilentCVar = 0;
+FAutoConsoleVariableRef CVarBypassVirtualizeWhenSilent(
+	TEXT("au.BypassVirtualizeWhenSilent"),
+	BypassVirtualizeWhenSilentCVar,
+	TEXT("When set to 1, ignores the Play When Silent flag for non-procedural sources.\n")
+	TEXT("0: Honor the Play When Silent flag, 1: stop all silent non-procedural sources."),
+	ECVF_Default);
+
+#if !UE_BUILD_SHIPPING
+static void DumpBakedAnalysisData(const TArray<FString>& Args)
+{
+	if (IsInGameThread())
+	{
+		if (Args.Num() == 1)
+		{
+			const FString& SoundWaveToDump = Args[0];
+			UE_LOG(LogTemp, Log, TEXT("Foo"));
+			for (TObjectIterator<USoundWave> It; It; ++It)
+			{
+				if (It->IsTemplate(RF_ClassDefaultObject))
+				{
+					continue;
+				}
+
+				if (SoundWaveToDump.Equals(It->GetName()))
+				{
+					UE_LOG(LogTemp, Log, TEXT("Foo"));
+#if WITH_EDITOR
+					It->LogBakedData();
+#endif // WITH_EDITOR
+				}
+			}
+		}
+	}
+}
+
+static FAutoConsoleCommand DumpBakedAnalysisDataCmd(
+	TEXT("au.DumpBakedAnalysisData"),
+	TEXT("debug command to dump the baked analysis data of a sound wave to a csv file."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&DumpBakedAnalysisData)
+);
+#endif
 
 #if ENABLE_COOK_STATS
 namespace SoundWaveCookStats
@@ -65,7 +118,9 @@ void FStreamedAudioChunk::Serialize(FArchive& Ar, UObject* Owner, int32 ChunkInd
 	{
 		BulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
 	}
-	BulkData.Serialize(Ar, Owner, ChunkIndex);
+
+	// streaming doesn't use memory mapped IO
+	BulkData.Serialize(Ar, Owner, ChunkIndex, false);
 	Ar << DataSize;
 	Ar << AudioDataSize;
 
@@ -110,6 +165,20 @@ USoundWave::USoundWave(const FObjectInitializer& ObjectInitializer)
 	ResourceState = ESoundWaveResourceState::NeedsFree;
 	RawPCMDataSize = 0;
 	SetPrecacheState(ESoundWavePrecacheState::NotStarted);
+
+#if WITH_EDITORONLY_DATA
+	FFTSize = ESoundWaveFFTSize::Medium_512;
+	FrequenciesToAnalyze.Add(100.0f);
+	FrequenciesToAnalyze.Add(500.0f);
+	FrequenciesToAnalyze.Add(1000.0f);
+	FrequenciesToAnalyze.Add(5000.0f);
+	FFTAnalysisFrameSize = 1024;
+	FFTAnalysisAttackTime = 10;
+	FFTAnalysisReleaseTime = 3000;
+	EnvelopeFollowerFrameSize = 1024;
+	EnvelopeFollowerAttackTime = 10;
+	EnvelopeFollowerReleaseTime = 100;
+#endif
 
 #if !WITH_EDITOR
 	bCachedSampleRateFromPlatformSettings = false;
@@ -205,7 +274,7 @@ void USoundWave::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 
 void USoundWave::Serialize( FArchive& Ar )
 {
-	LLM_SCOPE(ELLMTag::Audio);
+	LLM_SCOPE(ELLMTag::AudioSoundWaves);
 
 	DECLARE_SCOPE_CYCLE_COUNTER( TEXT("USoundWave::Serialize"), STAT_SoundWave_Serialize, STATGROUP_LoadTime );
 
@@ -288,12 +357,22 @@ void USoundWave::Serialize( FArchive& Ar )
 						ActualFormatsToSave.Add(Format);
 					}
 				}
-				CompressedFormatData.Serialize(Ar, this, &ActualFormatsToSave);
+				bool bMapped = CookingTarget->SupportsFeature(ETargetPlatformFeatures::MemoryMappedFiles) && CookingTarget->SupportsFeature(ETargetPlatformFeatures::MemoryMappedAudio);
+				CompressedFormatData.Serialize(Ar, this, &ActualFormatsToSave, true, DEFAULT_ALIGNMENT, 
+					!bMapped, // inline if not mapped
+					bMapped);
 #endif
 			}
 			else
 			{
-				CompressedFormatData.Serialize(Ar, this);
+				if (FPlatformProperties::SupportsMemoryMappedFiles() && FPlatformProperties::SupportsMemoryMappedAudio())
+				{
+					CompressedFormatData.SerializeAttemptMappedLoad(Ar, this);
+				}
+				else
+				{
+					CompressedFormatData.Serialize(Ar, this);
+				}
 			}
 		}
 	}
@@ -436,6 +515,42 @@ const FPlatformAudioCookOverrides* USoundWave::GetPlatformCompressionOverridesFo
 	return FPlatformCompressionUtilities::GetCookOverridesForCurrentPlatform();
 }
 
+#if WITH_EDITOR
+bool USoundWave::GetImportedSoundWaveData(TArray<uint8>& OutRawPCMData, uint32& OutSampleRate, uint16& OutNumChannels)
+{
+	// Can only get sound wave data if there is bulk data and if we don't have some weird munging of multi-channel files (e.g. mono stereo only)
+	if (RawData.GetBulkDataSize() > 0)
+	{
+		FWaveModInfo WaveInfo;
+
+		const uint8* RawWaveData = (const uint8*)RawData.LockReadOnly();
+		int32 RawDataSize = RawData.GetBulkDataSize();
+
+		// parse the wave data
+		if (!WaveInfo.ReadWaveHeader(RawWaveData, RawDataSize, 0))
+		{
+			UE_LOG(LogAudio, Warning, TEXT("Only mono or stereo 16 bit waves allowed: %s."), *GetFullName());
+			RawData.Unlock();
+			return false;
+		}
+
+		// Copy the raw PCM data and the header info that was parsed
+		OutRawPCMData.Reset();
+		OutRawPCMData.AddUninitialized(WaveInfo.SampleDataSize);
+		FMemory::Memcpy(OutRawPCMData.GetData(), WaveInfo.SampleDataStart, WaveInfo.SampleDataSize);
+
+		OutSampleRate = *WaveInfo.pSamplesPerSec;
+		OutNumChannels = *WaveInfo.pChannels;
+
+		RawData.Unlock();
+		return true;
+	}
+
+	UE_LOG(LogAudio, Warning, TEXT("Failed to get imported raw data for sound wave '%s'"), *GetFullName());
+	return false;
+}
+#endif
+
 FName USoundWave::GetPlatformSpecificFormat(FName Format, const FPlatformAudioCookOverrides* CompressionOverrides)
 {
 	// Platforms that require compression overrides get concatenated formats.
@@ -569,7 +684,7 @@ void USoundWave::InvalidateCompressedData()
 
 void USoundWave::PostLoad()
 {
-	LLM_SCOPE(ELLMTag::Audio);
+	LLM_SCOPE(ELLMTag::AudioSoundWaves);
 
 	Super::PostLoad();
 
@@ -655,8 +770,7 @@ void USoundWave::BeginDestroy()
 {
 	Super::BeginDestroy();
 
-	// Flag that this sound wave is beginning destroying. For procedural sound waves, this will ensure
-	// the audio render thread stops the sound before GC hits.
+	// Flag that this sound wave is beginning destroying. This will ensure that all sounds using this in the audio renderer are stopped before GC finishes.
 	bIsBeginDestroy = true;
 	
 #if WITH_EDITOR
@@ -684,8 +798,27 @@ void USoundWave::InitAudioResource( FByteBulkData& CompressedData )
 		ResourceSize = CompressedData.GetBulkDataSize();
 		if( ResourceSize > 0 )
 		{
+#if WITH_EDITOR
 			check(!ResourceData);
 			CompressedData.GetCopy( ( void** )&ResourceData, true );
+#else
+			check(!OwnedBulkDataPtr);
+			OwnedBulkDataPtr = CompressedData.StealFileMapping();
+			ResourceData = (const uint8*)OwnedBulkDataPtr->GetPointer();
+			if (!ResourceData)
+			{
+				UE_LOG(LogAudio, Error, TEXT("Soundwave '%s' was not loaded when it should have been, forcing a sync load."), *GetFullName());
+
+				delete OwnedBulkDataPtr;
+				CompressedData.ForceBulkDataResident();
+				OwnedBulkDataPtr = CompressedData.StealFileMapping();
+				ResourceData = (const uint8*)OwnedBulkDataPtr->GetPointer();
+				if (!ResourceData)
+				{
+					UE_LOG(LogAudio, Fatal, TEXT("Soundwave '%s' failed to load even after forcing a sync load."), *GetFullName());
+				}
+			}
+#endif
 		}
 	}
 }
@@ -697,10 +830,15 @@ bool USoundWave::InitAudioResource(FName Format)
 		FByteBulkData* Bulk = GetCompressedData(Format, GetPlatformCompressionOverridesForCurrentPlatform());
 		if (Bulk)
 		{
+#if WITH_EDITOR
 			ResourceSize = Bulk->GetBulkDataSize();
 			check(ResourceSize > 0);
 			check(!ResourceData);
 			Bulk->GetCopy((void**)&ResourceData, true);
+#else
+			InitAudioResource(*Bulk);
+			check(ResourceSize > 0);
+#endif
 		}
 	}
 
@@ -709,12 +847,19 @@ bool USoundWave::InitAudioResource(FName Format)
 
 void USoundWave::RemoveAudioResource()
 {
+#if WITH_EDITOR
 	if(ResourceData)
 	{
-		FMemory::Free(ResourceData);
+		FMemory::Free((void*)ResourceData);
 		ResourceSize = 0;
 		ResourceData = NULL;
 	}
+#else
+	delete OwnedBulkDataPtr;
+	OwnedBulkDataPtr = nullptr;
+	ResourceData = nullptr;
+		ResourceSize = 0;
+#endif
 }
 
 #if WITH_EDITOR
@@ -732,6 +877,388 @@ float USoundWave::GetSampleRateForTargetPlatform(const ITargetPlatform* TargetPl
 	}
 }
 
+void USoundWave::LogBakedData()
+{
+	const FString AnalysisPathName = *(FPaths::ProjectLogDir() + TEXT("BakedAudioAnalysisData/"));
+	IFileManager::Get().MakeDirectory(*AnalysisPathName);
+
+	FString SoundWaveName = FString::Printf(TEXT("%s.%s"), *FDateTime::Now().ToString(TEXT("%d-%H.%M.%S")), *GetName());
+
+	if (CookedEnvelopeTimeData.Num())
+	{
+		FString EnvelopeFileName = FString::Printf(TEXT("%s.envelope.csv"), *SoundWaveName);	
+		FString FilenameFull = AnalysisPathName + EnvelopeFileName;
+
+		FArchive* FileAr = IFileManager::Get().CreateDebugFileWriter(*FilenameFull);
+		FOutputDeviceArchiveWrapper* FileArWrapper = new FOutputDeviceArchiveWrapper(FileAr);
+		FOutputDevice* ReportAr = FileArWrapper;
+
+		ReportAr->Log(TEXT("TimeStamp (Sec),Amplitude"));
+
+		for (const FSoundWaveEnvelopeTimeData& EnvTimeData : CookedEnvelopeTimeData)
+		{
+			ReportAr->Logf(TEXT("%.4f,%.4f"), EnvTimeData.TimeSec, EnvTimeData.Amplitude);
+		}
+
+		// Shutdown and free archive resources
+		FileArWrapper->TearDown();
+		delete FileArWrapper;
+		delete FileAr;
+	}
+
+	if (CookedSpectralTimeData.Num())
+	{
+		FString AnalysisFileName = FString::Printf(TEXT("%s.spectral.csv"), *SoundWaveName);
+		FString FilenameFull = AnalysisPathName + AnalysisFileName;
+
+		FArchive* FileAr = IFileManager::Get().CreateDebugFileWriter(*FilenameFull);
+		FOutputDeviceArchiveWrapper* FileArWrapper = new FOutputDeviceArchiveWrapper(FileAr);
+		FOutputDevice* ReportAr = FileArWrapper;
+
+		// Build the header string
+		FString ScratchString;
+		ScratchString.Append(TEXT("Time Stamp (Sec),"));
+
+		for (int32 i = 0; i < FrequenciesToAnalyze.Num(); ++i)
+		{
+			ScratchString.Append(FString::Printf(TEXT("%.2f Hz"), FrequenciesToAnalyze[i]));
+			if (i != FrequenciesToAnalyze.Num() - 1)
+			{
+				ScratchString.Append(TEXT(","));
+			}
+		}
+
+		ReportAr->Log(ScratchString);
+
+		for (const FSoundWaveSpectralTimeData& SpectralTimeData : CookedSpectralTimeData)
+		{
+			ScratchString.Reset();
+			ScratchString.Append(FString::Printf(TEXT("%.4f,"), SpectralTimeData.TimeSec));
+
+			for (int32 i = 0; i < SpectralTimeData.Data.Num(); ++i)
+			{
+				ScratchString.Append(FString::Printf(TEXT("%.4f"), SpectralTimeData.Data[i].Magnitude));
+				if (i != SpectralTimeData.Data.Num() - 1)
+				{
+					ScratchString.Append(TEXT(","));
+				}
+			}
+
+			ReportAr->Log(*ScratchString);
+		}
+
+		// Shutdown and free archive resources
+		FileArWrapper->TearDown();
+		delete FileArWrapper;
+		delete FileAr;
+	}
+
+}
+
+static bool AnyFFTAnalysisPropertiesChanged(const FName& PropertyName)
+{
+	// List of properties which cause analysis to get triggered
+	static FName OverrideSoundName						= GET_MEMBER_NAME_CHECKED(USoundWave, OverrideSoundToUseForAnalysis);
+	static FName EnableFFTAnalysisFName					= GET_MEMBER_NAME_CHECKED(USoundWave, bEnableBakedFFTAnalysis);
+	static FName FFTSizeFName							= GET_MEMBER_NAME_CHECKED(USoundWave, FFTSize);
+	static FName FFTAnalysisFrameSizeFName				= GET_MEMBER_NAME_CHECKED(USoundWave, FFTAnalysisFrameSize);
+	static FName FrequenciesToAnalyzeFName				= GET_MEMBER_NAME_CHECKED(USoundWave, FrequenciesToAnalyze);
+	static FName FFTAnalysisAttackTimeFName				= GET_MEMBER_NAME_CHECKED(USoundWave, FFTAnalysisAttackTime);
+	static FName FFTAnalysisReleaseTimeFName			= GET_MEMBER_NAME_CHECKED(USoundWave, FFTAnalysisReleaseTime);
+
+	return	PropertyName == OverrideSoundName ||
+			PropertyName == EnableFFTAnalysisFName ||
+			PropertyName == FFTSizeFName ||
+			PropertyName == FFTAnalysisFrameSizeFName ||
+			PropertyName == FrequenciesToAnalyzeFName || 
+			PropertyName == FFTAnalysisAttackTimeFName ||
+			PropertyName == FFTAnalysisReleaseTimeFName;
+}
+
+static bool AnyEnvelopeAnalysisPropertiesChanged(const FName& PropertyName)
+{
+	// List of properties which cause re-analysis to get triggered
+	static FName OverrideSoundName						= GET_MEMBER_NAME_CHECKED(USoundWave, OverrideSoundToUseForAnalysis);
+	static FName EnableAmplitudeEnvelopeAnalysisFName = GET_MEMBER_NAME_CHECKED(USoundWave, bEnableAmplitudeEnvelopeAnalysis);
+	static FName EnvelopeFollowerFrameSizeFName = GET_MEMBER_NAME_CHECKED(USoundWave, EnvelopeFollowerFrameSize);
+	static FName EnvelopeFollowerAttackTimeFName = GET_MEMBER_NAME_CHECKED(USoundWave, EnvelopeFollowerAttackTime);
+	static FName EnvelopeFollowerReleaseTimeFName = GET_MEMBER_NAME_CHECKED(USoundWave, EnvelopeFollowerReleaseTime);
+
+	return	PropertyName == OverrideSoundName ||
+			PropertyName == EnableAmplitudeEnvelopeAnalysisFName ||
+			PropertyName == EnvelopeFollowerFrameSizeFName ||
+			PropertyName == EnvelopeFollowerAttackTimeFName ||
+			PropertyName == EnvelopeFollowerReleaseTimeFName;
+
+}
+
+void USoundWave::BakeFFTAnalysis()
+{
+	// Clear any existing spectral data regardless of if it's enabled. If this was enabled and is now toggled, this will clear previous data.
+	CookedSpectralTimeData.Reset();
+
+	// Perform analysis if enabled on the sound wave
+	if (bEnableBakedFFTAnalysis)
+	{
+		// If there are no frequencies to analyze, we can't do the analysis
+		if (!FrequenciesToAnalyze.Num())
+		{
+			UE_LOG(LogAudio, Warning, TEXT("Soundwave '%s' had baked FFT analysis enabled without specifying any frequencies to analyze."), *GetFullName());
+			return;
+		}
+
+		if (ChannelSizes.Num() > 0)
+		{
+			UE_LOG(LogAudio, Warning, TEXT("Soundwave '%s' has multi-channel audio (channels greater than 2). Baking FFT analysis is not currently supported for this yet."), *GetFullName());
+			return;
+		}
+
+		// Retrieve the raw imported data
+		TArray<uint8> RawImportedWaveData;
+		uint32 RawDataSampleRate = 0;
+		uint16 RawDataNumChannels = 0;
+
+		USoundWave* SoundWaveToUseForAnalysis = this;
+		if (OverrideSoundToUseForAnalysis)
+		{
+			SoundWaveToUseForAnalysis = OverrideSoundToUseForAnalysis;
+		}
+		
+		if (!SoundWaveToUseForAnalysis->GetImportedSoundWaveData(RawImportedWaveData, RawDataSampleRate, RawDataNumChannels))
+		{
+			return;
+		}
+
+		if (RawDataSampleRate == 0 || RawDataNumChannels == 0)
+		{
+			UE_LOG(LogAudio, Error, TEXT("Failed to parse the raw imported data for '%s' for baked FFT analysis."), *GetFullName());
+			return;
+		}
+
+		const uint32 NumFrames = (RawImportedWaveData.Num() / sizeof(int16)) / RawDataNumChannels;
+		int16* InputData = (int16*)RawImportedWaveData.GetData();
+
+		Audio::FSpectrumAnalyzerSettings SpectrumAnalyzerSettings;
+		switch (FFTSize)
+		{
+		case ESoundWaveFFTSize::VerySmall_64:
+			SpectrumAnalyzerSettings.FFTSize = Audio::FSpectrumAnalyzerSettings::EFFTSize::Min_64;
+			break;
+
+		case ESoundWaveFFTSize::Small_256:
+			SpectrumAnalyzerSettings.FFTSize = Audio::FSpectrumAnalyzerSettings::EFFTSize::Small_256;
+			break;
+
+		default:
+		case ESoundWaveFFTSize::Medium_512:
+			SpectrumAnalyzerSettings.FFTSize = Audio::FSpectrumAnalyzerSettings::EFFTSize::Medium_512;
+			break;
+
+		case ESoundWaveFFTSize::Large_1024:
+			SpectrumAnalyzerSettings.FFTSize = Audio::FSpectrumAnalyzerSettings::EFFTSize::Large_1024;
+			break;
+
+		case ESoundWaveFFTSize::VeryLarge_2048:
+			SpectrumAnalyzerSettings.FFTSize = Audio::FSpectrumAnalyzerSettings::EFFTSize::VeryLarge_2048;
+			break;
+
+		}
+
+		// Prepare the spectral envelope followers
+		TArray<Audio::FEnvelopeFollower> SpectralEnvelopeFollowers;
+		SpectralEnvelopeFollowers.AddDefaulted(FrequenciesToAnalyze.Num());
+
+		for (Audio::FEnvelopeFollower& EnvFollower : SpectralEnvelopeFollowers)
+		{
+			EnvFollower.Init((float)RawDataSampleRate / FFTAnalysisFrameSize, FFTAnalysisAttackTime, FFTAnalysisReleaseTime);
+		}
+
+		// Build a new spectrum analyzer
+		Audio::FSpectrumAnalyzer SpectrumAnalyzer(SpectrumAnalyzerSettings, (float)RawDataSampleRate);
+
+		// The audio data block to use to submit audio data to the spectrum analyzer
+		Audio::AlignedFloatBuffer AnalysisData;
+		check(FFTAnalysisFrameSize > 256);
+		AnalysisData.Reserve(FFTAnalysisFrameSize);
+
+		float MaximumMagnitude = 0.0f;
+		for (uint32 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
+		{
+			// Get the averaged sample value of all the channels
+			float SampleValue = 0.0f;
+			for (uint16 ChannelIndex = 0; ChannelIndex < RawDataNumChannels; ++ChannelIndex)
+			{
+				SampleValue += (float)InputData[FrameIndex * RawDataNumChannels] / 32767.0f;
+			}
+			SampleValue /= RawDataNumChannels;
+
+			// Accumate the samples in the scratch buffer
+			AnalysisData.Add(SampleValue);
+
+			// Until we reached the frame size
+			if (AnalysisData.Num() == FFTAnalysisFrameSize)
+			{
+				SpectrumAnalyzer.PushAudio(AnalysisData.GetData(), AnalysisData.Num());
+
+				// Block while the analyzer does the analysis
+				SpectrumAnalyzer.PerformAnalysisIfPossible(true);
+
+				FSoundWaveSpectralTimeData NewData;
+
+				// Don't need to lock here since we're doing this sync, but it's here as that's the expected pattern for the Spectrum analyzer
+				SpectrumAnalyzer.LockOutputBuffer();
+
+				// Get the magntiudes for the specified frequencies
+				for (int32 Index = 0; Index < FrequenciesToAnalyze.Num(); ++Index)
+				{
+					float Frequency = FrequenciesToAnalyze[Index];
+					FSoundWaveSpectralDataEntry DataEntry;
+					DataEntry.Magnitude = SpectrumAnalyzer.GetMagnitudeForFrequency(Frequency);
+
+					// Feed the magnitude through the spectral envelope follower for this band
+					DataEntry.Magnitude = SpectralEnvelopeFollowers[Index].ProcessAudioNonClamped(DataEntry.Magnitude);
+
+					// Track the max magnitude so we can later set normalized magnitudes
+					if (DataEntry.Magnitude > MaximumMagnitude)
+					{
+						MaximumMagnitude = DataEntry.Magnitude;
+					}
+
+					NewData.Data.Add(DataEntry);
+				}
+
+				SpectrumAnalyzer.UnlockOutputBuffer();
+
+				// The time stamp is derived from the frame index and sample rate
+				NewData.TimeSec = FMath::Max((float)(FrameIndex - FFTAnalysisFrameSize + 1) / RawDataSampleRate, 0.0f);
+
+				/*
+				// TODO: add FFTAnalysisTimeOffset
+				// Don't let the time shift be more than the negative or postive duration
+				float Duration = (float)NumFrames / RawDataSampleRate;
+				float TimeShift = FMath::Clamp((float)FFTAnalysisTimeOffset / 1000, -Duration, Duration);
+				
+				NewData.TimeSec = NewData.TimeSec + (float)FFTAnalysisTimeOffset / 1000;
+
+				// Truncate data if time shift is far enough to left that it's before the start of the sound
+				if (TreatFileAsLoopingForAnalysis)
+				{
+					// Wrap the time value from endpoints if we're told this sound wave is looping
+					if (NewData.TimeSec < 0.0f)
+					{
+						NewData.TimeSec = Duration + NewData.TimeSec;
+					}
+					else if (NewData.TimeSec >= Duration)
+					{
+						NewData.TimeSec = NewData.TimeSec - Duration;
+					}
+					CookedSpectralTimeData.Add(NewData);
+				}
+				else if (NewData.TimeSec > 0.0f)
+				{
+				CookedSpectralTimeData.Add(NewData);
+				}
+				*/
+
+				CookedSpectralTimeData.Add(NewData);
+
+				AnalysisData.Reset();
+			}
+		}
+
+		// Sort predicate for sorting spectral data by time (lowest first)
+		struct FSortSpectralDataByTime
+		{
+			FORCEINLINE bool operator()(const FSoundWaveSpectralTimeData& A, const FSoundWaveSpectralTimeData& B) const
+			{
+				return A.TimeSec < B.TimeSec;
+			}
+		};
+
+		CookedSpectralTimeData.Sort(FSortSpectralDataByTime());
+
+		// It's possible for the maximum magnitude to be 0.0 if the audio file was silent. 
+		if (MaximumMagnitude > 0.0f)
+		{
+			// Normalize all the magnitude values based on the highest magnitude
+			for (FSoundWaveSpectralTimeData& SpectralTimeData : CookedSpectralTimeData)
+			{
+				for (FSoundWaveSpectralDataEntry& DataEntry : SpectralTimeData.Data)
+				{
+					DataEntry.NormalizedMagnitude = DataEntry.Magnitude / MaximumMagnitude;
+				}
+			}
+		}
+
+	}
+}
+
+void USoundWave::BakeEnvelopeAnalysis()
+{
+	// Clear any existing envelope data regardless of if it's enabled. If this was enabled and is now toggled, this will clear previous data.
+	CookedEnvelopeTimeData.Reset();
+
+	// Perform analysis if enabled on the sound wave
+	if (bEnableAmplitudeEnvelopeAnalysis)
+	{
+		if (ChannelSizes.Num() > 0)
+		{
+			UE_LOG(LogAudio, Warning, TEXT("Soundwave '%s' has multi-channel audio (channels greater than 2). Baking envelope analysis is not currently supported for this yet."), *GetFullName());
+			return;
+		}
+
+		// Retrieve the raw imported data
+		TArray<uint8> RawImportedWaveData;
+		uint32 RawDataSampleRate = 0;
+		uint16 RawDataNumChannels = 0;
+
+		USoundWave* SoundWaveToUseForAnalysis = this;
+		if (OverrideSoundToUseForAnalysis)
+		{
+			SoundWaveToUseForAnalysis = OverrideSoundToUseForAnalysis;
+		}
+
+		if (!SoundWaveToUseForAnalysis->GetImportedSoundWaveData(RawImportedWaveData, RawDataSampleRate, RawDataNumChannels))
+		{
+			return;
+		}
+
+		if (RawDataSampleRate == 0 || RawDataNumChannels == 0)
+		{
+			UE_LOG(LogAudio, Error, TEXT("Failed to parse the raw imported data for '%s' for baked FFT analysis."), *GetFullName());
+			return;
+		}
+
+		const uint32 NumFrames = (RawImportedWaveData.Num() / sizeof(int16)) / RawDataNumChannels;
+		int16* InputData = (int16*)RawImportedWaveData.GetData();
+
+		Audio::FEnvelopeFollower EnvelopeFollower;
+		EnvelopeFollower.Init(RawDataSampleRate, EnvelopeFollowerAttackTime, EnvelopeFollowerReleaseTime);
+
+		for (uint32 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
+		{
+			// Get the averaged sample value of all the channels
+			float SampleValue = 0.0f;
+			for (uint16 ChannelIndex = 0; ChannelIndex < RawDataNumChannels; ++ChannelIndex)
+			{
+				SampleValue += (float)InputData[FrameIndex * RawDataNumChannels] / 32767.0f;
+			}
+			SampleValue /= RawDataNumChannels;
+
+			float Output = EnvelopeFollower.ProcessAudio(SampleValue);
+
+			// Until we reached the frame size
+			if (FrameIndex % EnvelopeFollowerFrameSize == 0)
+			{
+				FSoundWaveEnvelopeTimeData NewData;
+				NewData.Amplitude = Output;
+				NewData.TimeSec = (float)FrameIndex / RawDataSampleRate;
+				CookedEnvelopeTimeData.Add(NewData);
+			}
+		}
+	}
+}
+
 void USoundWave::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -742,7 +1269,7 @@ void USoundWave::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	// Prevent constant re-compression of SoundWave while properties are being changed interactively
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
-		// Regenerate on save any compressed sound formats
+		// Regenerate on save any compressed sound formats or if analysis needs to be re-done
 		if (UProperty* PropertyThatChanged = PropertyChangedEvent.Property)
 		{
 			const FName& Name = PropertyThatChanged->GetFName();
@@ -752,6 +1279,16 @@ void USoundWave::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 				FreeResources();
 				UpdatePlatformData();
 				MarkPackageDirty();
+			}
+			
+			if (AnyFFTAnalysisPropertiesChanged(Name))
+			{
+				BakeFFTAnalysis();
+			}
+			
+			if (AnyEnvelopeAnalysisPropertiesChanged(Name))
+			{
+				BakeEnvelopeAnalysis();
 			}
 		}
 	}
@@ -889,7 +1426,7 @@ bool USoundWave::IsReadyForFinishDestroy()
 			}, GET_STATID(STAT_AudioFreeResources));
 		}
 	
-	return !bGenerating && ResourceState == ESoundWaveResourceState::Freed;
+	return NumSourcesPlaying.GetValue() == 0 && ResourceState == ESoundWaveResourceState::Freed;
 }
 
 
@@ -971,9 +1508,6 @@ void USoundWave::Parse( FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanc
 
 		bool bAlwaysPlay = false;
 
-		// Ensure that a Sound Class's default reverb level is used if we enabled reverb through a sound class and not from the active sound.
-		bool bUseSoundClassDefaultReverb = false;
-
 		// Properties from the sound class
 		WaveInstance->SoundClass = ParseParams.SoundClass;
 		if (ParseParams.SoundClass)
@@ -996,15 +1530,6 @@ void USoundWave::Parse( FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanc
 			WaveInstance->bCenterChannelOnly = ActiveSound.bCenterChannelOnly || SoundClassProperties->bCenterChannelOnly;
 			WaveInstance->bEQFilterApplied = ActiveSound.bEQFilterApplied || SoundClassProperties->bApplyEffects;
 			WaveInstance->bReverb = ActiveSound.bReverb || SoundClassProperties->bReverb;
-
-			bUseSoundClassDefaultReverb = SoundClassProperties->bReverb && !ActiveSound.bReverb;
-
-			if (bUseSoundClassDefaultReverb)
-			{
-				WaveInstance->ReverbSendMethod = EReverbSendMethod::Manual;
-				WaveInstance->ManualReverbSendLevel = SoundClassProperties->Default2DReverbSendAmount;
-			}
-
 			WaveInstance->OutputTarget = SoundClassProperties->OutputTarget;
 
 			if (SoundClassProperties->bApplyAmbientVolumes)
@@ -1107,7 +1632,10 @@ void USoundWave::Parse( FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanc
 		// Recompute the virtualizability here even though we did it up-front in the active sound parse.
 		// This is because an active sound can generate multiple sound waves, not all of them are necessarily virtualizable.
 		bool bHasSubtitles = ActiveSound.bHandleSubtitles && (ActiveSound.bHasExternalSubtitles || (Subtitles.Num() > 0));
-		if (WaveInstance->GetVolumeWithDistanceAttenuation() > KINDA_SMALL_NUMBER || ((bVirtualizeWhenSilent || bHasSubtitles) && AudioDevice->VirtualSoundsEnabled()))
+
+		// When the BypassVirtualizeWhenSilent cvar is enabled, we should only honor bVirtualizeWhenSilent for procedural sounds:
+		const bool bShouldVirtualize = bVirtualizeWhenSilent && (!BypassVirtualizeWhenSilentCVar || bProcedural);
+		if (WaveInstance->GetVolumeWithDistanceAttenuation() > KINDA_SMALL_NUMBER || ((bShouldVirtualize || bHasSubtitles) && AudioDevice->VirtualSoundsEnabled()))
 		{
 			bAddedWaveInstance = true;
 			WaveInstances.Add(WaveInstance);
@@ -1185,6 +1713,26 @@ bool USoundWave::IsStreaming(const FPlatformAudioCookOverrides* Overrides /* = n
 			&& Duration > Overrides->AutoStreamingThreshold);
 }
 
+bool USoundWave::GetSoundWavesWithCookedAnalysisData(TArray<USoundWave*>& OutSoundWaves)
+{
+	if (CookedSpectralTimeData.Num() > 0 || CookedEnvelopeTimeData.Num() > 0)
+	{
+		OutSoundWaves.Add(this);
+		return true;
+	}
+	return false;
+}
+
+bool USoundWave::HasCookedFFTData() const
+{
+	return CookedSpectralTimeData.Num() > 0;
+}
+
+bool USoundWave::HasCookedAmplitudeEnvelopeData() const
+{
+	return CookedEnvelopeTimeData.Num() > 0;
+}
+
 void USoundWave::UpdatePlatformData()
 {
 	if (IsStreaming())
@@ -1255,16 +1803,16 @@ float USoundWave::GetSampleRateForCompressionOverrides(const FPlatformAudioCookO
 	}
 }
 
-bool USoundWave::GetChunkData(int32 ChunkIndex, uint8** OutChunkData)
+bool USoundWave::GetChunkData(int32 ChunkIndex, uint8** OutChunkData, bool bMakeSureChunkIsLoaded /* = false */)
 {
-	if (RunningPlatformData->TryLoadChunk(ChunkIndex, OutChunkData) == false)
+	if (RunningPlatformData->TryLoadChunk(ChunkIndex, OutChunkData, bMakeSureChunkIsLoaded) == false)
 	{
 #if WITH_EDITORONLY_DATA
 		// Unable to load chunks from the cache. Rebuild the sound and attempt to recache it.
 		UE_LOG(LogAudio, Display, TEXT("GetChunkData failed, rebuilding %s"), *GetPathName());
 
 		ForceRebuildPlatformData();
-		if (RunningPlatformData->TryLoadChunk(ChunkIndex, OutChunkData) == false)
+		if (RunningPlatformData->TryLoadChunk(ChunkIndex, OutChunkData, bMakeSureChunkIsLoaded) == false)
 		{
 			UE_LOG(LogAudio, Display, TEXT("Failed to build sound %s."), *GetPathName());
 		}
@@ -1280,4 +1828,215 @@ bool USoundWave::GetChunkData(int32 ChunkIndex, uint8** OutChunkData)
 		return false;
 	}
 	return true;
+}
+
+uint32 USoundWave::GetInterpolatedCookedFFTDataForTimeInternal(float InTime, uint32 StartingIndex, TArray<FSoundWaveSpectralData>& OutData, bool bLoop)
+{
+	// Find the two entries on either side of the input time
+	int32 NumDataEntries = CookedSpectralTimeData.Num();
+	for (int32 Index = StartingIndex; Index < NumDataEntries; ++Index)
+	{
+		// Get the current data at this index
+		const FSoundWaveSpectralTimeData& CurrentData = CookedSpectralTimeData[Index];
+
+		// Get the next data, wrap if needed (i.e. if current is last index, we'll lerp to the first index)
+		const FSoundWaveSpectralTimeData& NextData = CookedSpectralTimeData[(Index + 1) % NumDataEntries];
+
+		if (InTime >= CurrentData.TimeSec && InTime < NextData.TimeSec)
+		{
+			// Lerping alpha is fraction from current to next data
+			const float Alpha = (InTime - CurrentData.TimeSec) / (NextData.TimeSec - CurrentData.TimeSec);
+			for (int32 FrequencyIndex = 0; FrequencyIndex < FrequenciesToAnalyze.Num(); ++FrequencyIndex)
+			{
+				FSoundWaveSpectralData InterpolatedData;
+				InterpolatedData.FrequencyHz = FrequenciesToAnalyze[FrequencyIndex];
+				InterpolatedData.Magnitude = FMath::Lerp(CurrentData.Data[FrequencyIndex].Magnitude, NextData.Data[FrequencyIndex].Magnitude, Alpha);
+				InterpolatedData.NormalizedMagnitude = FMath::Lerp(CurrentData.Data[FrequencyIndex].NormalizedMagnitude, NextData.Data[FrequencyIndex].NormalizedMagnitude, Alpha);
+
+				OutData.Add(InterpolatedData);
+			}
+
+			// Sort by frequency (lowest frequency first).
+			OutData.Sort(FCompareSpectralDataByFrequencyHz());
+
+			// We found cooked spectral data which maps to these indices
+			return Index;
+		}
+	}
+
+	return INDEX_NONE;
+}
+
+bool USoundWave::GetInterpolatedCookedFFTDataForTime(float InTime, uint32& InOutLastIndex, TArray<FSoundWaveSpectralData>& OutData, bool bLoop)
+{
+	if (CookedSpectralTimeData.Num() > 0)
+	{
+		// Handle edge cases
+		if (!bLoop)
+		{
+			// Pointer to which data to use
+			FSoundWaveSpectralTimeData* SpectralTimeData = nullptr;
+
+			// We are past the edge
+			if (InTime >= CookedSpectralTimeData.Last().TimeSec)
+			{
+				SpectralTimeData = &CookedSpectralTimeData.Last();
+				InOutLastIndex = CookedPlatformData.Num() - 1;
+			}
+			// We are before the first data point
+			else if (InTime < CookedSpectralTimeData[0].TimeSec)
+			{
+				SpectralTimeData = &CookedSpectralTimeData[0];
+				InOutLastIndex = 0;
+			}
+
+			// If we were either case before we have a non-nullptr here
+			if (SpectralTimeData != nullptr)
+			{
+				// Create an entry for this clamped output
+				for (int32 FrequencyIndex = 0; FrequencyIndex < FrequenciesToAnalyze.Num(); ++FrequencyIndex)
+				{
+					FSoundWaveSpectralData InterpolatedData;
+					InterpolatedData.FrequencyHz = FrequenciesToAnalyze[FrequencyIndex];
+					InterpolatedData.Magnitude = SpectralTimeData->Data[FrequencyIndex].Magnitude;
+					InterpolatedData.NormalizedMagnitude = SpectralTimeData->Data[FrequencyIndex].NormalizedMagnitude;
+
+					OutData.Add(InterpolatedData);
+				}
+
+				return true;
+			}
+		}
+		// We're looping 
+		else 
+		{
+			// Need to check initial wrap-around case (i.e. we're reading earlier than first data point so need to lerp from last data point to first
+			if (InTime >= 0.0f && InTime < CookedSpectralTimeData[0].TimeSec)
+			{
+				const FSoundWaveSpectralTimeData& CurrentData = CookedSpectralTimeData.Last();
+
+				// Get the next data, wrap if needed (i.e. if current is last index, we'll lerp to the first index)
+				const FSoundWaveSpectralTimeData& NextData = CookedSpectralTimeData[0];
+
+				float TimeLeftFromLastDataToEnd = Duration - CurrentData.TimeSec;
+				float Alpha = (TimeLeftFromLastDataToEnd + InTime) / (TimeLeftFromLastDataToEnd + NextData.TimeSec);
+
+				for (int32 FrequencyIndex = 0; FrequencyIndex < FrequenciesToAnalyze.Num(); ++FrequencyIndex)
+				{
+					FSoundWaveSpectralData InterpolatedData;
+					InterpolatedData.FrequencyHz = FrequenciesToAnalyze[FrequencyIndex];
+					InterpolatedData.Magnitude = FMath::Lerp(CurrentData.Data[FrequencyIndex].Magnitude, NextData.Data[FrequencyIndex].Magnitude, Alpha);
+					InterpolatedData.NormalizedMagnitude = FMath::Lerp(CurrentData.Data[FrequencyIndex].NormalizedMagnitude, NextData.Data[FrequencyIndex].NormalizedMagnitude, Alpha);
+
+					OutData.Add(InterpolatedData);
+
+					InOutLastIndex = 0;
+				}
+				return true;
+			}
+			// Or we've been offset a bit in the negative.
+			else if (InTime < 0.0f)
+			{
+				// Wrap the time to the end of the sound wave file 
+				InTime = FMath::Clamp(Duration + InTime, 0.0f, Duration);
+			}
+		}
+
+		uint32 StartingIndex = InOutLastIndex == INDEX_NONE ? 0 : InOutLastIndex;
+
+		InOutLastIndex = GetInterpolatedCookedFFTDataForTimeInternal(InTime, StartingIndex, OutData, bLoop);
+		if (InOutLastIndex == INDEX_NONE && StartingIndex != 0)
+		{
+			InOutLastIndex = GetInterpolatedCookedFFTDataForTimeInternal(InTime, 0, OutData, bLoop);
+		}
+		return InOutLastIndex != INDEX_NONE;
+	}
+
+	return false;
+}
+
+uint32 USoundWave::GetInterpolatedCookedEnvelopeDataForTimeInternal(float InTime, uint32 StartingIndex, float& OutAmplitude, bool bLoop)
+{
+	if (StartingIndex == INDEX_NONE || StartingIndex == CookedEnvelopeTimeData.Num())
+	{
+		StartingIndex = 0;
+	}
+
+	// Find the two entries on either side of the input time
+	int32 NumDataEntries = CookedEnvelopeTimeData.Num();
+	for (int32 Index = StartingIndex; Index < NumDataEntries; ++Index)
+	{
+		const FSoundWaveEnvelopeTimeData& CurrentData = CookedEnvelopeTimeData[Index];
+		const FSoundWaveEnvelopeTimeData& NextData = CookedEnvelopeTimeData[(Index + 1) % NumDataEntries];
+
+		if (InTime >= CurrentData.TimeSec && InTime < NextData.TimeSec)
+		{
+			// Lerping alpha is fraction from current to next data
+			const float Alpha = (InTime - CurrentData.TimeSec) / (NextData.TimeSec - CurrentData.TimeSec);
+			OutAmplitude = FMath::Lerp(CurrentData.Amplitude, NextData.Amplitude, Alpha);
+
+			// We found cooked spectral data which maps to these indices
+			return Index;
+		}
+	}
+
+	// Did not find the data
+	return INDEX_NONE;
+}
+
+bool USoundWave::GetInterpolatedCookedEnvelopeDataForTime(float InTime, uint32& InOutLastIndex, float& OutAmplitude, bool bLoop)
+{
+	InOutLastIndex = INDEX_NONE;
+	if (CookedEnvelopeTimeData.Num() > 0 && InTime >= 0.0f)
+	{
+		// Handle edge cases
+		if (!bLoop)
+		{
+			// We are past the edge
+			if (InTime >= CookedEnvelopeTimeData.Last().TimeSec)
+			{
+				OutAmplitude = CookedEnvelopeTimeData.Last().Amplitude;
+				InOutLastIndex = CookedEnvelopeTimeData.Num() - 1;
+				return true;
+			}
+			// We are before the first data point
+			else if (InTime < CookedEnvelopeTimeData[0].TimeSec)
+			{
+				OutAmplitude = CookedEnvelopeTimeData[0].Amplitude;
+				InOutLastIndex = 0;
+				return true;
+			}
+		}	
+		else
+		{
+			// Need to check initial wrap-around case (i.e. we're reading earlier than first data point so need to lerp from last data point to first
+			if (InTime >= 0.0f && InTime < CookedEnvelopeTimeData[0].TimeSec)
+			{
+				const FSoundWaveEnvelopeTimeData& CurrentData = CookedEnvelopeTimeData.Last();
+				const FSoundWaveEnvelopeTimeData& NextData = CookedEnvelopeTimeData[0];
+
+				float TimeLeftFromLastDataToEnd = Duration - CurrentData.TimeSec;
+				float Alpha = (TimeLeftFromLastDataToEnd + InTime) / (TimeLeftFromLastDataToEnd + NextData.TimeSec);
+
+				OutAmplitude = FMath::Lerp(CurrentData.Amplitude, NextData.Amplitude, Alpha);
+				InOutLastIndex = 0;
+				return true;
+			}
+			// Or we've been offset a bit in the negative.
+			else if (InTime < 0.0f)
+			{
+				// Wrap the time to the end of the sound wave file 
+				InTime = FMath::Clamp(Duration + InTime, 0.0f, Duration);
+			}
+
+			uint32 StartingIndex = InOutLastIndex == INDEX_NONE ? 0 : InOutLastIndex;
+
+			InOutLastIndex = GetInterpolatedCookedEnvelopeDataForTimeInternal(InTime, StartingIndex, OutAmplitude, bLoop);
+			if (InOutLastIndex == INDEX_NONE && StartingIndex != 0)
+			{
+				InOutLastIndex = GetInterpolatedCookedEnvelopeDataForTimeInternal(InTime, 0, OutAmplitude, bLoop);
+			}
+		}
+	}
+	return InOutLastIndex != INDEX_NONE;
 }

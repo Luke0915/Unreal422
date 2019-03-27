@@ -1196,6 +1196,7 @@ void FFoliageMeshInfo::RemoveInstances(AInstancedFoliageActor* InIFA, const TArr
 	Instances.Shrink();
 		
 	Component->bAutoRebuildTreeOnInstanceChanges = PreviousbAutoRebuildTreeOnInstanceChanges;
+	Component->InvalidateLightingCache();
 
 	if (RebuildFoliageTree)
 	{
@@ -1371,7 +1372,7 @@ void FFoliageMeshInfo::ReapplyInstancesToComponent()
 		}
 
 		Component->bAutoRebuildTreeOnInstanceChanges = true;
-		Component->BuildTreeIfOutdated(true, true);
+		Component->BuildTreeIfOutdated(false, true);
 
 		Component->ClearInstanceSelection();
 
@@ -2230,14 +2231,15 @@ FFoliageMeshInfo* AInstancedFoliageActor::AddMesh(UStaticMesh* InMesh, UFoliageT
 	if (DefaultSettings)
 	{
 		// TODO: Can't we just use this directly?
-		Settings = DuplicateObject<UFoliageType_InstancedStaticMesh>(DefaultSettings, this);
+		FObjectDuplicationParameters DuplicationParameters(const_cast<UFoliageType_InstancedStaticMesh*>(DefaultSettings), this);
+		DuplicationParameters.ApplyFlags = RF_Transactional;
+		Settings = CastChecked<UFoliageType_InstancedStaticMesh>(StaticDuplicateObjectEx(DuplicationParameters));
 	}
 	else
 #endif
 	{
-		Settings = NewObject<UFoliageType_InstancedStaticMesh>(this);
+		Settings = NewObject<UFoliageType_InstancedStaticMesh>(this, NAME_None, RF_Transactional);
 	}
-	Settings->SetFlags(RF_Transactional);
 	Settings->Mesh = InMesh;
 
 	FFoliageMeshInfo* MeshInfo = AddMesh(Settings);
@@ -3038,7 +3040,7 @@ void AInstancedFoliageActor::OnLevelActorMoved(AActor* InActor)
 
 	if (!InWorld || !InWorld->IsGameWorld())
 	{
-		for (UActorComponent* Component : GetComponents())
+		for (UActorComponent* Component : InActor->GetComponents())
 		{
 			if (Component)
 			{
@@ -3054,7 +3056,7 @@ void AInstancedFoliageActor::OnLevelActorDeleted(AActor* InActor)
 
 	if (!InWorld || !InWorld->IsGameWorld())
 	{
-		for (UActorComponent* Component : GetComponents())
+		for (UActorComponent* Component : InActor->GetComponents())
 		{
 			if (Component)
 			{

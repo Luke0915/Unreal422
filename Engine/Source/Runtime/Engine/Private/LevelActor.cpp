@@ -30,11 +30,13 @@
 #include "ContentStreaming.h"
 #include "EditorSupportDelegates.h"
 #include "GameFramework/GameModeBase.h"
-#include "Engine/DemoNetDriver.h"
 #include "AudioDeviceManager.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "Misc/MapErrors.h"
+#include "GameFramework/WorldSettings.h"
+#include "Engine/NetDriver.h"
+#include "Engine/Player.h"
 
 #include "Components/BoxComponent.h"
 #include "GameFramework/MovementComponent.h"
@@ -53,6 +55,12 @@ static TAutoConsoleVariable<float> CVarEncroachEpsilon(
 	TEXT("Epsilon value used during encroachment checking for shape components\n")
 	TEXT("0: use full sized shape. > 0: shrink shape size by this amount (world units)"),
 	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarAllowDestroyNonNetworkActors(
+	TEXT("p.AllowDestroyNonNetworkActors"),
+	1,
+	TEXT("When enabled, allows Clients in Networked Games to destroy non-networked actors (AActor::Role == ROLE_None). Does not change behavior on Servers or Standalone games.")
+);
 
 #define LINE_CHECK_TRACING 0
 
@@ -551,18 +559,29 @@ bool UWorld::DestroyActor( AActor* ThisActor, bool bNetForce, bool bShouldModify
 		return true;
 	}
 
+	// Never destroy the world settings actor. This used to be enforced by bNoDelete and is actually needed for 
+	// seamless travel and network games.
+	if (GetWorldSettings() == ThisActor)
+	{
+		return false;
+	}
+
 	// In-game deletion rules.
 	if( IsGameWorld() )
 	{
-		// Never destroy the world settings actor. This used to be enforced by bNoDelete and is actually needed for 
-		// seamless travel and network games.
-		if (GetWorldSettings() == ThisActor)
+		// Note, for Standalone games, Actors should have Authority == ROLE_Authority.
+		// In that sense, they'll be treated as Network Actors here.
+		const bool bIsNetworkedActor = ThisActor->Role != ROLE_None;
+
+		// Can't kill if wrong role.
+		const bool bCanDestroyNetworkActor = ThisActor->Role == ROLE_Authority || bNetForce || ThisActor->bNetTemporary;
+		if (bIsNetworkedActor && !bCanDestroyNetworkActor)
 		{
 			return false;
 		}
 
-		// Can't kill if wrong role.
-		if( ThisActor->Role!=ROLE_Authority && !bNetForce && !ThisActor->bNetTemporary )
+		const bool bCanDestroyNonNetworkActor = !!CVarAllowDestroyNonNetworkActors.GetValueOnAnyThread();
+		if (!bIsNetworkedActor && !bCanDestroyNonNetworkActor)
 		{
 			return false;
 		}
@@ -657,12 +676,14 @@ bool UWorld::DestroyActor( AActor* ThisActor, bool bNetForce, bool bShouldModify
 	}
 
 	// Notify net drivers that this guy has been destroyed.
-	if (GEngine->GetWorldContextFromWorld(this))
+	if (FWorldContext* Context = GEngine->GetWorldContextFromWorld(this))
 	{
-		UNetDriver* ActorNetDriver = GEngine->FindNamedNetDriver(this,ThisActor->GetNetDriverName());
-		if (ActorNetDriver)
+		for (FNamedNetDriver& Driver : Context->ActiveNetDrivers)
 		{
-			ActorNetDriver->NotifyActorDestroyed(ThisActor);
+			if (Driver.NetDriver != nullptr && Driver.NetDriver->ShouldReplicateActor(ThisActor))
+			{
+				Driver.NetDriver->NotifyActorDestroyed(ThisActor);
+			}
 		}
 	}
 	else if (WorldType != EWorldType::Inactive && !IsRunningCommandlet())
@@ -670,11 +691,6 @@ bool UWorld::DestroyActor( AActor* ThisActor, bool bNetForce, bool bShouldModify
 		// Inactive worlds do not have a world context, otherwise only worlds in the middle of seamless travel should have no context,
 		// and in that case, we shouldn't be destroying actors on them until they have become the current world (i.e. CopyWorldData has been called)
 		UE_LOG(LogSpawn, Warning, TEXT("UWorld::DestroyActor: World has no context! World: %s, Actor: %s"), *GetName(), *ThisActor->GetPathName());
-	}
-
-	if ( DemoNetDriver )
-	{
-		DemoNetDriver->NotifyActorDestroyed( ThisActor );
 	}
 
 	// Remove the actor from the actor list.

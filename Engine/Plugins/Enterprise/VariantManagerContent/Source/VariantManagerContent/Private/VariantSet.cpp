@@ -29,7 +29,19 @@ void UVariantSet::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FVariantManagerObjectVersion::GUID);
 	int32 CustomVersion = Ar.CustomVer(FVariantManagerObjectVersion::GUID);
 
-	if (CustomVersion >= FVariantManagerObjectVersion::CategoryFlagsAndManualDisplayText)
+	if (CustomVersion < FVariantManagerObjectVersion::CategoryFlagsAndManualDisplayText)
+	{
+		// Recover name from back when it was an UPROPERTY
+		if (Ar.IsLoading())
+		{
+			if (!DisplayText_DEPRECATED.IsEmpty())
+			{
+				DisplayText = DisplayText_DEPRECATED;
+				DisplayText_DEPRECATED = FText();
+			}
+		}
+	}
+	else
 	{
 		Ar << DisplayText;
 	}
@@ -65,6 +77,11 @@ FString UVariantSet::GetUniqueVariantName(const FString& InPrefix)
 		UniqueNames.Add(Variant->GetDisplayText().ToString());
 	}
 
+	if (!UniqueNames.Contains(InPrefix))
+	{
+		return InPrefix;
+	}
+
 	FString VarName = FString(InPrefix);
 
 	// Remove potentially existing suffix numbers
@@ -76,7 +93,7 @@ FString UVariantSet::GetUniqueVariantName(const FString& InPrefix)
 	}
 
 	// Add a numbered suffix
-	if (UniqueNames.Contains(VarName))
+	if (UniqueNames.Contains(VarName) || VarName.IsEmpty())
 	{
 		int32 Suffix = 0;
 		while (UniqueNames.Contains(VarName + FString::FromInt(Suffix)))

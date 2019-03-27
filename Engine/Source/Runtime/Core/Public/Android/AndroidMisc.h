@@ -14,11 +14,15 @@
 template <typename FuncType>
 class TFunction;
 
-#if UE_BUILD_SHIPPING
-#define UE_DEBUG_BREAK() ((void)0)
+#if PLATFORM_ANDROID_ARM64
+	#define PLATFORM_BREAK()	__asm__(".inst 0xd4200000")
+#elif PLATFORM_ANDROID_ARM
+	#define PLATFORM_BREAK()	__asm__("trap")
 #else
-#define UE_DEBUG_BREAK() (FAndroidMisc::DebugBreakInternal())
+	#define PLATFORM_BREAK()	__asm__("int $3")
 #endif
+
+#define UE_DEBUG_BREAK_IMPL()	PLATFORM_BREAK()
 
 /**
  * Android implementation of the misc OS functions
@@ -32,7 +36,8 @@ struct CORE_API FAndroidMisc : public FGenericPlatformMisc
 	static void PlatformInit();
 	static void PlatformTearDown();
 	static void PlatformHandleSplashScreen(bool ShowSplashScreen);
-
+    static EDeviceScreenOrientation GetDeviceOrientation() { return DeviceOrientation; }
+    
 	FORCEINLINE static int32 GetMaxPathLength()
 	{
 		return ANDROID_MAX_PATH;
@@ -154,6 +159,8 @@ public:
 	static void ReleaseMobileHaptics();
 	static void ShareURL(const FString& URL, const FText& Description, int32 LocationHintX, int32 LocationHintY);
 
+	static FString LoadTextFileFromPlatformPackage(const FString& RelativePath);
+
 	// ANDROID ONLY:
 	static void SetVersionInfo(FString AndroidVersion, FString DeviceMake, FString DeviceModel, FString DeviceBuildNumber, FString OSLanguage);
 	static const FString GetAndroidVersion();
@@ -202,53 +209,7 @@ public:
 
 #if !UE_BUILD_SHIPPING
 	static bool IsDebuggerPresent();
-
-	FORCEINLINE static void DebugBreakInternal()
-	{
-		if( IsDebuggerPresent() )
-		{
-#if PLATFORM_ANDROID_ARM64
-			__asm__(".inst 0xd4200000");
-#elif PLATFORM_ANDROID_ARM
-			__asm__("trap");
-#else
-			__asm__("int $3");
 #endif
-		}
-	}
-
-	UE_DEPRECATED(4.19, "FPlatformMisc::DebugBreak is deprecated. Use the UE_DEBUG_BREAK() macro instead.")
-	FORCEINLINE static void DebugBreak()
-	{
-		DebugBreakInternal();
-	}
-#endif
-
-	/** Break into debugger. Returning false allows this function to be used in conditionals. */
-	UE_DEPRECATED(4.19, "FPlatformMisc::DebugBreakReturningFalse is deprecated. Use the (UE_DEBUG_BREAK(), false) expression instead.")
-	FORCEINLINE static bool DebugBreakReturningFalse()
-	{
-#if !UE_BUILD_SHIPPING
-		UE_DEBUG_BREAK();
-#endif
-		return false;
-	}
-
-	/** Prompts for remote debugging if debugger is not attached. Regardless of result, breaks into debugger afterwards. Returns false for use in conditionals. */
-	UE_DEPRECATED(4.19, "FPlatformMisc::DebugBreakAndPromptForRemoteReturningFalse() is deprecated.")
-	static FORCEINLINE bool DebugBreakAndPromptForRemoteReturningFalse(bool bIsEnsure = false)
-	{
-#if !UE_BUILD_SHIPPING
-		if (!IsDebuggerPresent())
-		{
-			PromptForRemoteDebugging(bIsEnsure);
-		}
-
-		UE_DEBUG_BREAK();
-#endif
-
-		return false;
-	}
 
 	FORCEINLINE static void MemoryBarrier()
 	{
@@ -284,6 +245,8 @@ public:
 
 	static bool VolumeButtonsHandledBySystem;
 
+	static bool bNeedsRestartAfterPSOPrecompile;
+
 	enum class ECoreFrequencyProperty
 	{
 		CurrentFrequency,
@@ -292,6 +255,11 @@ public:
 	};
 
 	static uint32 GetCoreFrequency(int32 CoreIndex, ECoreFrequencyProperty CoreFrequencyProperty);
+    
+    static void SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation) { DeviceOrientation = NewDeviceOrentation; }
+    
+private:
+    static EDeviceScreenOrientation DeviceOrientation;
 };
 
 #if !PLATFORM_LUMIN

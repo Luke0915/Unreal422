@@ -56,6 +56,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll")
 	bool AlwaysShowScrollbar;
 
+	/**  */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
+	bool AlwaysShowScrollbarTrack;
+
 	/**  Disable to stop scrollbars from activating inertial overscrolling */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
 	bool AllowOverscroll;
@@ -75,6 +79,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
 	bool bAllowRightClickDragScrolling;
 
+
+	UFUNCTION(BlueprintCallable, Category = "Scroll")
+	void SetConsumeMouseWheel(EConsumeMouseWheel NewConsumeMouseWheel);
+
 	UFUNCTION(BlueprintCallable, Category = "Scroll")
 	void SetOrientation(EOrientation NewOrientation);
 
@@ -89,6 +97,11 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = "Scroll")
 	void SetAllowOverscroll(bool NewAllowOverscroll);
+
+	/** Instantly stops any inertial scrolling that is currently in progress */
+	UFUNCTION(BlueprintCallable, Category = "Scroll")
+	void EndInertialScrolling();
+
 public:
 
 	/** Called when the scroll has changed */

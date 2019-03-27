@@ -500,16 +500,7 @@ namespace UnrealBuildTool
 		/// <returns>True if a preferred IDE was set, false otherwise</returns>
 		public static bool GetPreferredSourceCodeAccessor(FileReference ProjectFile, out ProjectFileFormat Format)
 		{
-			DirectoryReference EngineSavedDir = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Saved");
-			if(UnrealBuildTool.IsEngineInstalled())
-			{
-				BuildVersion Version;
-				if(BuildVersion.TryRead(BuildVersion.GetDefaultFileName(), out Version))
-				{
-					EngineSavedDir = DirectoryReference.Combine(Utils.GetUserSettingDirectory(), "UnrealEngine", String.Format("{0}.{1}", Version.MajorVersion, Version.MinorVersion), "Saved");
-				}
-			}
-			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.EditorSettings, DirectoryReference.FromFile(ProjectFile), BuildHostPlatform.Current.Platform, EngineSavedDir);
+			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.EditorSettings, DirectoryReference.FromFile(ProjectFile), BuildHostPlatform.Current.Platform);
 
 			string PreferredAccessor;
 			if (Ini.GetString("/Script/SourceCodeAccess.SourceCodeAccessSettings", "PreferredAccessor", out PreferredAccessor))
@@ -538,6 +529,26 @@ namespace UnrealBuildTool
 				else if (PreferredAccessor == "kdevelopsourcecodeaccessor")
 				{
 					Format = ProjectFileFormat.KDevelop;
+					return true;
+				}
+				else if (PreferredAccessor == "visualstudiosourcecodeaccessor")
+				{
+					Format = ProjectFileFormat.VisualStudio;
+					return true;
+				}
+				else if (PreferredAccessor == "visualstudio2015")
+				{
+					Format = ProjectFileFormat.VisualStudio2015;
+					return true;
+				}
+				else if (PreferredAccessor == "visualstudio2017")
+				{
+					Format = ProjectFileFormat.VisualStudio2017;
+					return true;
+				}
+				else if (PreferredAccessor == "visualstudio2019")
+				{
+					Format = ProjectFileFormat.VisualStudio2019;
 					return true;
 				}
 			}
@@ -1148,6 +1159,8 @@ namespace UnrealBuildTool
 				if(UniqueGameProjectDirectories.Add(GameProjectDirectory))
 				{
 					// @todo projectfiles: We have engine localization files, but should we also add GAME localization files?
+
+					GameProject.AddFilesToProject( SourceFileSearch.FindFiles( GameProjectDirectory, SearchSubdirectories: false ), GameProjectDirectory );
 
 					// Game config files
 					if( bIncludeConfigFiles )

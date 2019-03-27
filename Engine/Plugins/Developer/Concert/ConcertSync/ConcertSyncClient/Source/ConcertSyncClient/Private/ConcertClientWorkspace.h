@@ -15,6 +15,7 @@ class FConcertClientTransactionManager;
 class ISourceControlProvider;
 class FConcertClientActivityLedger;
 class FConcertClientDataStore;
+class FConcertClientLiveTransactionAuthors;
 
 class FOutputDevice;
 struct FAssetData;
@@ -45,6 +46,7 @@ public:
 	virtual FOnAddActivity& OnAddActivity() override;
 	virtual FOnWorkspaceSynchronized& OnWorkspaceSynchronized() override;
 	virtual IConcertClientDataStore& GetDataStore() override;
+	virtual bool IsAssetModifiedByOtherClients(const FName& AssetName, int* OutOtherClientsWithModifNum, TArray<FConcertClientInfo>* OutOtherClientsWithModifInfo, int OtherClientsWithModifMaxFetchNum) const override;
 
 private:
 	/** Bind the workspace to this session. */
@@ -86,9 +88,6 @@ private:
 
 	/** */
 	void HandleEndPIE(const bool InIsSimulating);
-
-	/** */
-	void HandleMapChanged(UWorld* InWorld, EMapChangeType InMapChangeType);
 
 	/** */
 	void HandleTransactionStateChanged(const FTransactionContext& InTransactionContext, const ETransactionStateEventType InTransactionState);
@@ -170,9 +169,6 @@ private:
 	FDelegateHandle EndPIEHandle;
 
 	/** */
-	FDelegateHandle MapChangedHandle;
-
-	/** */
 	FDelegateHandle TransactionStateChangedHandle;
 	
 	/** */
@@ -208,4 +204,7 @@ private:
 	
 	/** The session key/value store proxy. The real store is held by the server and shared across all clients. */
 	TUniquePtr<FConcertClientDataStore> DataStore;
+
+	/** Tracks the clients that have live transactions on any given packages. */
+	TUniquePtr<FConcertClientLiveTransactionAuthors> LiveTransactionAuthors;
 };

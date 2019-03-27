@@ -38,16 +38,6 @@ public:
 	static void InvalidatePropertyExport(UProperty* PropertyToInvalidate);
 
 	/**
-	 * Finds any class with the specified class name, and consigns it to oblivion, along with the specified class to consign.
-	 * This should ensure that the specified name is free for use
-	 *
-	 * @param ClassToConsign	Class to consign to oblivion no matter what
-	 * @param ClassName			Name that we want to ensure isn't used
-	 * @param Blueprint			The blueprint that is in charge of these classes, used for scoping
-	 */
-	static void EnsureFreeNameForNewClass(UClass* ClassToConsign, FString& ClassName, UBlueprint* Blueprint);
-
-	/**
 	 * Tests to see if a pin is schema compatible with a property.
 	 *
 	 * @param	SourcePin		If non-null, source object.
@@ -124,6 +114,9 @@ public:
 	 * Blueprint's bytecode is recompiled.
 	 */
 	static bool IsMissingMemberPotentiallyLoading(const UBlueprint* SelfBlueprint, const UStruct* MemberOwner);
+
+	/** @return true if the graph in question contains only an entry node or only an entry node and a call to its parent if the graph is an override */
+	static bool IsIntermediateFunctionGraphTrivial(FName FunctionName, const UEdGraph* FunctionGraph);
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -213,11 +206,11 @@ public:
 struct FNetNameMapping
 {
 public:
-	// Come up with a valid, unique (within the scope of NetNameMap) name based on an existing Net object.
+	// Come up with a valid, unique (within the scope of NetNameMap) name based on an existing Net object and (optional) context.
 	// The resulting name is stable across multiple calls if given the same pointer.
-	FString MakeValidName(const UEdGraphNode* Net) { return MakeValidNameImpl(Net); }
-	FString MakeValidName(const UEdGraphPin* Net) { return MakeValidNameImpl(Net); }
-	FString MakeValidName(const UAnimGraphNode_Base* Net){ return MakeValidNameImpl(Net); }
+	FString MakeValidName(const UEdGraphNode* Net, const FString& Context = TEXT("")) { return MakeValidNameImpl(Net, Context); }
+	FString MakeValidName(const UEdGraphPin* Net, const FString& Context = TEXT("")) { return MakeValidNameImpl(Net, Context); }
+	FString MakeValidName(const UAnimGraphNode_Base* Net, const FString& Context = TEXT("")) { return MakeValidNameImpl(Net, Context); }
 
 private:
 	KISMETCOMPILER_API static FString MakeBaseName(const UEdGraphNode* Net);
@@ -225,7 +218,7 @@ private:
 	KISMETCOMPILER_API static FString MakeBaseName(const UAnimGraphNode_Base* Net);
 
 	template< typename NetType >
-	FString MakeValidNameImpl(NetType Net)
+	FString MakeValidNameImpl(NetType Net, const FString& Context)
 	{
 		// Check to see if this net was already used to generate a name
 		if (FString* Result = NetToName.Find(Net))
@@ -234,7 +227,14 @@ private:
 		}
 		else
 		{
-			FString NetName = GetUniqueName(MakeBaseName(Net));
+			FString BaseName = MakeBaseName(Net);
+			if (!Context.IsEmpty())
+			{
+				BaseName += FString::Printf(TEXT("_%s"), *Context);
+			}
+
+			FString NetName = GetUniqueName(MoveTemp(BaseName));
+
 			NetToName.Add(Net, NetName);
 			NameToNet.Add(NetName, Net);
 			return NetName;
@@ -253,7 +253,7 @@ private:
 		{
 			++Postfix;
 			// Add an integer to the base name and check if it's free:
-			NewNetName = NetName + FString::FromInt(Postfix);
+			NewNetName = NetName + TEXT("_") + FString::FromInt(Postfix);
 			ExistingNet = NameToNet.Find(NewNetName);
 		}
 		return NewNetName;

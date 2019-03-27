@@ -393,6 +393,9 @@ public:
 	/** Get the encryption key guid attached to this primary asset. Can be invalid if the asset is not encrypted */
 	virtual void GetCachedPrimaryAssetEncryptionKeyGuid(FPrimaryAssetId InPrimaryAssetId, FGuid& OutGuid);
 
+	/** Loads the redirector maps */
+	virtual void LoadRedirectorMaps();
+
 #if WITH_EDITOR
 	// EDITOR ONLY FUNCTIONALITY
 
@@ -432,6 +435,11 @@ public:
 	 * @returns The logical name of the chunk's asset registry, or NAME_None if it isn't required
 	 */
 	virtual FName GetUniqueAssetRegistryName(int32 InChunkIndex) const { return NAME_None; }
+
+	/**
+	 * For a given content encryption group name (as defined in the content encryption config that the project provides, return the relevant chunk ID
+	 */
+	virtual int32 GetContentEncryptionGroupChunkID(FName InGroupName) const { return INDEX_NONE; }
 
 	/** Returns the list of chunks assigned to the list of primary assets, which is usually a manager list. This is called by GetPackageChunkIds */
 	virtual bool GetPrimaryAssetSetChunkIds(const TSet<FPrimaryAssetId>& PrimaryAssetSet, const class ITargetPlatform* TargetPlatform, const TArray<int32>& ExistingChunkList, TArray<int32>& OutChunkList) const;
@@ -502,9 +510,6 @@ protected:
 	/** Returns the NameData for a specific type/name pair */
 	FPrimaryAssetData* GetNameData(const FPrimaryAssetId& PrimaryAssetId, bool bCheckRedirector = true);
 	const FPrimaryAssetData* GetNameData(const FPrimaryAssetId& PrimaryAssetId, bool bCheckRedirector = true) const;
-
-	/** Loads the redirector maps */
-	virtual void LoadRedirectorMaps();
 
 	/** Rebuilds the ObjectReferenceList, needed after global object state has changed */
 	virtual void RebuildObjectReferenceList();

@@ -1,6 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 #include "Internationalization/ICUInternationalization.h"
 #include "HAL/FileManager.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/Paths.h"
 #include "Internationalization/Culture.h"
@@ -37,6 +38,7 @@ namespace
 
 		static void* U_CALLCONV Malloc(const void* context, size_t size)
 		{
+			LLM_SCOPE(ELLMTag::Localization);
 			void* Result = FMemory::Malloc(size);
 #if STATS
 			BytesInUseCount += FMemory::GetAllocSize(Result);
@@ -57,6 +59,7 @@ namespace
 
 		static void* U_CALLCONV Realloc(const void* context, void* mem, size_t size)
 		{
+			LLM_SCOPE(ELLMTag::Localization);
 			return FMemory::Realloc(mem, size);
 		}
 
@@ -251,8 +254,9 @@ void FICUInternationalization::LoadDLLs()
 		FString LibraryName = "lib" "icu" + Stem + ".53.1" + LibraryNamePostfix + "." "dylib";
 #endif //PLATFORM_*
 
-		void* DLLHandle = FPlatformProcess::GetDllHandle(*(TargetSpecificPath / LibraryName));
-		check(DLLHandle != nullptr);
+		const FString DllPath = TargetSpecificPath / LibraryName;
+		void* DLLHandle = FPlatformProcess::GetDllHandle(*DllPath);
+		checkf(DLLHandle != nullptr, TEXT("GetDllHandle failed to load: '%s'"), *DllPath);
 		DLLHandles.Add(DLLHandle);
 	}
 }
@@ -746,6 +750,8 @@ UDate FICUInternationalization::UEDateTimeToICUDate(const FDateTime& DateTime)
 
 UBool FICUInternationalization::OpenDataFile(const void* InContext, void** OutFileContext, void** OutContents, const char* InPath)
 {
+	LLM_SCOPE(ELLMTag::Localization);
+
 	FICUInternationalization* This = (FICUInternationalization*)InContext;
 	check(This);
 

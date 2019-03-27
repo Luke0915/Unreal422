@@ -496,9 +496,10 @@ void FMetalRHICommandContext::RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef Un
 {
 	@autoreleasepool {
 	FMetalUnorderedAccessView* UnorderedAccessView = ResourceCast(UnorderedAccessViewRHI);
-	if (UnorderedAccessView->SourceView->SourceStructuredBuffer || UnorderedAccessView->SourceView->SourceVertexBuffer || UnorderedAccessView->SourceView->SourceIndexBuffer)
+	FMetalSurface* Surface = UnorderedAccessView->SourceView->SourceTexture ? GetMetalSurfaceFromRHITexture(UnorderedAccessView->SourceView->SourceTexture) : nullptr;
+	if (UnorderedAccessView->SourceView->SourceStructuredBuffer || UnorderedAccessView->SourceView->SourceVertexBuffer || UnorderedAccessView->SourceView->SourceIndexBuffer || (Surface && Surface->Texture.GetBuffer()))
 	{
-		check(UnorderedAccessView->SourceView->SourceStructuredBuffer || UnorderedAccessView->SourceView->SourceVertexBuffer || UnorderedAccessView->SourceView->SourceIndexBuffer);
+		check(UnorderedAccessView->SourceView->SourceStructuredBuffer || UnorderedAccessView->SourceView->SourceVertexBuffer || UnorderedAccessView->SourceView->SourceIndexBuffer || (Surface && Surface->Texture.GetBuffer()));
 		
 		FMetalBuffer Buffer;
 		uint32 Size = 0;
@@ -516,6 +517,10 @@ void FMetalRHICommandContext::RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef Un
 		{
 			Buffer = UnorderedAccessView->SourceView->SourceIndexBuffer->Buffer;
 			Size = UnorderedAccessView->SourceView->SourceIndexBuffer->GetSize();
+		}
+		else if (Surface && Surface->Texture.GetBuffer())
+		{
+			Buffer = FMetalBuffer(Surface->Texture.GetBuffer(), false);
 		}
 		
 		uint32 NumComponents = 1;
@@ -539,7 +544,7 @@ void FMetalRHICommandContext::RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef Un
 			FMetalBuffer Temp = nil;
 			bool bBufferPooled = false;
 			
-			FMetalPooledBufferArgs Args(GetMetalDeviceContext().GetDevice(), AlignedSize, mtlpp::StorageMode::Shared);
+            FMetalPooledBufferArgs Args(GetMetalDeviceContext().GetDevice(), AlignedSize, BUF_Dynamic, mtlpp::StorageMode::Shared);
 			Temp = GetMetalDeviceContext().CreatePooledBuffer(Args);
 			bBufferPooled = true;
 			
@@ -768,10 +773,24 @@ FComputeFenceRHIRef FMetalDynamicRHI::RHICreateComputeFence(const FName& Name)
 	}
 }
 
+FMetalComputeFence::FMetalComputeFence(FName InName)
+: FRHIComputeFence(InName)
+, Fence(nullptr)
+{}
+
+FMetalComputeFence::~FMetalComputeFence()
+{
+	if (Fence)
+		Fence->Release();
+}
+
 void FMetalComputeFence::Write(FMetalFence* InFence)
 {
 	check(!Fence);
 	Fence = InFence;
+	if (Fence)
+		Fence->AddRef();
+	
 	FRHIComputeFence::WriteFence();
 }
 
@@ -782,12 +801,19 @@ void FMetalComputeFence::Wait(FMetalContext& Context)
 		Context.SubmitCommandsHint(EMetalSubmitFlagsNone);
 	}
 	Context.GetCurrentRenderPass().Begin(Fence);
+	
+	if (Fence)
+		Fence->Release();
+	
 	Fence = nullptr;
 }
 
 void FMetalComputeFence::Reset()
 {
 	FRHIComputeFence::Reset();
+	if (Fence)
+		Fence->Release();
+
 	Fence = nullptr;
 }
 
@@ -801,8 +827,15 @@ void FMetalRHICommandContext::RHITransitionResources(EResourceTransitionAccess T
 		}
 		if (WriteComputeFence)
 		{
+			// Get the current render pass fence.
+			TRefCountPtr<FMetalFence> const& MetalFence = Context->GetCurrentRenderPass().End();
+			
+			// Write it again as we may wait on this fence in two different encoders
+			Context->GetCurrentRenderPass().Update(MetalFence);
+
+			// Write it into the RHI object
 			FMetalComputeFence* Fence = ResourceCast(WriteComputeFence);
-			Fence->Write(Context->GetCurrentRenderPass().End());
+			Fence->Write(MetalFence);
 			if (GSupportsEfficientAsyncCompute)
 			{
 				this->RHISubmitCommandsHint();
@@ -848,44 +881,49 @@ void FMetalGPUFence::WriteInternal(mtlpp::CommandBuffer& CmdBuffer)
 	check(Fence);
 }
 
-void FMetalRHICommandContext::RHIEnqueueStagedRead(FStagingBufferRHIParamRef StagingBuffer, FGPUFenceRHIParamRef InFence, uint32 Offset, uint32 NumBytes)
+void FMetalRHICommandContext::RHICopyToStagingBuffer(FVertexBufferRHIParamRef SourceBufferRHI, FStagingBufferRHIParamRef DestinationStagingBufferRHI, uint32 Offset, uint32 NumBytes, FGPUFenceRHIParamRef FenceRHI)
 {
 	@autoreleasepool {
-		check(StagingBuffer);
-		
-		FMetalStagingBuffer* MetalStagingBuffer = ResourceCast(StagingBuffer);
-		FMetalVertexBuffer* BackingBuffer = ResourceCast(MetalStagingBuffer->GetBackingBuffer());
-		FMetalBuffer& ReadbackBuffer = MetalStagingBuffer->ReadbackStagingBuffer;
-		
+		check(DestinationStagingBufferRHI);
+
+		FMetalStagingBuffer* MetalStagingBuffer = ResourceCast(DestinationStagingBufferRHI);
+		ensureMsgf(!MetalStagingBuffer->bIsLocked, TEXT("Attempting to Copy to a locked staging buffer. This may have undefined behavior"));
+		FMetalVertexBuffer* SourceBuffer = ResourceCast(SourceBufferRHI);
+		FMetalBuffer& ReadbackBuffer = MetalStagingBuffer->ShadowBuffer;
+
 		// Need a shadow buffer for this read. If it hasn't been allocated in our FStagingBuffer or if
 		// it's not big enough to hold our readback we need to allocate.
-		if(!ReadbackBuffer || ReadbackBuffer.GetLength() < NumBytes)
+		if (!ReadbackBuffer || ReadbackBuffer.GetLength() < NumBytes)
 		{
-			if(ReadbackBuffer)
+			if (ReadbackBuffer)
 			{
 				SafeReleaseMetalBuffer(ReadbackBuffer);
 			}
-			FMetalPooledBufferArgs ArgsCPU(GetMetalDeviceContext().GetDevice(), NumBytes, mtlpp::StorageMode::Shared);
+            FMetalPooledBufferArgs ArgsCPU(GetMetalDeviceContext().GetDevice(), NumBytes, BUF_Dynamic, mtlpp::StorageMode::Shared);
 			ReadbackBuffer = GetMetalDeviceContext().CreatePooledBuffer(ArgsCPU);
 		}
-		
+
 		// Inline copy from the actual buffer to the shadow
-		GetMetalDeviceContext().CopyFromBufferToBuffer(BackingBuffer->Buffer, Offset, ReadbackBuffer, 0, NumBytes);
-		
-		if (InFence)
+		GetMetalDeviceContext().CopyFromBufferToBuffer(SourceBuffer->Buffer, Offset, ReadbackBuffer, 0, NumBytes);
+
+		if (FenceRHI)
 		{
-			FMetalGPUFence* Fence = ResourceCast(InFence);
+			FMetalGPUFence* Fence = ResourceCast(FenceRHI);
 			Fence->WriteInternal(Context->GetCurrentCommandBuffer());
 		}
 	}
 }
-
 
 FGPUFenceRHIRef FMetalDynamicRHI::RHICreateGPUFence(const FName &Name)
 {
 	@autoreleasepool {
 	return new FMetalGPUFence(Name);
 	}
+}
+
+void FMetalGPUFence::Clear()
+{
+	Fence = mtlpp::CommandBufferFence();
 }
 
 bool FMetalGPUFence::Poll() const

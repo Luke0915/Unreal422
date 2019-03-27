@@ -1049,13 +1049,21 @@ bool FFbxImporter::OpenFile(FString Filename)
 
 void FFbxImporter::FixMaterialClashName()
 {
+	const bool bKeepNamespace = GetDefault<UEditorPerProjectUserSettings>()->bKeepFbxNamespace;
+
 	FbxArray<FbxSurfaceMaterial*> MaterialArray;
 	Scene->FillMaterialArray(MaterialArray);
 	TSet<FString> AllMaterialName;
 	for (int32 MaterialIndex = 0; MaterialIndex < MaterialArray.Size(); ++MaterialIndex)
 	{
 		FbxSurfaceMaterial *Material = MaterialArray[MaterialIndex];
-		FString MaterialName = UTF8_TO_TCHAR(Material->GetName());
+		FString MaterialName = UTF8_TO_TCHAR(MakeName(Material->GetName()));
+
+		if (!bKeepNamespace)
+		{
+			Material->SetName(TCHAR_TO_UTF8(*MaterialName));
+		}
+
 		if (AllMaterialName.Contains(MaterialName))
 		{
 			FString OriginalMaterialName = MaterialName;
@@ -1397,14 +1405,10 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 				  * @EventName Editor.Usage.FBX
 				  * @Trigger Fires when the user clicks OK in the FBX Import Dialog
 				  * @Type Editor
-				  * @EventParam OriginalVendor string Returns the name of the vendor that manufactures the original application used to generate the imported FBX
-				  * @EventParam OriginalAppName string Returns the name of the original application used to generate the imported FBX
-				  * @EventParam OriginalAppVersion string Returns the revision of the original application used to generate the imported FBX
 				  * @EventParam LastSavedVendor string Returns the name of the vendor that manufactures the last application used to modify the imported FBX
 				  * @EventParam LastSavedAppName string Returns the name of the last application used to modify the imported FBX
 				  * @EventParam LastSavedAppVersion string Returns the revision of the last application used to modify the imported FBX
 				  * @EventParam FBXFileVersion string Returns the FBX SDK used to generate the imported FBX
-				  * @EventParam FilenameHash string Returns the filename of the meshes imported from the FBX 
 				  * @EventParam ImportType string Returns the mesh data type (Static, Skeletal, Animation) being imported from the FBX
 				  * @EventParam ConvertScene boolean Returns whether the import fbx should be converted to unreal axis system
 				  * @EventParam ConvertSceneUnit boolean Returns whether the import fbx should converted the unit to unreal unit (cm)
@@ -1470,7 +1474,7 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 				{
 					if( FEngineAnalytics::IsAvailable() )
 					{
-						const static UEnum* FBXImportTypeEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EFBXImportType"));
+						const static UEnum* FBXImportTypeEnum = StaticEnum<EFBXImportType>();
 						const static UEnum* FBXAnimationLengthImportTypeEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EFBXAnimationLengthImportType"));
 						const static UEnum* MaterialSearchLocationEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EMaterialSearchLocation"));
 						const static UEnum* FBXNormalGenerationMethodEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EFBXNormalGenerationMethod"));
@@ -1479,26 +1483,15 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 						
 						TArray<FAnalyticsEventAttribute> Attribs;
 
-						FString OriginalVendor(UTF8_TO_TCHAR(DocInfo->Original_ApplicationVendor.Get().Buffer()));
-						FString OriginalAppName(UTF8_TO_TCHAR(DocInfo->Original_ApplicationName.Get().Buffer()));
-						FString OriginalAppVersion(UTF8_TO_TCHAR(DocInfo->Original_ApplicationVersion.Get().Buffer()));
-
 						FString LastSavedVendor(UTF8_TO_TCHAR(DocInfo->LastSaved_ApplicationVendor.Get().Buffer()));
 						FString LastSavedAppName(UTF8_TO_TCHAR(DocInfo->LastSaved_ApplicationName.Get().Buffer()));
 						FString LastSavedAppVersion(UTF8_TO_TCHAR(DocInfo->LastSaved_ApplicationVersion.Get().Buffer()));
-
-						FString FilenameHash = FMD5::HashAnsiString(*Filename);
-
-						Attribs.Add(FAnalyticsEventAttribute(TEXT("Original Application Vendor"), OriginalVendor));
-						Attribs.Add(FAnalyticsEventAttribute(TEXT("Original Application Name"), OriginalAppName));
-						Attribs.Add(FAnalyticsEventAttribute(TEXT("Original Application Version"), OriginalAppVersion));
 
 						Attribs.Add(FAnalyticsEventAttribute(TEXT("LastSaved Application Vendor"), LastSavedVendor));
 						Attribs.Add(FAnalyticsEventAttribute(TEXT("LastSaved Application Name"), LastSavedAppName));
 						Attribs.Add(FAnalyticsEventAttribute(TEXT("LastSaved Application Version"), LastSavedAppVersion));
 
 						Attribs.Add(FAnalyticsEventAttribute(TEXT("FBX Version"), FbxFileVersion));
-						Attribs.Add(FAnalyticsEventAttribute(TEXT("Filename Hash"), FilenameHash));
 
 						//////////////////////////////////////////////////////////////////////////
 						//FBX import options
@@ -3107,7 +3100,7 @@ FString GetFbxPropertyStringValue(const FbxProperty& Property)
 	return ValueStr;
 }
 
-void FFbxImporter::ImportNodeCustomProperties(UObject* Object, FbxNode* Node)
+void FFbxImporter::ImportNodeCustomProperties(UObject* Object, FbxNode* Node, bool bPrefixTagWithNodeName)
 {
 	if (!Object || !Node)
 	{
@@ -3125,7 +3118,7 @@ void FFbxImporter::ImportNodeCustomProperties(UObject* Object, FbxNode* Node)
 			// Prefix the FBX metadata tag to make it distinguishable from other metadata
 			// so that it can be exportable through FBX export
 			FString MetadataTag = UTF8_TO_TCHAR(CurrentProperty.GetName());
-			if (!MetadataTag.StartsWith(NodeName))
+			if (bPrefixTagWithNodeName && !MetadataTag.StartsWith(NodeName))
 			{
 				// Append the node name in the tag since all the metadata will be flattened on the Object
 				MetadataTag = NodeName + TEXT(".") + MetadataTag;
@@ -3141,7 +3134,7 @@ void FFbxImporter::ImportNodeCustomProperties(UObject* Object, FbxNode* Node)
 	int NumChildren = Node->GetChildCount();
 	for (int i = 0; i < NumChildren; ++i)
 	{
-		ImportNodeCustomProperties(Object, Node->GetChild(i));
+		ImportNodeCustomProperties(Object, Node->GetChild(i), bPrefixTagWithNodeName);
 	}
 }
 

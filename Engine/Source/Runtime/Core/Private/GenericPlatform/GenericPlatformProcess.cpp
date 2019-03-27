@@ -154,6 +154,12 @@ void FGenericPlatformProcess::CleanShaderWorkingDir()
 	IFileManager::Get().DeleteDirectory(*LegacyShaderWorkingDirectory, false, true);
 }
 
+const TCHAR* FGenericPlatformProcess::ExecutablePath()
+{
+	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::ExecutablePath not implemented on this platform"));
+	return NULL;
+}
+
 const TCHAR* FGenericPlatformProcess::ExecutableName(bool bRemoveExtension)
 {
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::ExecutableName not implemented on this platform"));
@@ -273,7 +279,7 @@ FString FGenericPlatformProcess::GetApplicationName( uint32 ProcessId )
 	return FString(TEXT(""));
 }
 
-bool FGenericPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr )
+bool FGenericPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory)
 {
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::ExecProcess not implemented on this platform"));
 	return false;

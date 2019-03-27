@@ -102,6 +102,24 @@
 // Generic compiler pre-setup.
 #include "GenericPlatform/GenericPlatformCompilerPreSetup.h"
 
+// Whether the CPU is x86/x64 (i.e. both 32 and 64-bit variants)
+#ifndef PLATFORM_CPU_X86_FAMILY
+	#if (defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__amd64__) || defined(__x86_64__))
+		#define PLATFORM_CPU_X86_FAMILY	1
+	#else
+		#define PLATFORM_CPU_X86_FAMILY	0
+	#endif
+#endif
+
+// Whether the CPU is AArch32/AArch64 (i.e. both 32 and 64-bit variants)
+#ifndef PLATFORM_CPU_ARM_FAMILY
+	#if (defined(__arm__) || defined(_M_ARM) || defined(__aarch64__) || defined(_M_ARM64))
+		#define PLATFORM_CPU_ARM_FAMILY	1
+	#else
+		#define PLATFORM_CPU_ARM_FAMILY	0
+	#endif
+#endif
+
 #if PLATFORM_APPLE
 	#include <stddef.h> // needed for size_t
 #endif
@@ -168,24 +186,6 @@
 #endif
 #ifndef PLATFORM_64BITS
 	#error "PLATFORM_64BITS must be defined"
-#endif
-
-// Whether the CPU is x86/x64 (i.e. both 32 and 64-bit variants)
-#ifndef PLATFORM_CPU_X86_FAMILY
-	#if (defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__amd64__) || defined(__x86_64__))
-		#define PLATFORM_CPU_X86_FAMILY	1
-	#else
-		#define PLATFORM_CPU_X86_FAMILY	0
-	#endif
-#endif
-
-// Whether the CPU is AArch32/AArch64 (i.e. both 32 and 64-bit variants)
-#ifndef PLATFORM_CPU_ARM_FAMILY
-	#if (defined(__arm__) || defined(_M_ARM) || defined(__aarch64__) || defined(_M_ARM64))
-		#define PLATFORM_CPU_ARM_FAMILY	1
-	#else
-		#define PLATFORM_CPU_ARM_FAMILY	0
-	#endif
 #endif
 
 // Base defines, these have defaults
@@ -337,6 +337,18 @@
 	#define PLATFORM_USES_ES2					0
 #endif
 
+#ifndef PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+	#define PLATFORM_SUPPORTS_GEOMETRY_SHADERS		1
+#endif
+
+#ifndef PLATFORM_SUPPORTS_TESSELLATION_SHADERS
+	#define PLATFORM_SUPPORTS_TESSELLATION_SHADERS	1
+#endif
+
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS && !PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+	#error Geometry shader support is required by tessellation
+#endif
+
 #ifndef PLATFORM_BUILTIN_VERTEX_HALF_FLOAT
 	#define PLATFORM_BUILTIN_VERTEX_HALF_FLOAT	1
 #endif
@@ -447,6 +459,14 @@
 
 #ifndef PLATFORM_HAS_CRC_INTRINSICS
 	#define PLATFORM_HAS_CRC_INTRINSICS							0
+#endif
+
+#ifndef PLATFORM_NEEDS_RHIRESOURCELIST
+	#define PLATFORM_NEEDS_RHIRESOURCELIST 1
+#endif
+
+#ifndef PLATFORM_SUPPORTS_FLIP_TRACKING
+	#define PLATFORM_SUPPORTS_FLIP_TRACKING 0
 #endif
 
 // deprecated, do not use
@@ -609,7 +629,7 @@
 
 // Prefetch
 #ifndef PLATFORM_CACHE_LINE_SIZE
-	#define PLATFORM_CACHE_LINE_SIZE	128
+	#define PLATFORM_CACHE_LINE_SIZE	64
 #endif
 
 // Compile-time warnings and errors. Use these as "#pragma COMPILER_WARNING("XYZ")". GCC does not expand macro parameters to _Pragma, so we can't wrap the #pragma part.
@@ -622,6 +642,11 @@
 	#define GCC_DIAGNOSTIC_HELPER(x) _Pragma(#x)
 	#define COMPILE_WARNING(x) GCC_DIAGNOSTIC_HELPER(GCC warning x)
 	#define COMPILE_ERROR(x) GCC_DIAGNOSTIC_HELPER(GCC error x)
+#endif
+
+// Tells the compiler to put the decorated function in a certain section (aka. segment) of the executable.
+#ifndef PLATFORM_CODE_SECTION
+	#define PLATFORM_CODE_SECTION(Name)
 #endif
 
 // These have to be forced inline on some OSes so the dynamic loader will not
@@ -655,6 +680,13 @@
 	#define DLLIMPORT
 #endif
 
+// embedded app is not default (embedding UE4 in a native view, right now just for IOS and Android)
+#ifndef BUILD_EMBEDDED_APP
+	#define BUILD_EMBEDDED_APP  0
+#endif
+#ifndef FAST_BOOT_HACKS
+	#define FAST_BOOT_HACKS  0
+#endif
 
 #ifndef DEPRECATED_FORGAME
 	#define DEPRECATED_FORGAME(...) DEPRECATED_MACRO(4.22, "The DEPRECATED_FORGAME macro has been deprecated in favor of UE_DEPRECATED_FORGAME().")
@@ -795,13 +827,13 @@ namespace TypeTests
 	template <typename A, typename B>
 	struct TAreTypesEqual
 	{
-		enum { Value = false };
+		static const bool Value = false;
 	};
 
 	template <typename T>
 	struct TAreTypesEqual<T, T>
 	{
-		enum { Value = true };
+		static const bool Value = true;
 	};
 
 	static_assert(!PLATFORM_TCHAR_IS_4_BYTES || sizeof(TCHAR) == 4, "TCHAR size must be 4 bytes.");
@@ -817,7 +849,7 @@ namespace TypeTests
 	static_assert((!TAreTypesEqual<ANSICHAR, WIDECHAR>::Value), "ANSICHAR and WIDECHAR should be different types.");
 	static_assert((!TAreTypesEqual<ANSICHAR, UCS2CHAR>::Value), "ANSICHAR and CHAR16 should be different types.");
 	static_assert((!TAreTypesEqual<WIDECHAR, UCS2CHAR>::Value), "WIDECHAR and CHAR16 should be different types.");
-	static_assert((TAreTypesEqual<TCHAR, ANSICHAR>::Value || TAreTypesEqual<TCHAR, WIDECHAR>::Value), "TCHAR should either be ANSICHAR or WIDECHAR.");
+	static_assert((TAreTypesEqual<TCHAR, ANSICHAR>::Value == true || TAreTypesEqual<TCHAR, WIDECHAR>::Value == true), "TCHAR should either be ANSICHAR or WIDECHAR.");
 
 	static_assert(sizeof(uint8) == 1, "BYTE type size test failed.");
 	static_assert(int32(uint8(-1)) == 0xFF, "BYTE type sign test failed.");

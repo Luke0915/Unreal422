@@ -221,8 +221,8 @@ void FGameplayAttribute::PostSerialize(const FArchive& Ar)
 
 			if (!Attribute)
 			{
-				FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
-				FString AssetName = ThreadContext.SerializedObject ? ThreadContext.SerializedObject->GetPathName() : TEXT("Unknown Object");
+				FUObjectSerializeContext* LoadContext = const_cast<FArchive*>(&Ar)->GetSerializeContext();
+				FString AssetName = (LoadContext && LoadContext->SerializedObject) ? LoadContext->SerializedObject->GetPathName() : TEXT("Unknown Object");
 
 				FString OwnerName = AttributeOwner ? AttributeOwner->GetName() : TEXT("NONE");
 				ABILITY_LOG(Warning, TEXT("FGameplayAttribute::PostSerialize called on an invalid attribute with owner %s and name %s. (Asset: %s)"), *OwnerName, *AttributeName, *AssetName);
@@ -449,6 +449,16 @@ float FScalableFloat::GetValue(const FString* ContextString /*= nullptr*/) const
 	return GetValueAtLevel(0, ContextString);
 }
 
+bool FScalableFloat::AsBool(float Level, const FString* ContextString) const
+{
+	return GetValueAtLevel(Level, ContextString) > 0.0f;
+}
+
+int32 FScalableFloat::AsInteger(float Level, const FString* ContextString) const
+{
+	return (int32)GetValueAtLevel(Level, ContextString);
+}
+
 void FScalableFloat::SetValue(float NewValue)
 {
 	Value = NewValue;
@@ -672,7 +682,7 @@ void FAttributeSetInitterDiscreteLevels::InitAttributeSetDefaults(UAbilitySystem
 	const FAttributeSetDefaultsCollection* Collection = Defaults.Find(GroupName);
 	if (!Collection)
 	{
-		ABILITY_LOG(Warning, TEXT("Unable to find DefaultAttributeSet Group %s. Failing back to Defaults"), *GroupName.ToString());
+		ABILITY_LOG(Warning, TEXT("Unable to find DefaultAttributeSet Group %s. Falling back to Defaults"), *GroupName.ToString());
 		Collection = Defaults.Find(FName(TEXT("Default")));
 		if (!Collection)
 		{
@@ -719,7 +729,7 @@ void FAttributeSetInitterDiscreteLevels::ApplyAttributeDefault(UAbilitySystemCom
 	const FAttributeSetDefaultsCollection* Collection = Defaults.Find(GroupName);
 	if (!Collection)
 	{
-		ABILITY_LOG(Warning, TEXT("Unable to find DefaultAttributeSet Group %s. Failing back to Defaults"), *GroupName.ToString());
+		ABILITY_LOG(Warning, TEXT("Unable to find DefaultAttributeSet Group %s. Falling back to Defaults"), *GroupName.ToString());
 		Collection = Defaults.Find(FName(TEXT("Default")));
 		if (!Collection)
 		{

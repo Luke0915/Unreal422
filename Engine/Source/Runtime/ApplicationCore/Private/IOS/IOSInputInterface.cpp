@@ -6,6 +6,7 @@
 #include "Misc/ScopeLock.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/EmbeddedCommunication.h"
 
 #import <AudioToolbox/AudioToolbox.h>
 
@@ -16,7 +17,6 @@ static TAutoConsoleVariable<float> CVarHapticsKickHeavy(TEXT("ios.VibrationHapti
 static TAutoConsoleVariable<float> CVarHapticsKickMedium(TEXT("ios.VibrationHapticsKickMediumValue"), 0.5f, TEXT("Vibation values higher than this will kick a haptics medium Impact"));
 static TAutoConsoleVariable<float> CVarHapticsKickLight(TEXT("ios.VibrationHapticsKickLightValue"), 0.3f, TEXT("Vibation values higher than this will kick a haptics light Impact"));
 static TAutoConsoleVariable<float> CVarHapticsRest(TEXT("ios.VibrationHapticsRestValue"), 0.2f, TEXT("Vibation values lower than this will allow haptics to Kick again when going over ios.VibrationHapticsKickValue"));
-
 
 //@interface FControllerHelper : NSObject
 //{
@@ -43,17 +43,21 @@ FIOSInputInterface::FIOSInputInterface( const TSharedRef< FGenericApplicationMes
 	, bAllowControllers(true)
     , LastHapticValue(0.0f)
 {
+	SCOPED_BOOT_TIMING("FIOSInputInterface::FIOSInputInterface");
+
 #if !PLATFORM_TVOS
 	MotionManager = nil;
 	ReferenceAttitude = nil;
 #endif
-
+	bPauseMotion = false;
+	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bDisableMotionData"), bPauseMotion, GEngineIni);
+	
 	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bTreatRemoteAsSeparateController"), bTreatRemoteAsSeparateController, GEngineIni);
 	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bAllowRemoteRotation"), bAllowRemoteRotation, GEngineIni);
 	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bUseRemoteAsVirtualJoystick"), bUseRemoteAsVirtualJoystick, GEngineIni);
 	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bUseRemoteAbsoluteDpadValues"), bUseRemoteAbsoluteDpadValues, GEngineIni);
 	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bAllowControllers"), bAllowControllers, GEngineIni);
-
+	
 	[[NSNotificationCenter defaultCenter] addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue currentQueue] usingBlock:^(NSNotification* Notification)
 	 {
 		HandleConnection(Notification.object);
@@ -65,9 +69,39 @@ FIOSInputInterface::FIOSInputInterface( const TSharedRef< FGenericApplicationMes
 	 }];
 	
 
-	[GCController startWirelessControllerDiscoveryWithCompletionHandler:^{ }];
-
+	dispatch_async(dispatch_get_main_queue(), ^
+	   {
+		   [GCController startWirelessControllerDiscoveryWithCompletionHandler:^{ }];
+	   });
+	
 	FMemory::Memzero(Controllers, sizeof(Controllers));
+	
+	FEmbeddedDelegates::GetNativeToEmbeddedParamsDelegateForSubsystem(TEXT("iosinput")).AddLambda([this](const FEmbeddedCallParamsHelper& Message)
+	{
+		FString Error;
+#if !PLATFORM_TVOS
+		
+		// execute any console commands
+		if (Message.Command == TEXT("stopmotion"))
+		{
+			[MotionManager release];
+			MotionManager = nil;
+			
+			bPauseMotion = true;
+		}
+		else if (Message.Command == TEXT("startmotion"))
+		{
+			bPauseMotion = false;
+		}
+		else
+#endif
+		{
+			Error = TEXT("Unknown iosinput command ") + Message.Command;
+		}
+		
+		Message.OnCompleteDelegate({}, Error);
+	});
+
 	
 #if !PLATFORM_TVOS
 	HapticFeedbackSupportLevel = [[[UIDevice currentDevice] valueForKey:@"_feedbackSupportLevel"] intValue];
@@ -281,29 +315,30 @@ void FIOSInputInterface::SendControllerEvents()
 
 	
 #if !PLATFORM_TVOS // @todo tvos: This needs to come from the Microcontroller rotation
-	// Update motion controls.
-	FVector Attitude;
-	FVector RotationRate;
-	FVector Gravity;
-	FVector Acceleration;
+	if (!bPauseMotion)
+	{
+		// Update motion controls.
+		FVector Attitude;
+		FVector RotationRate;
+		FVector Gravity;
+		FVector Acceleration;
 
-	GetMovementData(Attitude, RotationRate, Gravity, Acceleration);
+		GetMovementData(Attitude, RotationRate, Gravity, Acceleration);
 
-	// Fix-up yaw to match directions
-	Attitude.Y = -Attitude.Y;
-	RotationRate.Y = -RotationRate.Y;
+		// Fix-up yaw to match directions
+		Attitude.Y = -Attitude.Y;
+		RotationRate.Y = -RotationRate.Y;
 
-	// munge the vectors based on the orientation
-	ModifyVectorByOrientation(Attitude, true);
-	ModifyVectorByOrientation(RotationRate, true);
-	ModifyVectorByOrientation(Gravity, false);
-	ModifyVectorByOrientation(Acceleration, false);
+		// munge the vectors based on the orientation
+		ModifyVectorByOrientation(Attitude, true);
+		ModifyVectorByOrientation(RotationRate, true);
+		ModifyVectorByOrientation(Gravity, false);
+		ModifyVectorByOrientation(Acceleration, false);
 
-	MessageHandler->OnMotionDetected(Attitude, RotationRate, Gravity, Acceleration, 0);
+		MessageHandler->OnMotionDetected(Attitude, RotationRate, Gravity, Acceleration, 0);
+	}
 #endif
-	
-	
-	
+		
 	for (GCController* Cont in [GCController controllers])
  	{
 		GCGamepad* Gamepad = Cont.gamepad;
@@ -338,26 +373,33 @@ void FIOSInputInterface::SendControllerEvents()
         const double CurrentTime = FPlatformTime::Seconds();
         const float IniitialRepeatDelay = 0.2f;
         const float RepeatDelay = 0.1;
-		
-#define HANDLE_BUTTON(Gamepad, GCButton, UEButton) \
-if ((Controller.Previous##Gamepad == nil && Gamepad.GCButton.pressed) || Controller.Previous##Gamepad.GCButton.pressed != Gamepad.GCButton.pressed) \
+
+#define HANDLE_BUTTON_INTERNAL(Gamepad, bWasPressed, bIsPressed, UEButton) \
+if (bWasPressed != bIsPressed) \
 { \
-	NSLog(@"%@ button %s on controller %d", (ExtendedGamepad.GCButton.pressed) ? @"Pressed" : @"Released", TCHAR_TO_ANSI(*UEButton.ToString()), (int32)Cont.playerIndex); \
-	(Gamepad.GCButton.pressed) ? MessageHandler->OnControllerButtonPressed(UEButton, Cont.playerIndex, false) : MessageHandler->OnControllerButtonReleased(UEButton, Cont.playerIndex, false); \
+	NSLog(@"%@ button %s on controller %d", bIsPressed ? @"Pressed" : @"Released", TCHAR_TO_ANSI(*UEButton.ToString()), (int32)Cont.playerIndex); \
+	bIsPressed ? MessageHandler->OnControllerButtonPressed(UEButton, Cont.playerIndex, false) : MessageHandler->OnControllerButtonReleased(UEButton, Cont.playerIndex, false); \
     NextKeyRepeatTime.FindOrAdd(UEButton) = CurrentTime + IniitialRepeatDelay; \
 } \
-else if(Gamepad.GCButton.pressed) \
+else if(bIsPressed) \
 { \
     double* NextRepeatTime = NextKeyRepeatTime.Find(UEButton); \
     if(NextRepeatTime && *NextRepeatTime <= CurrentTime) \
     { \
-        MessageHandler->OnControllerButtonPressed(UEButton, Cont.playerIndex, false); \
+        MessageHandler->OnControllerButtonPressed(UEButton, Cont.playerIndex, true); \
 *NextRepeatTime = CurrentTime + RepeatDelay; \
     } \
 } \
 else \
 { \
     NextKeyRepeatTime.Remove(UEButton); \
+}
+		
+#define HANDLE_BUTTON(Gamepad, GCButton, UEButton) \
+{ \
+	const bool bWasPressed = Controller.Previous##Gamepad != nil && Controller.Previous##Gamepad.GCButton.pressed; \
+	const bool bPressed = Gamepad.GCButton.pressed; \
+	HANDLE_BUTTON_INTERNAL(Gamepad, bWasPressed, bPressed, UEButton); \
 }
 
         // Send controller events any time we are passed the given input threshold similarly to PC/Console (see: XInputInterface.cpp)
@@ -368,6 +410,16 @@ if ((Controller.Previous##Gamepad != nil && Gamepad.GCAxis.value != Controller.P
 { \
 	NSLog(@"Axis %s is %f", TCHAR_TO_ANSI(*UEAxis.ToString()), Gamepad.GCAxis.value); \
 	MessageHandler->OnControllerAnalog(UEAxis, Cont.playerIndex, Gamepad.GCAxis.value); \
+}
+
+#define HANDLE_ANALOG_VIRTUAL_BUTTONS(Gamepad, GCAxis, UEButtonNegative, UEButtonPositive) \
+{ \
+	const bool bWasNegativePressed = Controller.Previous##Gamepad != nil && Controller.Previous##Gamepad.GCAxis.value <= -RepeatDeadzone; \
+	const bool bNegativePressed = Gamepad.GCAxis.value <= -RepeatDeadzone; \
+	HANDLE_BUTTON_INTERNAL(Gamepad, bWasNegativePressed, bNegativePressed, UEButtonNegative) \
+	const bool bWasPositivePressed = Controller.Previous##Gamepad != nil && Controller.Previous##Gamepad.GCAxis.value >= RepeatDeadzone; \
+	const bool bPositivePressed = Gamepad.GCAxis.value >= RepeatDeadzone; \
+	HANDLE_BUTTON_INTERNAL(Gamepad, bWasPositivePressed, bPositivePressed, UEButtonPositive) \
 }
 		
 		if (ExtendedGamepad != nil)
@@ -391,6 +443,11 @@ if ((Controller.Previous##Gamepad != nil && Gamepad.GCAxis.value != Controller.P
 			HANDLE_ANALOG(ExtendedGamepad, rightThumbstick.yAxis,	FGamepadKeyNames::RightAnalogY);
 			HANDLE_ANALOG(ExtendedGamepad, leftTrigger,				FGamepadKeyNames::LeftTriggerAnalog);
 			HANDLE_ANALOG(ExtendedGamepad, rightTrigger,			FGamepadKeyNames::RightTriggerAnalog);
+
+			HANDLE_ANALOG_VIRTUAL_BUTTONS(ExtendedGamepad, leftThumbstick.xAxis, FGamepadKeyNames::LeftStickLeft, FGamepadKeyNames::LeftStickRight);
+			HANDLE_ANALOG_VIRTUAL_BUTTONS(ExtendedGamepad, leftThumbstick.yAxis, FGamepadKeyNames::LeftStickDown, FGamepadKeyNames::LeftStickUp);
+			HANDLE_ANALOG_VIRTUAL_BUTTONS(ExtendedGamepad, rightThumbstick.xAxis, FGamepadKeyNames::RightStickLeft, FGamepadKeyNames::RightStickRight);
+			HANDLE_ANALOG_VIRTUAL_BUTTONS(ExtendedGamepad, rightThumbstick.yAxis, FGamepadKeyNames::RightStickDown, FGamepadKeyNames::RightStickUp);
 
 			[Controller.PreviousExtendedGamepad release];
 			Controller.PreviousExtendedGamepad = [ExtendedGamepad saveSnapshot];
@@ -521,6 +578,27 @@ void FIOSInputInterface::QueueKeyInput(int32 Key, int32 Char)
 	FIOSInputInterface::KeyInputStack.Add(Char);
 }
 
+void FIOSInputInterface::EnableMotionData(bool bEnable)
+{
+	bPauseMotion = !bEnable;
+
+#if !PLATFORM_TVOS
+	if (bPauseMotion && MotionManager != nil)
+	{
+		[ReferenceAttitude release];
+		ReferenceAttitude = nil;
+		
+		[MotionManager release];
+		MotionManager = nil;
+	}
+	// When enabled MotionManager will be initialized on first use
+#endif
+}
+
+bool FIOSInputInterface::IsMotionDataEnabled() const
+{
+	return !bPauseMotion;
+}
 
 void FIOSInputInterface::GetMovementData(FVector& Attitude, FVector& RotationRate, FVector& Gravity, FVector& Acceleration)
 {
@@ -621,7 +699,7 @@ void FIOSInputInterface::CalibrateMotion(uint32 PlayerIndex)
 #if !PLATFORM_TVOS
 	// If we are using the motion manager, grab a reference frame.  Note, once you set the Attitude Reference frame
 	// all additional reference information will come from it
-	if (MotionManager.deviceMotionActive)
+	if (MotionManager && MotionManager.deviceMotionActive)
 	{
 		ReferenceAttitude = [MotionManager.deviceMotion.attitude retain];
 	}

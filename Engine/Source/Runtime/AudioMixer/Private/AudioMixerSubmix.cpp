@@ -23,6 +23,7 @@ namespace Audio
 		, SubmixAmbisonicsDecoderID(INDEX_NONE)
 		, EnvelopeNumChannels(0)
 		, bIsRecording(false)
+		, bIsBackgroundMuted(false)
 		, OwningSubmixObject(nullptr)
 	{
 	}
@@ -294,6 +295,14 @@ namespace Audio
 		EffectSubmixChain.Reset();
 	}
 
+	void FMixerSubmix::SetBackgroundMuted(bool bInMuted)
+	{
+		SubmixCommand([this, bInMuted]()
+		{
+			bIsBackgroundMuted = bInMuted;
+		});
+	}
+
 	void FMixerSubmix::FormatChangeBuffer(const ESubmixChannelFormat InNewChannelType, AlignedFloatBuffer& InBuffer, AlignedFloatBuffer& OutNewBuffer)
 	{
 		// Retrieve ptr to the cached downmix channel map from the mixer device
@@ -357,6 +366,29 @@ namespace Audio
 
 			// Todo: sum into OutputData rather than decoding directly to it.
 			AmbisonicsMixer->DecodeFromAmbisonics(SubmixAmbisonicsDecoderID, InputData, CachedPositionalData, OutputData);
+		}
+	}
+
+	void FMixerSubmix::MixBufferDownToMono(const AlignedFloatBuffer& InBuffer, int32 NumInputChannels, AlignedFloatBuffer& OutBuffer)
+	{
+		check(NumInputChannels > 0);
+
+		int32 NumFrames = InBuffer.Num() / NumInputChannels;
+		OutBuffer.Reset();
+		OutBuffer.AddZeroed(NumFrames);
+
+		const float* InData = InBuffer.GetData();
+		float* OutData = OutBuffer.GetData();
+
+		const float GainFactor = 1.0f / FMath::Sqrt((float) NumInputChannels);
+
+		for (int32 FrameIndex = 0; FrameIndex < NumFrames; FrameIndex++)
+		{
+			for (int32 ChannelIndex = 0; ChannelIndex < NumInputChannels; ChannelIndex++)
+			{
+				const int32 InputIndex = FrameIndex * NumInputChannels + ChannelIndex;
+				OutData[FrameIndex] += InData[InputIndex] * GainFactor;
+			}
 		}
 	}
 
@@ -650,9 +682,21 @@ namespace Audio
 					SubmixEffect->ProcessAudio(InputData, OutputData);
 				}
 
+				// Mix in the dry signal directly
+				const float DryLevel = SubmixEffect->GetDryLevel();
+				if (DryLevel > 0.0f)
+				{
+					Audio::MixInBufferFast(InputBuffer, ScratchBuffer, DryLevel);
+				}
+
 				FMemory::Memcpy((void*)BufferPtr, (void*)ScratchBuffer.GetData(), sizeof(float)*NumSamples);
 			}
+		}
 
+		// If we're muted, memzero the buffer. Note we are still doing all the work to maintain buffer state between mutings.
+		if (bIsBackgroundMuted)
+		{
+			FMemory::Memzero((void*)BufferPtr, sizeof(float)*NumSamples);
 		}
 
 		// If we are recording, Add out buffer to the RecordingData buffer:
@@ -663,6 +707,15 @@ namespace Audio
 				// TODO: Consider a scope lock between here and OnStopRecordingOutput.
 				RecordingData.Append((float*)BufferPtr, NumSamples);
 			}
+		}
+
+		// If spectrum analysis is enabled for this submix, downmix the resulting audio
+		// and push it to the spectrum analyzer.
+		if (SpectrumAnalyzer.IsValid())
+		{
+			MixBufferDownToMono(InputBuffer, NumChannels, MonoMixBuffer);
+			SpectrumAnalyzer->PushAudio(MonoMixBuffer.GetData(), MonoMixBuffer.Num());
+			SpectrumAnalyzer->PerformAnalysisIfPossible(true, true);
 		}
 
 		// If the channel types match, just do a copy
@@ -743,10 +796,6 @@ namespace Audio
 			return EffectSubmixChain[InIndex].EffectInstance;
 		}
 		return nullptr;
-	}
-
-	void FMixerSubmix::Update()
-	{
 	}
 
 	void FMixerSubmix::OnAmbisonicsSettingsChanged(UAmbisonicsSubmixSettingsBase* InAmbisonicsSettings)
@@ -842,6 +891,56 @@ namespace Audio
 	void FMixerSubmix::AddEnvelopeFollowerDelegate(const FOnSubmixEnvelopeBP& OnSubmixEnvelopeBP)
 	{
 		OnSubmixEnvelope.AddUnique(OnSubmixEnvelopeBP);
+	}
+
+	void FMixerSubmix::StartSpectrumAnalysis(const FSpectrumAnalyzerSettings& InSettings)
+	{
+		SpectrumAnalyzer.Reset(new FSpectrumAnalyzer(InSettings, MixerDevice->GetSampleRate()));
+	}
+
+	void FMixerSubmix::StopSpectrumAnalysis()
+	{
+		SpectrumAnalyzer.Reset();
+	}
+
+	void FMixerSubmix::GetMagnitudeForFrequencies(const TArray<float>& InFrequencies, TArray<float>& OutMagnitudes)
+	{
+		if (SpectrumAnalyzer.IsValid())
+		{
+			OutMagnitudes.Reset();
+			OutMagnitudes.AddUninitialized(InFrequencies.Num());
+
+			SpectrumAnalyzer->LockOutputBuffer();
+			for (int32 Index = 0; Index < InFrequencies.Num(); Index++)
+			{
+				OutMagnitudes[Index] = SpectrumAnalyzer->GetMagnitudeForFrequency(InFrequencies[Index]);
+			}
+			SpectrumAnalyzer->UnlockOutputBuffer();
+		}
+		else
+		{
+			UE_LOG(LogAudioMixer, Warning, TEXT("Call StartSpectrumAnalysis before calling GetMagnitudeForFrequencies."));
+		}
+	}
+
+	void FMixerSubmix::GetPhaseForFrequencies(const TArray<float>& InFrequencies, TArray<float>& OutPhases)
+	{
+		if (SpectrumAnalyzer.IsValid())
+		{
+			OutPhases.Reset();
+			OutPhases.AddUninitialized(InFrequencies.Num());
+
+			SpectrumAnalyzer->LockOutputBuffer();
+			for (int32 Index = 0; Index < InFrequencies.Num(); Index++)
+			{
+				OutPhases[Index] = SpectrumAnalyzer->GetPhaseForFrequency(InFrequencies[Index]);
+			}
+			SpectrumAnalyzer->UnlockOutputBuffer();
+		}
+		else
+		{
+			UE_LOG(LogAudioMixer, Warning, TEXT("Call StartSpectrumAnalysis before calling GetMagnitudeForFrequencies."));
+		}
 	}
 
 	void FMixerSubmix::BroadcastEnvelope()

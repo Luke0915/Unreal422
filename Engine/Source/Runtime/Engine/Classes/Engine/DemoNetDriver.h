@@ -29,6 +29,9 @@ DECLARE_LOG_CATEGORY_EXTERN( LogDemo, Log, All );
 DECLARE_MULTICAST_DELEGATE(FOnGotoTimeMCDelegate);
 DECLARE_DELEGATE_OneParam(FOnGotoTimeDelegate, const bool /* bWasSuccessful */);
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnDemoStartedDelegate, UDemoNetDriver* /* DemoNetDriver */);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDemoFailedToStartDelegate, UDemoNetDriver* /* DemoNetDriver */, EDemoPlayFailure::Type /* FailureType*/);
+
 DECLARE_MULTICAST_DELEGATE(FOnDemoFinishPlaybackDelegate);
 
 class UDemoNetDriver;
@@ -106,6 +109,7 @@ enum ENetworkVersionHistory
 	HISTORY_SAVE_FULL_ENGINE_VERSION		= 11,			// Now saving the entire FEngineVersion including branch name
 	HISTORY_HEADER_GUID						= 12,			// Save guid to demo header
 	HISTORY_CHARACTER_MOVEMENT				= 13,			// Change to using replicated movement and not interpolation
+	HISTORY_CHARACTER_MOVEMENT_NOINTERP		= 14,			// No longer recording interpolated movement samples
 	
 	// -----<new versions can be added before this line>-------------------------------------------------
 	HISTORY_PLUS_ONE,
@@ -150,7 +154,7 @@ struct FLevelNameAndTime
 
 	void CountBytes(FArchive& Ar) const
 	{
-		Ar << const_cast<FString&>(LevelName);
+		LevelName.CountBytes(Ar);
 	}
 };
 
@@ -159,6 +163,7 @@ enum class EReplayHeaderFlags : uint32
 	None				= 0,
 	ClientRecorded		= ( 1 << 0 ),
 	HasStreamingFixes	= ( 1 << 1 ),
+	DeltaCheckpoints	= ( 1 << 2 ),
 };
 
 ENUM_CLASS_FLAGS(EReplayHeaderFlags);
@@ -279,7 +284,7 @@ struct FNetworkDemoHeader
 		GameSpecificData.CountBytes(Ar);
 		for (const FString& Datum : GameSpecificData)
 		{
-			Ar << const_cast<FString&>(Datum);
+			Datum.CountBytes(Ar);
 		}
 	}
 };
@@ -315,11 +320,12 @@ struct FRollbackNetStartupActorInfo
 		SubObjRepState.CountBytes(Ar);
 		for (const auto& SubObjRepStatePair : SubObjRepState)
 		{
-			Ar << const_cast<FString&>(SubObjRepStatePair.Key);
+			SubObjRepStatePair.Key.CountBytes(Ar);
 			
 			if (FRepState const * const LocalRepState = SubObjRepStatePair.Value.Get())
 			{
-				Ar.CountBytes(sizeof(FRepState), sizeof(FRepState));
+				const SIZE_T SizeOfRepState = sizeof(FRepState);
+				Ar.CountBytes(SizeOfRepState, SizeOfRepState);
 				LocalRepState->CountBytes(Ar);
 			}
 		}
@@ -328,19 +334,24 @@ struct FRollbackNetStartupActorInfo
 	}
 };
 
-struct FDemoSavedRepObjectState
+struct ENGINE_API FDemoSavedRepObjectState
 {
+	FDemoSavedRepObjectState(
+		const TWeakObjectPtr<const UObject>& InObject,
+		const TSharedRef<const FRepLayout>& InRepLayout,
+		FRepStateStaticBuffer&& InPropertyData);
+
+	~FDemoSavedRepObjectState();
+
 	TWeakObjectPtr<const UObject> Object;
-	TSharedPtr<FRepLayout> RepLayout;
+	TSharedPtr<const FRepLayout> RepLayout;
 	FRepStateStaticBuffer PropertyData;
 
 	void CountBytes(FArchive& Ar) const
 	{
-		if (FRepLayout const * const LocalRepLayout = RepLayout.Get())
-		{
-			Ar.CountBytes(sizeof(FRepLayout), sizeof(FRepLayout));
-			LocalRepLayout->CountBytes(Ar);
-		}
+		// The RepLayout for this object should still be stored by the UDemoNetDriver,
+		// so we don't need to count it here.
+
 		PropertyData.CountBytes(Ar);
 	}
 };
@@ -379,7 +390,7 @@ class ENGINE_API UDemoNetDriver : public UNetDriver
 	/** Index of LevelNames that is currently loaded */
 	int32 CurrentLevelIndex;
 
-	/** This is our spectator controller that is used to view the demo world from */
+	/** This is the main spectator controller that is used to view the demo world from */
 	APlayerController* SpectatorController;
 
 	/** Our network replay streamer */
@@ -398,13 +409,22 @@ class ENGINE_API UDemoNetDriver : public UNetDriver
 
 	/** Keeps track of NetGUIDs that were deleted, so we can skip them when saving checkpoints. Only used while recording. */
 	TSet< FNetworkGUID >							DeletedNetStartupActorGUIDs;
-	
+
+	/** Delta net startup actors that need to be destroyed after checkpoints are loaded */
+	TSet< FString >									DeltaDeletedNetStartupActors;
+
+	/** GUID list of actors deleted before the checkpoint was recorded, including dynamic actors */
+	TSet<FNetworkGUID>								DeletedActorGuids;
+
+	/** Delta checkpoint list for DeletedActorGuids */
+	TSet<FNetworkGUID>								DeltaDeletedActorGuids;
+
 	/** 
 	 * Net startup actors that need to be rolled back during scrubbing by being destroyed and re-spawned 
 	 * NOTE - DeletedNetStartupActors will take precedence here, and destroy the actor instead
 	 */
 	UPROPERTY(transient)
-	TMap< FString, FRollbackNetStartupActorInfo >	RollbackNetStartupActors;
+	TMap<FString, FRollbackNetStartupActorInfo>		RollbackNetStartupActors;
 
 	double				LastCheckpointTime;					// Last time a checkpoint was saved
 
@@ -439,6 +459,12 @@ public:
 
 	void		SaveExternalData( FArchive& Ar );
 	void		LoadExternalData( FArchive& Ar, const float TimeSeconds );
+
+	/** Public delegate for external systems to be notified when a replay begins. UDemoNetDriver is passed as a param */
+	static FOnDemoStartedDelegate		OnDemoStarted;
+
+	/** Public delegate to be notified when a replay failed to start. UDemoNetDriver and FailureType are passed as params */
+	static FOnDemoFailedToStartDelegate OnDemoFailedToStart;
 
 	/** Public delegate for external systems to be notified when scrubbing is complete. Only called for successful scrub. */
 	FOnGotoTimeMCDelegate OnGotoTimeDelegate;
@@ -582,6 +608,8 @@ public:
 	virtual void ProcessLocalServerPackets() override {}
 	virtual void ProcessLocalClientPackets() override {}
 
+	virtual void InitDestroyedStartupActors() override;
+
 protected:
 	virtual UChannel* InternalCreateChannelByName(const FName& ChName) override;
 
@@ -599,6 +627,12 @@ public:
 
 	bool IsRecording() const;
 	bool IsPlaying() const;
+
+	/** Total time of demo in seconds */
+	float GetDemoTotalTime() const { return DemoTotalTime; }
+
+	/** Current record/playback position in seconds */
+	float GetDemoCurrentTime() const { return DemoCurrentTime; }
 
 	FString GetDemoURL() const { return DemoURL.ToString(); }
 
@@ -693,6 +727,69 @@ public:
 	void FinalizeFastForward( const double StartTime );
 	
 	void SpawnDemoRecSpectator( UNetConnection* Connection, const FURL& ListenURL );
+
+	/**
+	 * Restores the given player controller so that it properly points to the given NetConnection
+	 * after scrubbing when viewing a replay.
+	 *
+	 * @param PC			The PlayerController to set up the given NetConnection for
+	 * @param NetConnection	The NetConnection to be assigned to the player controller.
+	 */
+	void RestoreConnectionPostScrub(APlayerController* PC, UNetConnection* NetConnection);
+
+	/**
+	 * Sets the main spectator controller to be used and adds them to the spectator control array
+	 *
+	 * @param PC			The PlayerController to set the main controller param to.
+	 */
+	void SetSpectatorController(APlayerController* PC);
+	
+	// Splitscreen demo handling
+
+	/**
+	 * Creates a new splitscreen replay viewer.
+	 *
+	 * @param NewPlayer		The LocalPlayer in control of this new viewer
+	 * @param InWorld		The world to spawn the new viewer in.
+	 *
+	 * @return If the viewer was able to be created or not.
+	 */
+	bool SpawnSplitscreenViewer(ULocalPlayer* NewPlayer, UWorld* InWorld);
+
+	/**
+	 * Removes a splitscreen demo viewer and cleans up its connection.
+	 *
+	 * @param RemovePlayer		The PlayerController to remove from the replay system
+	 * @param bMarkOwnerForDeletion		If this function should handle deleting the given player as well.
+	 *
+	 * @return If the player was successfully removed from the replay.
+	 */
+	bool RemoveSplitscreenViewer(APlayerController* RemovePlayer, bool bMarkOwnerForDeletion=false);
+
+private:
+
+	// Internal player spawning
+	APlayerController* CreateDemoPlayerController(UNetConnection* Connection, const FURL& ListenURL);
+
+	// Internal splitscreen management
+
+	/** An array of all the spectator controllers (the main one and all splitscreen ones) that currently exist */
+	UPROPERTY(transient)
+	TArray<APlayerController*> SpectatorControllers;
+
+	/**
+	 * Removes all child connections for splitscreen viewers.
+	 * This should be done before the ClientConnections or ServerConnection
+	 * variables change or during most travel scenarios.
+	 *
+	 * @param bDeleteOwner	If the connections should delete the owning actor to the connection
+	 *
+	 * @return The number of splitscreen connections cleaned up.
+	 */
+	int32 CleanUpSplitscreenConnections(bool bDeleteOwner);
+
+public:
+
 	void ResetDemoState();
 	void JumpToEndOfLiveReplay();
 	void AddEvent(const FString& Group, const FString& Meta, const TArray<uint8>& Data);
@@ -769,6 +866,12 @@ public:
 	bool HasLevelStreamingFixes() const
 	{
 		return bHasLevelStreamingFixes;
+	}
+
+	/** Returns whether or not this replay was recorded / is playing with delta checkpoints. */
+	FORCEINLINE bool HasDeltaCheckpoints() const 
+	{
+		return bHasDeltaCheckpoints;
 	}
 
 	/**
@@ -854,7 +957,7 @@ private:
 
 		void CountBytes(FArchive& Ar) const
 		{
-			Ar << const_cast<FString&>(LevelName);
+			LevelName.CountBytes(Ar);
 		}
 	};
 
@@ -887,9 +990,12 @@ private:
 	// Whether or not the Streaming Level Fixes are enabled for capture or playback.
 	bool bHasLevelStreamingFixes;
 
+	// Checkpoints are delta compressed
+	bool bHasDeltaCheckpoints;
+
 	// Levels that are currently pending for fast forward.
 	// Using raw pointers, because we manually keep when levels are added and removed.
-	TMap<class ULevel*, TSet<TWeakObjectPtr<class AActor>>> LevelsPendingFastForward;
+	TSet<class ULevel*> LevelsPendingFastForward;
 
 	// Only used during recording.
 	uint32 NumLevelsAddedThisFrame;
@@ -934,6 +1040,9 @@ private:
 		int32				TotalCheckpointSaveFrames;					// Total number of frames used to save a checkpoint
 		FArchivePos			CheckpointOffset;
 		uint32				GuidCacheSize;
+
+		TSet<FString>		DeltaDeletedNetStartupActors;
+		TSet<FNetworkGUID>	DeltaDeletedActorGuids;
 
 		void CountBytes(FArchive& Ar) const
 		{
@@ -1071,6 +1180,8 @@ protected:
 
 	bool bIsWaitingForHeaderDownload;
 	bool bIsWaitingForStream;
+
+	int64 MaxArchiveReadPos;
 
 private:
 

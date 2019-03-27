@@ -118,21 +118,20 @@ void DragDropHandler::HandleDropOnAssetFolder(const TSharedRef<SWidget>& ParentW
 	MenuBuilder.BeginSection("PathAssetMoveCopy", MoveCopyHeaderString);
 	{
 		MenuBuilder.AddMenuEntry(
+			LOCTEXT("DragDropMove", "Move Here"),
+			LOCTEXT("DragDropMoveTooltip", "Move the dragged items to this folder, preserving the structure of any copied folders."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([=]() { MoveActionHandler.ExecuteIfBound(FinalAssetList, FinalAssetPaths, TargetPath); }))
+		);
+		MenuBuilder.AddMenuEntry(
 			LOCTEXT("DragDropCopy", "Copy Here"),
 			LOCTEXT("DragDropCopyTooltip", "Copy the dragged items to this folder, preserving the structure of any copied folders."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([=]() { CopyActionHandler.ExecuteIfBound(FinalAssetList, FinalAssetPaths, TargetPath); }))
 			);
-
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("DragDropMove", "Move Here"),
-			LOCTEXT("DragDropMoveTooltip", "Move the dragged items to this folder, preserving the structure of any copied folders."),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([=]() { MoveActionHandler.ExecuteIfBound(FinalAssetList, FinalAssetPaths, TargetPath); }))
-			);
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("DragDropAdvancedCopy", "Advanced Copy Here"),
-			LOCTEXT("DragDropMoveTooltip", "Copy the dragged items and any specified dependencies to this folder, afterwards fixing up any dependencies on copied files to the new files."),
+			LOCTEXT("DragDropAdvancedCopyTooltip", "Copy the dragged items and any specified dependencies to this folder, afterwards fixing up any dependencies on copied files to the new files."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([=]() { AdvancedCopyActionHandler.ExecuteIfBound(FinalAssetList, FinalAssetPaths, TargetPath); }))
 		);

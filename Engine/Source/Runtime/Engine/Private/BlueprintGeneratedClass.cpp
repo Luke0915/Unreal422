@@ -226,11 +226,11 @@ struct FConditionalRecompileClassHepler
 extern UNREALED_API FSecondsCounterData BlueprintCompileAndLoadTimerData;
 extern COREUOBJECT_API bool GBlueprintUseCompilationManager;
 
-void UBlueprintGeneratedClass::ConditionalRecompileClass(TArray<UObject*>* ObjLoaded)
+void UBlueprintGeneratedClass::ConditionalRecompileClass(FUObjectSerializeContext* InLoadContext)
 {
 	if(GBlueprintUseCompilationManager)
 	{
-		FBlueprintCompilationManager::FlushCompilationQueue(ObjLoaded);
+		FBlueprintCompilationManager::FlushCompilationQueue(InLoadContext);
 		return;
 	}
 	
@@ -265,7 +265,7 @@ void UBlueprintGeneratedClass::ConditionalRecompileClass(TArray<UObject*>* ObjLo
 			}
 			if ((GeneratingBP->Status != BS_Error) && (GeneratingBP->BlueprintType != EBlueprintType::BPTYPE_MacroLibrary))
 			{
-				FKismetEditorUtilities::RecompileBlueprintBytecode(GeneratingBP, ObjLoaded);
+				FKismetEditorUtilities::RecompileBlueprintBytecode(GeneratingBP);
 			}
 
 			GeneratingBP->bIsRegeneratingOnLoad = bWasRegenerating;
@@ -287,7 +287,7 @@ void UBlueprintGeneratedClass::FlushCompilationQueueForLevel()
 	{
 		if(Cast<ULevelScriptBlueprint>(ClassGeneratedBy))
 		{
-			FBlueprintCompilationManager::FlushCompilationQueue();
+			FBlueprintCompilationManager::FlushCompilationQueue(nullptr);
 		}
 	}
 }
@@ -316,16 +316,35 @@ void UBlueprintGeneratedClass::SerializeDefaultObject(UObject* Object, FArchive&
 		// @TODO - Potentially make this serializable (or cooked data) to eliminate the slight load time cost we'll incur below to generate this list in a cooked build. For now, it's not serialized since the raw UProperty references cannot be saved out.
 		UpdateCustomPropertyListForPostConstruction();
 
+		const FString BPGCName = GetName();
+		auto BuildCachedPropertyDataLambda = [BPGCName](FBlueprintCookedComponentInstancingData& CookedData, UActorComponent* SourceTemplate, FString CompVarName)
+		{
+			if (CookedData.bHasValidCookedData)
+			{
+				// This feature requires EDL at cook time, so ensure that the source template is also fully loaded at this point.
+				if (SourceTemplate != nullptr
+					&& ensure(!SourceTemplate->HasAnyFlags(RF_NeedLoad)))
+				{
+					CookedData.BuildCachedPropertyDataFromTemplate(SourceTemplate);
+				}
+				else
+				{
+					// This situation is unexpected; templates that are filtered out by context should not be generating fast path data at cook time. Emit a warning about this.
+					UE_LOG(LogBlueprint, Warning, TEXT("BPComp fast path (%s.%s) : Invalid source template. Will use slow path for dynamic instancing."), *BPGCName, *CompVarName);
+
+					// Invalidate the cooked data so that we fall back to using the slow path when dynamically instancing this node.
+					CookedData.bHasValidCookedData = false;
+				}
+			}
+		};
+
 		// Generate "fast path" instancing data for inherited SCS node templates. This data may also be used to support inherited SCS component default value overrides
 		// in a nativized, cooked build, in which this Blueprint class inherits from a nativized Blueprint parent. See CheckAndApplyComponentTemplateOverrides() below.
 		if (InheritableComponentHandler && (bHasCookedComponentInstancingData || bHasNativizedParent))
 		{
 			for (auto RecordIt = InheritableComponentHandler->CreateRecordIterator(); RecordIt; ++RecordIt)
 			{
-				if (RecordIt->ComponentTemplate && RecordIt->CookedComponentInstancingData.bIsValid)
-				{
-					RecordIt->CookedComponentInstancingData.BuildCachedPropertyDataFromTemplate(RecordIt->ComponentTemplate);
-				}
+				BuildCachedPropertyDataLambda(RecordIt->CookedComponentInstancingData, RecordIt->ComponentTemplate, RecordIt->ComponentKey.GetSCSVariableName().ToString());
 			}
 		}
 
@@ -337,10 +356,7 @@ void UBlueprintGeneratedClass::SerializeDefaultObject(UObject* Object, FArchive&
 				const TArray<USCS_Node*>& AllSCSNodes = SimpleConstructionScript->GetAllNodes();
 				for (USCS_Node* SCSNode : AllSCSNodes)
 				{
-					if (SCSNode->ComponentTemplate && SCSNode->CookedComponentInstancingData.bIsValid)
-					{
-						SCSNode->CookedComponentInstancingData.BuildCachedPropertyDataFromTemplate(SCSNode->ComponentTemplate);
-					}
+					BuildCachedPropertyDataLambda(SCSNode->CookedComponentInstancingData, SCSNode->ComponentTemplate, SCSNode->GetVariableName().ToString());
 				}
 			}
 
@@ -351,12 +367,10 @@ void UBlueprintGeneratedClass::SerializeDefaultObject(UObject* Object, FArchive&
 				{
 					if (ComponentTemplate)
 					{
-						if (FBlueprintCookedComponentInstancingData* ComponentInstancingData = CookedComponentInstancingData.Find(ComponentTemplate->GetFName()))
+						FBlueprintCookedComponentInstancingData* ComponentInstancingData = CookedComponentInstancingData.Find(ComponentTemplate->GetFName());
+						if (ComponentInstancingData != nullptr)
 						{
-							if (ComponentInstancingData->bIsValid)
-							{
-								ComponentInstancingData->BuildCachedPropertyDataFromTemplate(ComponentTemplate);
-							}
+							BuildCachedPropertyDataLambda(*ComponentInstancingData, ComponentTemplate, ComponentTemplate->GetName());
 						}
 					}
 				}
@@ -414,7 +428,8 @@ bool UBlueprintGeneratedClass::BuildCustomPropertyListForPostConstruction(FCusto
 				if (UStructProperty* StructProperty = Cast<UStructProperty>(Property))
 				{
 					// Create a new node for the struct property.
-					*CurrentNodePtr = new(CustomPropertyListForPostConstruction) FCustomPropertyListNode(Property, Idx);
+					*CurrentNodePtr = new FCustomPropertyListNode(Property, Idx);
+					CustomPropertyListForPostConstruction.Add(*CurrentNodePtr);
 
 					// Recursively gather up all struct fields that differ and assign to the current node's sub property list.
 					if (BuildCustomPropertyListForPostConstruction((*CurrentNodePtr)->SubPropertyList, StructProperty->Struct, PropertyValue, DefaultPropertyValue))
@@ -434,7 +449,8 @@ bool UBlueprintGeneratedClass::BuildCustomPropertyListForPostConstruction(FCusto
 				else if (UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property))
 				{
 					// Create a new node for the array property.
-					*CurrentNodePtr = new(CustomPropertyListForPostConstruction) FCustomPropertyListNode(Property, Idx);
+					*CurrentNodePtr = new FCustomPropertyListNode(Property, Idx);
+					CustomPropertyListForPostConstruction.Add(*CurrentNodePtr);
 
 					// Recursively gather up all array item indices that differ and assign to the current node's sub property list.
 					if (BuildCustomArrayPropertyListForPostConstruction(ArrayProperty, (*CurrentNodePtr)->SubPropertyList, PropertyValue, DefaultPropertyValue))
@@ -454,7 +470,8 @@ bool UBlueprintGeneratedClass::BuildCustomPropertyListForPostConstruction(FCusto
 				else if (!Property->Identical(PropertyValue, DefaultPropertyValue))
 				{
 					// Create a new node, link it into the chain and add it into the array.
-					*CurrentNodePtr = new(CustomPropertyListForPostConstruction) FCustomPropertyListNode(Property, Idx);
+					*CurrentNodePtr = new FCustomPropertyListNode(Property, Idx);
+					CustomPropertyListForPostConstruction.Add(*CurrentNodePtr);
 
 					// Advance to the next node ptr.
 					CurrentNodePtr = &(*CurrentNodePtr)->PropertyListNext;
@@ -485,7 +502,8 @@ bool UBlueprintGeneratedClass::BuildCustomArrayPropertyListForPostConstruction(U
 			if (UStructProperty* InnerStructProperty = Cast<UStructProperty>(ArrayProperty->Inner))
 			{
 				// Create a new node for the item value at this index.
-				*CurrentArrayNodePtr = new(CustomPropertyListForPostConstruction) FCustomPropertyListNode(ArrayProperty, ArrayValueIndex);
+				*CurrentArrayNodePtr = new FCustomPropertyListNode(ArrayProperty, ArrayValueIndex);
+				CustomPropertyListForPostConstruction.Add(*CurrentArrayNodePtr);
 
 				// Recursively gather up all struct fields that differ and assign to the array item value node's sub property list.
 				if (BuildCustomPropertyListForPostConstruction((*CurrentArrayNodePtr)->SubPropertyList, InnerStructProperty->Struct, ArrayPropertyValue, DefaultArrayPropertyValue))
@@ -505,7 +523,8 @@ bool UBlueprintGeneratedClass::BuildCustomArrayPropertyListForPostConstruction(U
 			else if (UArrayProperty* InnerArrayProperty = Cast<UArrayProperty>(ArrayProperty->Inner))
 			{
 				// Create a new node for the item value at this index.
-				*CurrentArrayNodePtr = new(CustomPropertyListForPostConstruction) FCustomPropertyListNode(ArrayProperty, ArrayValueIndex);
+				*CurrentArrayNodePtr = new FCustomPropertyListNode(ArrayProperty, ArrayValueIndex);
+				CustomPropertyListForPostConstruction.Add(*CurrentArrayNodePtr);
 
 				// Recursively gather up all array item indices that differ and assign to the array item value node's sub property list.
 				if (BuildCustomArrayPropertyListForPostConstruction(InnerArrayProperty, (*CurrentArrayNodePtr)->SubPropertyList, ArrayPropertyValue, DefaultArrayPropertyValue))
@@ -525,7 +544,8 @@ bool UBlueprintGeneratedClass::BuildCustomArrayPropertyListForPostConstruction(U
 			else if (!ArrayProperty->Inner->Identical(ArrayPropertyValue, DefaultArrayPropertyValue))
 			{
 				// Create a new node, link it into the chain and add it into the array.
-				*CurrentArrayNodePtr = new(CustomPropertyListForPostConstruction) FCustomPropertyListNode(ArrayProperty, ArrayValueIndex);
+				*CurrentArrayNodePtr = new FCustomPropertyListNode(ArrayProperty, ArrayValueIndex);
+				CustomPropertyListForPostConstruction.Add(*CurrentArrayNodePtr);
 
 				// Advance to the next array item node ptr.
 				CurrentArrayNodePtr = &(*CurrentArrayNodePtr)->PropertyListNext;
@@ -1180,7 +1200,7 @@ void UBlueprintGeneratedClass::CheckAndApplyComponentTemplateOverrides(UObject* 
 						if (ComponentKey.IsValid() && ComponentKey.IsSCSKey())
 						{
 							const FBlueprintCookedComponentInstancingData* OverrideData = ICH->GetOverridenComponentTemplateData(ComponentKey);
-							if (OverrideData != nullptr && OverrideData->bIsValid)
+							if (OverrideData != nullptr && OverrideData->bHasValidCookedData)
 							{
 								// This is the instance of the inherited component subobject that's owned by the given class default object
 								if (UObject* NativizedComponentSubobjectInstance = InClassDefaultObject->GetDefaultSubobjectByName(NativizedComponentSubobjectName))
@@ -1212,6 +1232,23 @@ void UBlueprintGeneratedClass::CheckAndApplyComponentTemplateOverrides(UObject* 
 			}
 		}
 	}
+}
+
+uint8* UBlueprintGeneratedClass::GetPersistentUberGraphFrame(UObject* Obj, UFunction* FuncToCheck) const
+{
+	if (Obj && UsePersistentUberGraphFrame() && UberGraphFramePointerProperty && UberGraphFunction)
+	{
+		if (UberGraphFunction == FuncToCheck)
+		{
+			FPointerToUberGraphFrame* PointerToUberGraphFrame = UberGraphFramePointerProperty->ContainerPtrToValuePtr<FPointerToUberGraphFrame>(Obj);
+			checkSlow(PointerToUberGraphFrame);
+			ensure(PointerToUberGraphFrame->RawPointer);
+			return PointerToUberGraphFrame->RawPointer;
+		}
+	}
+	UClass* ParentClass = GetSuperClass();
+	checkSlow(ParentClass);
+	return ParentClass->GetPersistentUberGraphFrame(Obj, FuncToCheck);
 }
 
 void UBlueprintGeneratedClass::CreatePersistentUberGraphFrame(UObject* Obj, bool bCreateOnlyIfEmpty, bool bSkipSuperClass, UClass* OldClass) const
@@ -1374,6 +1411,13 @@ void UBlueprintGeneratedClass::GetDefaultObjectPreloadDependencies(TArray<UObjec
 			const TArray<USCS_Node*>& AllSCSNodes = CurrentBPClass->SimpleConstructionScript->GetAllNodes();
 			for (USCS_Node* SCSNode : AllSCSNodes)
 			{
+				// An SCS node that's owned by this class must also be considered a preload dependency since we will access its serialized template reference property. Any SCS
+				// nodes that are inherited from a parent class will reference templates through the ICH instead, and that's already a preload dependency on the BP class itself.
+				if (CurrentBPClass == this)
+				{
+					OutDeps.Add(SCSNode);
+				}
+
 				OutDeps.Add(SCSNode->GetActualComponentTemplate(this));
 			}
 		}
@@ -1475,6 +1519,7 @@ void UBlueprintGeneratedClass::PurgeClass(bool bRecompilingOnLoad)
 {
 	Super::PurgeClass(bRecompilingOnLoad);
 
+	UberGraphFramePointerProperty = NULL;
 	UberGraphFunction = NULL;
 #if VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
 	UberGraphFunctionKey = 0;
@@ -1638,7 +1683,8 @@ void FBlueprintCookedComponentInstancingData::BuildCachedPropertyList(FCustomPro
 		}
 
 		// Create a new node to hold property info.
-		FCustomPropertyListNode* NewNode = new(CachedPropertyListForSerialization) FCustomPropertyListNode(Property, ChangedPropertyInfo.ArrayIndex);
+		FCustomPropertyListNode* NewNode = new FCustomPropertyListNode(Property, ChangedPropertyInfo.ArrayIndex);
+		CachedPropertyListForSerialization.Add(NewNode);
 
 		// Link the new node into the current property list.
 		if (CurrentNode)
@@ -1672,7 +1718,8 @@ void FBlueprintCookedComponentInstancingData::BuildCachedArrayPropertyList(const
 		const FBlueprintComponentChangedPropertyInfo& ChangedArrayPropertyInfo = ChangedPropertyList[(*CurrentSourceIdx)++];
 		UProperty* InnerProperty = ChangedArrayPropertyInfo.PropertyName != NAME_None ? ArrayProperty->Inner : nullptr;
 
-		*ArraySubPropertyNode = new(CachedPropertyListForSerialization) FCustomPropertyListNode(InnerProperty, ChangedArrayPropertyInfo.ArrayIndex);
+		*ArraySubPropertyNode = new FCustomPropertyListNode(InnerProperty, ChangedArrayPropertyInfo.ArrayIndex);
+		CachedPropertyListForSerialization.Add(*ArraySubPropertyNode);
 
 		// If this is a UStruct property, recursively build a sub-property list.
 		if (const UStructProperty* InnerStructProperty = Cast<UStructProperty>(InnerProperty))
@@ -1729,46 +1776,31 @@ void FBlueprintCookedComponentInstancingData::BuildCachedPropertyDataFromTemplat
 		}
 	};
 
-	if (bIsValid)
+	checkSlow(bHasValidCookedData);
+	checkSlow(SourceTemplate != nullptr);
+	checkSlow(!SourceTemplate->HasAnyFlags(RF_NeedLoad));
+
+	// Cache source template attributes needed for instancing.
+	ComponentTemplateName = SourceTemplate->GetFName();
+	ComponentTemplateClass = SourceTemplate->GetClass();
+	ComponentTemplateFlags = SourceTemplate->GetFlags();
+
+	// This will also load the cached property list, if necessary.
+	const FCustomPropertyListNode* PropertyList = GetCachedPropertyList();
+
+	// Make sure we don't have any previously-built data.
+	if (!ensure(CachedPropertyData.Num() == 0))
 	{
-		if (SourceTemplate)
-		{
-			// Make sure the source template has been loaded.
-			if (SourceTemplate->HasAnyFlags(RF_NeedLoad))
-			{
-				if (FLinkerLoad* Linker = SourceTemplate->GetLinker())
-				{
-					Linker->Preload(SourceTemplate);
-				}
-			}
+		DEC_MEMORY_STAT_BY(STAT_BPCompInstancingFastPathMemory, CachedPropertyData.GetAllocatedSize());
 
-			// Cache source template attributes needed for instancing.
-			ComponentTemplateName = SourceTemplate->GetFName();
-			ComponentTemplateClass = SourceTemplate->GetClass();
-			ComponentTemplateFlags = SourceTemplate->GetFlags();
-
-			// This will also load the cached property list, if necessary.
-			const FCustomPropertyListNode* PropertyList = GetCachedPropertyList();
-
-			// Make sure we don't have any previously-built data.
-			if (!ensure(CachedPropertyData.Num() == 0))
-			{
-				DEC_MEMORY_STAT_BY(STAT_BPCompInstancingFastPathMemory, CachedPropertyData.GetAllocatedSize());
-
-				CachedPropertyData.Empty();
-			}
-
-			// Write template data out to the "fast path" buffer. All dependencies will be loaded at this point.
-			FBlueprintComponentInstanceDataWriter InstanceDataWriter(CachedPropertyData, PropertyList);
-			SourceTemplate->Serialize(InstanceDataWriter);
-
-			INC_MEMORY_STAT_BY(STAT_BPCompInstancingFastPathMemory, CachedPropertyData.GetAllocatedSize());
-		}
-		else
-		{
-			bIsValid = false;
-		}
+		CachedPropertyData.Empty();
 	}
+
+	// Write template data out to the "fast path" buffer. All dependencies will be loaded at this point.
+	FBlueprintComponentInstanceDataWriter InstanceDataWriter(CachedPropertyData, PropertyList);
+	SourceTemplate->Serialize(InstanceDataWriter);
+
+	INC_MEMORY_STAT_BY(STAT_BPCompInstancingFastPathMemory, CachedPropertyData.GetAllocatedSize());
 }
 
 bool UBlueprintGeneratedClass::ArePropertyGuidsAvailable() const

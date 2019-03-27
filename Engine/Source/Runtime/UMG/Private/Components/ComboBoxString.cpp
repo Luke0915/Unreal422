@@ -13,9 +13,12 @@
 UComboBoxString::UComboBoxString(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	SComboBox< TSharedPtr<FString> >::FArguments SlateDefaults;
-	WidgetStyle = *SlateDefaults._ComboBoxStyle;
-	ItemStyle = *SlateDefaults._ItemStyle;
+	// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BY DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
+	static const FComboBoxStyle StaticComboboxStyle = FCoreStyle::Get().GetWidgetStyle< FComboBoxStyle >("ComboBox");
+	static const FTableRowStyle StaticRowStyle = FCoreStyle::Get().GetWidgetStyle< FTableRowStyle >("TableView.Row");
+
+	WidgetStyle = StaticComboboxStyle;
+	ItemStyle = StaticRowStyle;
 	ItemStyle.SelectorFocusedBrush.TintColor = ItemStyle.SelectorFocusedBrush.TintColor.GetSpecifiedColor();
 	ItemStyle.ActiveHoveredBrush.TintColor = ItemStyle.ActiveHoveredBrush.TintColor.GetSpecifiedColor();
 	ItemStyle.ActiveBrush.TintColor = ItemStyle.ActiveBrush.TintColor.GetSpecifiedColor();
@@ -215,10 +218,15 @@ void UComboBoxString::RefreshOptions()
 void UComboBoxString::SetSelectedOption(FString Option)
 {
 	int32 InitialIndex = FindOptionIndex(Option);
-	if (InitialIndex != -1)
+	SetSelectedIndex(InitialIndex);
+}
+
+void UComboBoxString::SetSelectedIndex(const int32 Index)
+{
+	if (Options.IsValidIndex(Index))
 	{
-		CurrentOptionPtr = Options[InitialIndex];
-		SelectedOption = Option;
+		CurrentOptionPtr = Options[Index];
+		SelectedOption = *CurrentOptionPtr;
 
 		if ( ComboBoxContent.IsValid() )
 		{
@@ -235,6 +243,22 @@ FString UComboBoxString::GetSelectedOption() const
 		return *CurrentOptionPtr;
 	}
 	return FString();
+}
+
+int32 UComboBoxString::GetSelectedIndex() const
+{
+	if (CurrentOptionPtr.IsValid())
+	{
+		for (int32 OptionIndex = 0; OptionIndex < Options.Num(); ++OptionIndex)
+		{
+			if (Options[OptionIndex] == CurrentOptionPtr)
+			{
+				return OptionIndex;
+			}
+		}
+	}
+
+	return -1;
 }
 
 int32 UComboBoxString::GetOptionCount() const

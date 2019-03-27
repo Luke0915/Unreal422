@@ -9,6 +9,8 @@
 #include "SocialReadOnlyChatChannel.h"
 #include "SocialPrivateMessageChannel.h"
 #include "SocialChatRoom.h"
+#include "SocialGroupChannel.h"
+#include "Interfaces/OnlineGroupsInterface.h"
 #include "SocialChatManager.generated.h"
 
 class USocialChatRoom;
@@ -45,7 +47,7 @@ struct FSocialChatChannelConfig
 };
 
 /** The chat manager is a fully passive construct that watches for creation of chat rooms and message activity therein */
-UCLASS(Within=SocialToolkit)
+UCLASS(Within=SocialToolkit, Config=Game)
 class PARTY_API USocialChatManager : public UObject
 {
 	GENERATED_BODY()
@@ -101,8 +103,39 @@ public:
 	virtual TSubclassOf<USocialChatChannel> GetClassForReadOnlyChannel() const { return USocialReadOnlyChatChannel::StaticClass(); }
 
 	virtual bool IsChatRestricted() const;
+	virtual TSubclassOf<USocialGroupChannel> GetClassForGroupChannel() const { return USocialGroupChannel::StaticClass(); }
 
 	USocialToolkit& GetOwningToolkit() const;
+
+	bool AreSlashCommandsEnabled() { return bEnableChatSlashCommands; }
+
+	USocialChatChannel* GetChatRoomForType(ESocialChannelType Key);
+
+
+
+
+	//----------------------------------------------------------------------
+	// KIAROS GROUP MANAGEMENT, tbd channels?
+
+public:
+
+	virtual void GetGroupChannels(TArray<USocialGroupChannel*>& JoinedChannels) const;
+
+	//DECLARE_EVENT_OneParam(USocialChatManager, FOnChatChannelFocusRequested, USocialChatChannel&);
+	//FOnChatChannelFocusRequested& OnGroupsChanged() const { return OnChannelFocusRequestedEvent; }
+
+protected:
+	virtual void InitializeGroupChannels();
+	void LocalUserInitialized(USocialUser& LocalUser);
+	void RefreshGroupsRequestCompleted(FGroupsResult Result);
+
+	IOnlineGroupsPtr GetOnlineGroupInterface(ESocialSubsystem InSocialSubsystem = ESocialSubsystem::Primary) const;
+	USocialGroupChannel& FindOrCreateGroupChannel(IOnlineGroupsPtr InGroupInterface, const FUniqueNetId& GroupId);
+
+	void OnGroupUpdated(const FUniqueNetId& GroupId);
+
+	// END KIAROS GROUP MANAGEMENT
+	//----------------------------------------------------------------------
 
 protected:
 	IOnlineChatPtr GetOnlineChatInterface(ESocialSubsystem InSocialSubsystem = ESocialSubsystem::Primary) const;
@@ -111,12 +144,16 @@ protected:
 
 	virtual void HandleChatRoomMessageReceived(const FUniqueNetId& LocalUserId, const FChatRoomId& RoomId, const TSharedRef<FChatMessage>& ChatMessage);
 	virtual void HandleChatPrivateMessageReceived(const FUniqueNetId& LocalUserId, const TSharedRef<FChatMessage>& ChatMessage);
+
+	virtual void OnChannelCreatedInternal(USocialChatChannel& CreatedChannel);
+	virtual void OnChannelLeftInternal(USocialChatChannel& ChannelLeft);
 private:
+	TMap < ESocialChannelType, TWeakObjectPtr<USocialChatChannel>> ChannelsByType;
 
 	USocialChatRoom& FindOrCreateRoom(const FChatRoomId& RoomId);
 	USocialChatChannel& FindOrCreateChannel(USocialUser& SocialUser);
 	USocialChatChannel& FindOrCreateChannel(const FText& DisplayName);
-	
+
 	void HandleChatRoomCreated(const FUniqueNetId& LocalUserId, const FChatRoomId& RoomId, bool bWasSuccessful, const FString& Error);
 	void HandleChatRoomConfigured(const FUniqueNetId& LocalUserId, const FChatRoomId& RoomId, bool bWasSuccessful, const FString& Error);
 	void HandleChatRoomJoinPublic(const FUniqueNetId& LocalUserId, const FChatRoomId& RoomId, bool bWasSuccessful, const FString& Error);
@@ -142,6 +179,12 @@ private:
 
 	UPROPERTY()
 	TMap<FString, USocialReadOnlyChatChannel*> ReadOnlyChannelsByDisplayName;
+
+	UPROPERTY(config)
+	bool bEnableChatSlashCommands = true;
+	
+	UPROPERTY()
+	TMap<FUniqueNetIdRepl, USocialGroupChannel*> GroupChannels;
 
 	mutable FOnChatChannelCreated OnChannelCreatedEvent;
 	mutable FOnChatChannelLeft OnChannelLeftEvent;

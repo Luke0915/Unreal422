@@ -24,7 +24,7 @@ void UNiagaraNodeOp::AllocateDefaultPins()
 	for (int32 SrcIndex = 0; SrcIndex < OpInfo->Inputs.Num(); ++SrcIndex)
 	{
 		const FNiagaraOpInOutInfo& InOutInfo = OpInfo->Inputs[SrcIndex];
-		UEdGraphPin* Pin = CreatePin(EGPD_Input, Schema->TypeDefinitionToPinType(InOutInfo.DataType), *InOutInfo.FriendlyName.ToString());
+		UEdGraphPin* Pin = CreatePin(EGPD_Input, Schema->TypeDefinitionToPinType(InOutInfo.DataType), *InOutInfo.Name.ToString());
 		check(Pin);
 		Pin->bDefaultValueIsIgnored = false;
 		Pin->bDefaultValueIsReadOnly = false;
@@ -49,7 +49,7 @@ void UNiagaraNodeOp::AllocateDefaultPins()
 	for (int32 OutIdx = 0; OutIdx < OpInfo->Outputs.Num(); ++OutIdx)
 	{
 		const FNiagaraOpInOutInfo& InOutInfo = OpInfo->Outputs[OutIdx];
-		UEdGraphPin* Pin = CreatePin(EGPD_Output, Schema->TypeDefinitionToPinType(InOutInfo.DataType), *InOutInfo.FriendlyName.ToString());
+		UEdGraphPin* Pin = CreatePin(EGPD_Output, Schema->TypeDefinitionToPinType(InOutInfo.DataType), *InOutInfo.Name.ToString());
 		check(Pin);
 		Pin->PinToolTip = InOutInfo.Description.ToString();
 	}
@@ -162,24 +162,14 @@ void UNiagaraNodeOp::PostLoad()
 		UE_LOG(LogNiagaraEditor, Log, TEXT("OpNode: Converted %s to %s, Package: %s"), *OriginalOpName.ToString(), *OpName.ToString(), *GetOutermost()->GetName());
 	}
 
-
-	if (AllowDynamicPins())
+	const int32 NiagaraVer = GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
+	if (NiagaraVer < FNiagaraCustomVersion::ImproveLoadTimeFixupOfOpAddPins &&
+		AllowDynamicPins() &&
+		Pins.FindByPredicate([this](UEdGraphPin* Pin) { return IsAddPin(Pin); }) == nullptr)
 	{
-		bool HasAddPin = false;
-		for (UEdGraphPin* Pin : Pins)
-		{
-			if (IsAddPin(Pin))
-			{
-				HasAddPin = true;
-				break;
-			}
-		}
-		if (!HasAddPin)
-		{
-			// This adds the "plus" pin to nodes that were created before the feature was added
-			ReallocatePins();
-			UE_LOG(LogNiagaraEditor, Log, TEXT("OpNode %s, Package %s: reallocated existing pins to add new extension pin"), *OpName.ToString(), *GetOutermost()->GetName());
-		}
+		// Add the pin directly here rather than calling allocate default pins to prevent the graph id from being invalidated
+		// since adding the add pin doesn't change the compile behavior.
+		CreateAddPin(EGPD_Input);
 	}
 }
 

@@ -437,7 +437,7 @@ void FKCHandler_CallFunction::CreateFunctionCallStatement(FKismetFunctionContext
 	}
 	else
 	{
-		FString WarningMessage = FText::Format(LOCTEXT("FindFunction_ErrorFmt", "Could not find the function '{0}' called from @@"), FText::FromString(GetFunctionNameFromNode(Node))).ToString();
+		FString WarningMessage = FText::Format(LOCTEXT("FindFunction_ErrorFmt", "Could not find the function '{0}' called from @@"), FText::FromString(GetFunctionNameFromNode(Node).ToString())).ToString();
 		CompilerContext.MessageLog.Warning(*WarningMessage, Node);
 	}
 }
@@ -566,7 +566,7 @@ void FKCHandler_CallFunction::RegisterNets(FKismetFunctionContext& Context, UEdG
 			((Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Object) && (Pin->LinkedTo[0]->PinType.PinCategory == UEdGraphSchema_K2::PC_Interface)))
 		{
 			FBPTerminal* InterfaceTerm = Context.CreateLocalTerminal();
-			InterfaceTerm->CopyFromPin(Pin, Context.NetNameMap->MakeValidName(Pin) + TEXT("_CastInput"));
+			InterfaceTerm->CopyFromPin(Pin, Context.NetNameMap->MakeValidName(Pin, TEXT("CastInput")));
 			InterfaceTerm->Source = Node;
 
 			InterfaceTermMap.Add(Pin, InterfaceTerm);
@@ -589,9 +589,8 @@ UFunction* FKCHandler_CallFunction::FindFunction(FKismetFunctionContext& Context
 
 	if (CallingContext)
 	{
-		FString FunctionName = GetFunctionNameFromNode(Node);
-
-		return CallingContext->FindFunctionByName(*FunctionName);
+		const FName FunctionName = GetFunctionNameFromNode(Node);
+		return CallingContext->FindFunctionByName(FunctionName);
 	}
 
 	return nullptr;
@@ -712,17 +711,17 @@ void FKCHandler_CallFunction::CheckIfFunctionIsCallable(UFunction* Function, FKi
 }
 
 // Get the name of the function to call from the node
-FString FKCHandler_CallFunction::GetFunctionNameFromNode(UEdGraphNode* Node) const
+FName FKCHandler_CallFunction::GetFunctionNameFromNode(UEdGraphNode* Node) const
 {
 	UK2Node_CallFunction* CallFuncNode = Cast<UK2Node_CallFunction>(Node);
 	if (CallFuncNode)
 	{
-		return CallFuncNode->FunctionReference.GetMemberName().ToString();
+		return CallFuncNode->FunctionReference.GetMemberName();
 	}
 	else
 	{
 		CompilerContext.MessageLog.Error(*NSLOCTEXT("KismetCompiler", "UnableResolveFunctionName_Error", "Unable to resolve function name for @@").ToString(), Node);
-		return TEXT("");
+		return NAME_None;
 	}
 }
 

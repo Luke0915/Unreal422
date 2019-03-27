@@ -184,6 +184,13 @@ void UCineCameraComponent::ResetProxyMeshTransform()
 
 #endif	// WITH_EDITORONLY_DATA
 
+void UCineCameraComponent::SetFieldOfView(float InFieldOfView)
+{
+	Super::SetFieldOfView(InFieldOfView);
+
+	CurrentFocalLength = (FilmbackSettings.SensorWidth / 2.f) / FMath::Tan(FMath::DegreesToRadians(InFieldOfView / 2.f));
+}
+
 float UCineCameraComponent::GetHorizontalFieldOfView() const
 {
 	return (CurrentFocalLength > 0.f)
@@ -476,7 +483,6 @@ void UCineCameraComponent::CreateDebugFocusPlane()
 			DebugFocusPlaneComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 			DebugFocusPlaneComponent->bHiddenInGame = false;
 			DebugFocusPlaneComponent->CastShadow = false;
-			DebugFocusPlaneComponent->PostPhysicsComponentTick.bCanEverTick = false;
 			DebugFocusPlaneComponent->CreationMethod = CreationMethod;
 			DebugFocusPlaneComponent->bSelectable = false;
 

@@ -345,6 +345,7 @@ namespace UnrealBuildTool
 			public List<Project> CSharpProjects = new List<Project>();
 			public List<Project> AllProjects = new List<Project>();
 			public List<string> CombinedIncludePaths = new List<string>();
+			public List<string> CombinedPreprocessorDefinitions = new List<string>();
 		}
 
 		private ProjectData GatherProjectData(List<ProjectFile> InProjects, PlatformProjectGeneratorCollection PlatformProjectGenerators)
@@ -433,6 +434,15 @@ namespace UnrealBuildTool
 								ProjectData.CombinedIncludePaths.Add(Processed);
 							}
 							
+						}
+					}
+					
+					foreach (string Definition in Project.IntelliSensePreprocessorDefinitions)
+					{
+						string Processed = Definition.Replace("\"", "\\\"");
+						if (!ProjectData.CombinedPreprocessorDefinitions.Contains(Processed))
+						{
+							ProjectData.CombinedPreprocessorDefinitions.Add(Processed);
 						}
 					}
 
@@ -615,8 +625,10 @@ namespace UnrealBuildTool
 
 						OutFile.BeginArray("defines");
 						{
-							OutFile.AddUnnamedField("_DEBUG");
-							OutFile.AddUnnamedField("UNICODE");
+							foreach (string Definition in Projects.CombinedPreprocessorDefinitions)
+							{
+								OutFile.AddUnnamedField(Definition);
+							}
 						}
 						OutFile.EndArray();
 					}
@@ -1186,6 +1198,10 @@ namespace UnrealBuildTool
 					{
 						DirectoryReference ProjDir = Target.TargetFilePath.Directory.GetDirectoryName() == "Source" ? Target.TargetFilePath.Directory.ParentDirectory : Target.TargetFilePath.Directory;
 						GetExcludePathsCPP(ProjDir, PathsToExclude);
+						
+						DirectoryReference PluginRootDir = DirectoryReference.Combine(ProjDir, "Plugins");
+						WriteWorkspaceSettingsFileForPlugins(PluginRootDir, PathsToExclude);
+
 						bFoundTarget = true;
 					}
 				}
@@ -1213,6 +1229,26 @@ namespace UnrealBuildTool
 			OutFile.Write(FileReference.Combine(VSCodeDir, "settings.json"));
 		}
 
+		private void WriteWorkspaceSettingsFileForPlugins(DirectoryReference PluginBaseDir, List<string> PathsToExclude)
+		{
+			if (DirectoryReference.Exists(PluginBaseDir))
+			{
+				foreach (DirectoryReference SubDir in DirectoryReference.EnumerateDirectories(PluginBaseDir, "*", SearchOption.TopDirectoryOnly))
+				{
+					string[] UPluginFiles = Directory.GetFiles(SubDir.ToString(), "*.uplugin");
+					if (UPluginFiles.Length == 1)
+					{
+						DirectoryReference PluginDir = SubDir;
+						GetExcludePathsCPP(PluginDir, PathsToExclude);
+					}
+					else
+					{
+						WriteWorkspaceSettingsFileForPlugins(SubDir, PathsToExclude);
+					}
+				}
+			}
+		}
+		
 		private void WriteWorkspaceFile(ProjectData ProjectData)
 		{
 			JsonFile WorkspaceFile = new JsonFile();

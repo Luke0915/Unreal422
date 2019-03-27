@@ -790,6 +790,8 @@ static void ClearAnimCompressionJobs(FGraphEventArray& AnimCompressionTask_Compl
 	for (FAnimCompressionJobContext* Context : AnimCompressionJobContexes)
 	{
 		Context->AnimSeq->RecycleAnimSequence();
+		Context->AnimSeq->ClearFlags(RF_Standalone | RF_Public);
+		Context->AnimSeq->MarkPendingKill();
 		delete Context;
 	}
 	AnimCompressionJobContexes.Reset();
@@ -2235,7 +2237,6 @@ void FAnimationUtils::TallyErrorsFromPerturbation(
 	}
 }
 
-#if WITH_EDITOR
 static UAnimCurveCompressionSettings* DefaultCurveCompressionSettings = nullptr;
 
 UAnimCurveCompressionSettings* FAnimationUtils::GetDefaultAnimationCurveCompressionSettings()
@@ -2294,6 +2295,8 @@ UAnimCurveCompressionSettings* FAnimationUtils::GetDefaultAnimationCurveCompress
 
 	return DefaultCurveCompressionSettings;
 }
+
+#if WITH_EDITOR
 
 bool FAnimationUtils::CompressAnimCurves(UAnimSequence& AnimSeq)
 {

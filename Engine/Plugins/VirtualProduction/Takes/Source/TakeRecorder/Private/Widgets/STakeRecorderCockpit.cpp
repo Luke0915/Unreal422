@@ -94,6 +94,15 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 
 	CacheMetaData();
 
+	if (TakeMetaData && !TakeMetaData->IsLocked())
+	{
+		int32 NextTakeNumber = UTakesCoreBlueprintLibrary::ComputeNextTakeNumber(TakeMetaData->GetSlate());
+		if (NextTakeNumber != TakeMetaData->GetTakeNumber())
+		{
+			TakeMetaData->SetTakeNumber(NextTakeNumber);
+		}
+	}
+
 	UpdateTakeError();
 	UpdateRecordError();
 
@@ -359,7 +368,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 						SNew(STextBlock)
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						.Font(FTakeRecorderStyle::Get().GetFontStyle("TakeRecorder.Cockpit.SmallText"))
-						.Text(FText::FromString(TEXT("60 fps")))
+						.Text(this, &STakeRecorderCockpit::GetFrameRateText)
 					]
 				]
 
@@ -450,10 +459,11 @@ void STakeRecorderCockpit::UpdateRecordError()
 		return;
 	}
 
-	FString PackageName = TakeMetaData->GenerateAssetPath(GetDefault<UTakeRecorderProjectSettings>()->Settings.TakeSaveDir.Path);
-	if (!FPackageName::IsValidLongPackageName(PackageName))
+	FString PackageName = TakeMetaData->GenerateAssetPath(GetDefault<UTakeRecorderProjectSettings>()->Settings.GetTakeAssetPath());
+	FText OutReason;
+	if (!FPackageName::IsValidLongPackageName(PackageName, false, &OutReason))
 	{
-		RecordErrorText = FText::Format(LOCTEXT("ErrorWidget_InvalidPath", "{0} is not a valid asset path."), FText::FromString(PackageName));
+		RecordErrorText = FText::Format(LOCTEXT("ErrorWidget_InvalidPath", "{0} is not a valid asset path. {1}"), FText::FromString(PackageName), OutReason);
 		return;
 	}
 }
@@ -589,6 +599,11 @@ FText STakeRecorderCockpit::GetTimestampText() const
 	return TextTime;
 }
 
+FText STakeRecorderCockpit::GetFrameRateText() const
+{
+	return GetFrameRate().ToPrettyText();
+}
+
 FFrameRate STakeRecorderCockpit::GetFrameRate() const
 {
 	return TakeMetaData->GetFrameRate();
@@ -625,22 +640,6 @@ void STakeRecorderCockpit::SetUserDescriptionText(const FText& InNewText, ETextC
 		TakeMetaData->Modify();
 
 		TakeMetaData->SetDescription(InNewText.ToString());
-	}
-}
-
-void STakeRecorderCockpit::SetFrameRate(FFrameRate InNewFrameRate)
-{
-	FScopedTransaction Transaction(LOCTEXT("SetFrameRate_Transaction", "Set Frame Rate"));
-	TakeMetaData->Modify();
-
-	TakeMetaData->SetFrameRate(InNewFrameRate);
-
-	ULevelSequence* Sequence   = LevelSequenceAttribute.Get();
-	UMovieScene*    MovieScene = Sequence ? Sequence->GetMovieScene() : nullptr;
-	if (MovieScene)
-	{
-		MovieScene->Modify();
-		MovieScene->SetDisplayRate(InNewFrameRate);
 	}
 }
 

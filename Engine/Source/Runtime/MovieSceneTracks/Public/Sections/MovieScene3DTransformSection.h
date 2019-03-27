@@ -249,6 +249,7 @@ public:
 	/* From UMovieSection*/
 	
 	virtual bool ShowCurveForChannel(const void *Channel) const override;
+	virtual void SetBlendType(EMovieSceneBlendType InBlendType) override;
 
 public:
 
@@ -278,7 +279,8 @@ protected:
 	virtual void PostEditImport() override;
 	virtual TSharedPtr<FStructOnScope> GetKeyStruct(TArrayView<const FKeyHandle> KeyHandles) override;
 	virtual FMovieSceneEvalTemplatePtr GenerateTemplate() const override;
-
+	virtual float GetTotalWeightValue(FFrameTime InTime) const override;
+	
 	void UpdateChannelProxy();
 
 private:
@@ -308,6 +310,12 @@ private:
 	/** Whether to use a quaternion linear interpolation between keys. This finds the 'shortest' distance between keys */
 	UPROPERTY(EditAnywhere, DisplayName = "Use Quaternion Interpolation", Category = "Rotation")
 	bool bUseQuaternionInterpolation;
+
+public:
+	/**
+	 * Access the interrogation key for transform data - any interrgation data stored with this key is guaranteed to be of type 'FTransform'
+	 */
+	MOVIESCENETRACKS_API static FMovieSceneInterrogationKey GetInterrogationKey();
 
 #if WITH_EDITORONLY_DATA
 

@@ -35,6 +35,7 @@
 #include "Widgets/Notifications/SErrorText.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformModule.h"
+#include "IOSPlatformEditorModule.h"
 
 #define LOCTEXT_NAMESPACE "IOSTargetSettings"
 DEFINE_LOG_CATEGORY_STATIC(LogIOSTargetSettings, Log, All);
@@ -108,6 +109,9 @@ FIOSTargetSettingsCustomization::FIOSTargetSettingsCustomization()
 	bShowAllCertificates = false;
 	ProvisionList = MakeShareable(new TArray<ProvisionPtr>());
 	CertificateList = MakeShareable(new TArray<CertificatePtr>());
+
+	FIOSPlatformEditorModule::OnSelect.AddRaw(this, &FIOSTargetSettingsCustomization::OnSelect);
+
 }
 
 FIOSTargetSettingsCustomization::~FIOSTargetSettingsCustomization()
@@ -117,6 +121,8 @@ FIOSTargetSettingsCustomization::~FIOSTargetSettingsCustomization()
 		IPPProcess = NULL;
 		FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 	}
+
+	FIOSPlatformEditorModule::OnSelect.RemoveAll(this);
 }
 
 void FIOSTargetSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder& DetailLayout)
@@ -130,6 +136,11 @@ void FIOSTargetSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder& Det
 	BuildRemoteBuildingSection(DetailLayout);
 
 	AudioPluginWidgetManager.BuildAudioCategory(DetailLayout, EAudioPlatform::IOS);
+
+}
+
+void FIOSTargetSettingsCustomization::OnSelect()
+{
 	FindRequiredFiles();
 }
 
@@ -1796,27 +1807,22 @@ void FIOSTargetSettingsCustomization::SetShaderStandard(int32 Value)
 			Message = LOCTEXT("iOSMetalShaderVersion1_1","Enabling Metal Shader Standard v1.1 increases the minimum operating system requirement for Metal from iOS 8.0 or later to iOS 9.0 or later. This does not affect tvOS.");
 			SetMinVersion((int32)EIOSVersion::IOS_9);
 		}
-		else if (Value < 2 && bMRTEnabled)
+		else if (Value < 3 && bMRTEnabled)
 		{
-			FPropertyAccess::Result ResMRT = ShaderVersionPropertyHandle->SetValue((uint8)2);
+			FPropertyAccess::Result ResMRT = ShaderVersionPropertyHandle->SetValue((uint8)3);
 			check(ResMRT == FPropertyAccess::Success);
 
-			Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v1.2 which increases the minimum operating system requirement for Metal from iOS 8.0 or later to iOS 10.0 or later.");
-			SetMinVersion((int32)EIOSVersion::IOS_10);
-		}
-		else if (Value == 2 && (EIOSVersion)EnumValue < EIOSVersion::IOS_10)
-		{
-			Message = LOCTEXT("iOSMetalShaderVersion1_2","Enabling Metal Shader Standard v1.2 increases the minimum operating system requirement for Metal from iOS 8.0/tvOS 9.0 or later to iOS/tvOS 10.0 or later.");
-			SetMinVersion((int32)EIOSVersion::IOS_10);
+			Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v2.0 which increases the minimum operating system requirement for Metal from iOS 10.0 or later to iOS 11.0 or later.");
+			SetMinVersion((int32)EIOSVersion::IOS_11);
 		}
 		else if (Value == 3 && (EIOSVersion)EnumValue < EIOSVersion::IOS_11)
 		{
-			Message = LOCTEXT("iOSMetalShaderVersion2_0","Enabling Metal Shader Standard v2.0 increases the minimum operating system requirement for Metal from iOS 8.0/tvOS 9.0 or later to iOS/tvOS 11.0 or later.");
+			Message = LOCTEXT("iOSMetalShaderVersion2_0","Enabling Metal Shader Standard v2.0 increases the minimum operating system requirement for Metal from iOS 10.0/tvOS 10.0 or later to iOS/tvOS 11.0 or later.");
 			SetMinVersion((int32)EIOSVersion::IOS_11);
 		}
         else if (Value == 4 && (EIOSVersion)EnumValue < EIOSVersion::IOS_12)
         {
-            Message = LOCTEXT("iOSMetalShaderVersion2_1","Enabling Metal Shader Standard v2.1 increases the minimum operating system requirement for Metal from iOS 8.0/tvOS 9.0 or later to iOS/tvOS 12.0 or later.");
+            Message = LOCTEXT("iOSMetalShaderVersion2_1","Enabling Metal Shader Standard v2.1 increases the minimum operating system requirement for Metal from iOS 10.0/tvOS 10.0 or later to iOS/tvOS 12.0 or later.");
             SetMinVersion((int32)EIOSVersion::IOS_12);
         }
 
@@ -1845,45 +1851,29 @@ void FIOSTargetSettingsCustomization::UpdateShaderStandardWarning()
 
 void FIOSTargetSettingsCustomization::UpdateOSVersionWarning()
 {
-	bool bMRTEnabled = false;
-	if (MRTPropertyHandle.IsValid())
+	if (MRTPropertyHandle.IsValid() && ShaderVersionPropertyHandle.IsValid() && MinOSPropertyHandle.IsValid())
 	{
+		bool bMRTEnabled = false;
 		MRTPropertyHandle->GetValue(bMRTEnabled);
-	}
-	
-	// Due to a driver bug on A8 devices running iOS 9 we can only support the global clip-plane when running iOS 10+
-	static IConsoleVariable* ClipPlaneCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.AllowGlobalClipPlane"));
-	if (MinOSPropertyHandle.IsValid() && IOSVersionWarningTextBox.IsValid() && ((ClipPlaneCVar && ClipPlaneCVar->GetInt() != 0) || bMRTEnabled))
-	{
-		uint8 EnumValue;
-		MinOSPropertyHandle->GetValue(EnumValue);
 		
-		if (EnumValue < (uint8)EIOSVersion::IOS_10)
-		{
-			SetMinVersion((int32)EIOSVersion::IOS_10);
-		}
-		
-		FText Message;
 		if (bMRTEnabled)
 		{
-			Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v1.2 which increases the minimum operating system requirement for Metal from iOS 8.0 or later to iOS 10.0 or later.");
-			
-			if (ShaderVersionPropertyHandle.IsValid())
+			uint8 EnumValue;
+			MinOSPropertyHandle->GetValue(EnumValue);
+			if (EnumValue < (uint8)EIOSVersion::IOS_11)
 			{
-				ShaderVersionPropertyHandle->GetValue(EnumValue);
-				if (EnumValue < (uint8)EIOSMetalShaderStandard::IOSMetalSLStandard_1_2)
-				{
-					SetShaderStandard((int32)EIOSMetalShaderStandard::IOSMetalSLStandard_1_2);
-				}
+				SetMinVersion((int32)EIOSVersion::IOS_11);
+				
+				FText Message;
+				Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v2.0 which increases the minimum operating system requirement for Metal from iOS 10.0 or later to iOS 11.0 or later.");
+				IOSVersionWarningTextBox->SetError(Message);
 			}
 		}
 		else
 		{
-			Message = LOCTEXT("GlobalClipPlaneiOS10", "Enabling the Global Clip Plane increases the minimum operating system requirement for Metal from iOS 8.0 or later to iOS 10.0 or later.");
+			FText Message;
+			IOSVersionWarningTextBox->SetError(Message);
 		}
-		
-		// Update the UI
-		IOSVersionWarningTextBox->SetError(Message);
 	}
 }
 
@@ -1898,20 +1888,29 @@ void FIOSTargetSettingsCustomization::UpdateMetalMRTWarning()
 		{
 			uint8 EnumValue;
 			MinOSPropertyHandle->GetValue(EnumValue);
-			if (EnumValue < (uint8)EIOSVersion::IOS_10)
+			if (EnumValue < (uint8)EIOSVersion::IOS_11)
 			{
-				SetMinVersion((int32)EIOSVersion::IOS_10);
+				SetMinVersion((int32)EIOSVersion::IOS_11);
+				
+				FText Message;
+				Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v2.0 which increases the minimum operating system requirement for Metal from iOS 10.0 or later to iOS 11.0 or later.");
+				IOSVersionWarningTextBox->SetError(Message);
 			}
 			
 			ShaderVersionPropertyHandle->GetValue(EnumValue);
-			if (EnumValue < (uint8)EIOSMetalShaderStandard::IOSMetalSLStandard_1_2)
+			if (EnumValue < (uint8)EIOSMetalShaderStandard::IOSMetalSLStandard_2_0)
 			{
-				SetShaderStandard((int32)EIOSMetalShaderStandard::IOSMetalSLStandard_1_2);
+				SetShaderStandard((int32)EIOSMetalShaderStandard::IOSMetalSLStandard_2_0);
+				
+				FText Message;
+				Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v2.0 which increases the minimum operating system requirement for Metal from iOS 10.0 or later to iOS 11.0 or later.");
+				ShaderVersionWarningTextBox->SetError(Message);
 			}
 		}
 		else
 		{
 			UpdateOSVersionWarning();
+			UpdateShaderStandardWarning();
 		}
 	}
 }

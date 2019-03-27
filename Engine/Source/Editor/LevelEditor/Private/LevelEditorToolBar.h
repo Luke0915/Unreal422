@@ -33,6 +33,15 @@ protected:
 	 */
 	static TSharedRef< SWidget > GenerateBuildMenuContent( TSharedRef<FUICommandList> InCommandList );
 
+#if WITH_LIVE_CODING
+	/**
+	 * Generates menu content for the compile combo button drop down menu
+	 *
+	 * @return	Menu content widget
+	 */
+	static TSharedRef< SWidget > GenerateCompileMenuContent( TSharedRef<FUICommandList> InCommandList );
+#endif
+
 	/**
 	 * Generates menu content for the create actor combo button drop down menu
 	 *
@@ -46,13 +55,6 @@ protected:
 	 * @return	Menu content widget
 	 */
 	static TSharedRef< SWidget > GenerateQuickSettingsMenu( TSharedRef<FUICommandList> InCommandList );
-
-	/**
-	 * Generates menu content for the preview mode combo button drop down menu
-	 *
-	 * @return	Menu content widget
-	 */
-	static TSharedRef< SWidget > GeneratePreviewModeMenu( TSharedRef<FUICommandList> InCommandList );
 
 	/**
 	 * Generates menu content for the source control combo button drop down menu

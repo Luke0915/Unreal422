@@ -31,14 +31,14 @@ FConsoleSlateDebugger::FConsoleSlateDebugger()
 	, StopDebuggingCommand(
 		TEXT("SlateDebugger.Stop"),
 		*LOCTEXT("StopDebugger", "Stops the debugger.").ToString(),
-		FConsoleCommandDelegate::CreateRaw(this, &FConsoleSlateDebugger::StartDebugging))
+		FConsoleCommandDelegate::CreateRaw(this, &FConsoleSlateDebugger::StopDebugging))
 	, CaptureStackVariable(
 		TEXT("SlateDebugger.CaptureStack"),
 		bCaptureStack,
 		*LOCTEXT("CaptureStack", "Should we capture the stack when there are events?").ToString())
 	, SetInputFilterCommand(
 		TEXT("SlateDebugger.SetInputFilter"),
-		*LOCTEXT("StopDebugger", "Enable or Disable specific filters").ToString(),
+		*LOCTEXT("SetInputFilter", "Enable or Disable specific filters").ToString(),
 		FConsoleCommandWithArgsDelegate::CreateRaw(this, &FConsoleSlateDebugger::SetInputFilter))
 {
 	//EnabledInputEvents[(uint8)ESlateDebuggingInputEvent::MouseMove] = true;

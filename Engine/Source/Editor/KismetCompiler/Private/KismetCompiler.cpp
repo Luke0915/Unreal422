@@ -124,11 +124,10 @@ namespace
 //////////////////////////////////////////////////////////////////////////
 // FKismetCompilerContext
 
-FKismetCompilerContext::FKismetCompilerContext(UBlueprint* SourceSketch, FCompilerResultsLog& InMessageLog, const FKismetCompilerOptions& InCompilerOptions, TArray<UObject*>* InObjLoaded)
+FKismetCompilerContext::FKismetCompilerContext(UBlueprint* SourceSketch, FCompilerResultsLog& InMessageLog, const FKismetCompilerOptions& InCompilerOptions)
 	: FGraphCompilerContext(InMessageLog)
 	, Schema(NULL)
 	, CompileOptions(InCompilerOptions)
-	, ObjLoaded(InObjLoaded)
 	, Blueprint(SourceSketch)
 	, NewClass(NULL)
 	, ConsolidatedEventGraph(NULL)
@@ -277,7 +276,8 @@ void FKismetCompilerContext::CleanAndSanitizeClass(UBlueprintGeneratedClass* Cla
 	for( auto SubObjIt = ClassSubObjects.CreateIterator(); SubObjIt; ++SubObjIt )
 	{
 		UObject* CurrSubObj = *SubObjIt;
-		CurrSubObj->Rename(*CurrSubObj->GetName(), TransientClass, RenFlags);
+		FName NewSubobjectName = MakeUniqueObjectName(TransientClass, CurrSubObj->GetClass(), CurrSubObj->GetFName());
+		CurrSubObj->Rename(*NewSubobjectName.ToString(), TransientClass, RenFlags);
 		if( UProperty* Prop = Cast<UProperty>(CurrSubObj) )
 		{
 			FKismetCompilerUtilities::InvalidatePropertyExport(Prop);
@@ -2256,8 +2256,9 @@ void FKismetCompilerContext::SetDefaultInputValueMetaData(UFunction* Function, c
 	for (const TSharedPtr<FUserPinInfo>& InputDataPtr : InputData)
 	{
 		if ( InputDataPtr.IsValid() &&
+			!InputDataPtr->PinName.IsNone() &&
+			(InputDataPtr->PinName != UEdGraphSchema_K2::PN_Self) &&
 			(InputDataPtr->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) && 
-			(InputDataPtr->PinName != UEdGraphSchema_K2::PN_Self) && 
 			(InputDataPtr->PinType.PinCategory != UEdGraphSchema_K2::PC_Object) &&
 			(InputDataPtr->PinType.PinCategory != UEdGraphSchema_K2::PC_Class) &&
 			(InputDataPtr->PinType.PinCategory != UEdGraphSchema_K2::PC_Interface) )
@@ -2823,7 +2824,8 @@ void FKismetCompilerContext::CreateFunctionStubForEvent(UK2Node_Event* SrcEventN
 	ChildStubGraph->SetFlags(RF_Transient);
 	MessageLog.NotifyIntermediateObjectCreation(ChildStubGraph, SrcEventNode);
 
-	FKismetFunctionContext& StubContext = *new (FunctionList) FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+	FKismetFunctionContext& StubContext = *new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+	FunctionList.Add(&StubContext);
 	StubContext.SourceGraph = ChildStubGraph;
 
 	StubContext.SourceEventFromStubGraph = SrcEventNode;
@@ -3283,7 +3285,8 @@ void FKismetCompilerContext::CreateAndProcessUbergraph()
 
 		// Do some cursory validation (pin types match, inputs to outputs, pins never point to their parent node, etc...)
 		{
-			UbergraphContext = new (FunctionList) FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+			UbergraphContext = new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+			FunctionList.Add(UbergraphContext);
 			UbergraphContext->SourceGraph = ConsolidatedEventGraph;
 			UbergraphContext->MarkAsEventGraph();
 			UbergraphContext->MarkAsInternalOrCppUseOnly();
@@ -3650,6 +3653,15 @@ void FKismetCompilerContext::ProcessOneFunctionGraph(UEdGraph* SourceGraph, bool
 
 	ExpansionStep(FunctionGraph, false);
 
+	// Cull the entire construction script graph if after node culling it's trivial, this reduces event spam on object construction:
+	if (SourceGraph->GetFName() == Schema->FN_UserConstructionScript )
+	{
+		if(FKismetCompilerUtilities::IsIntermediateFunctionGraphTrivial(Schema->FN_UserConstructionScript, FunctionGraph))
+		{
+			return;
+		}
+	}
+
 	// If a function in the graph cannot be overridden/placed as event make sure that it is not.
 	VerifyValidOverrideFunction(FunctionGraph);
 
@@ -3665,7 +3677,8 @@ void FKismetCompilerContext::ProcessOneFunctionGraph(UEdGraph* SourceGraph, bool
 	if ((CompileOptions.CompileType == EKismetCompileType::SkeletonOnly) || ValidateGraphIsWellFormed(FunctionGraph))
 	{
 		const UEdGraphSchema_K2* FunctionGraphSchema = CastChecked<const UEdGraphSchema_K2>(FunctionGraph->GetSchema());
-		FKismetFunctionContext& Context = *new (FunctionList) FKismetFunctionContext(MessageLog, FunctionGraphSchema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+		FKismetFunctionContext& Context = *new FKismetFunctionContext(MessageLog, FunctionGraphSchema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+		FunctionList.Add(&Context);
 		Context.SourceGraph = FunctionGraph;
 
 		if(FBlueprintEditorUtils::IsDelegateSignatureGraph(SourceGraph))
@@ -3773,7 +3786,9 @@ void FKismetCompilerContext::CreateFunctionList()
 
 FKismetFunctionContext* FKismetCompilerContext::CreateFunctionContext()
 {
-	return new (FunctionList) FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+	FKismetFunctionContext* Result = new FKismetFunctionContext(MessageLog, Schema, NewClass, Blueprint, CompileOptions.DoesRequireCppCodeGeneration());
+	FunctionList.Add(Result);
+	return Result;
 }
 
 /** Compile a blueprint into a class and a set of functions */
@@ -3972,14 +3987,21 @@ void FKismetCompilerContext::CompileClassLayout(EInternalCompilerFlags InternalF
 		}
 	}
 
-	// Make sure that this blueprint is up-to-date with regards to its parent functions
-	FBlueprintEditorUtils::ConformCallsToParentFunctions(Blueprint);
+	{
+		// the following calls may mark the blueprint as dirty, but we know that these operations just cleaned up the BP 
+		// so dependencies can still be considered 'up to date'
+		TGuardValue<bool> LockDependenciesUpToDate(Blueprint->bCachedDependenciesUpToDate, Blueprint->bCachedDependenciesUpToDate);
 
-	// Conform implemented events here, to ensure we generate custom events if necessary after reparenting
-	FBlueprintEditorUtils::ConformImplementedEvents(Blueprint);
+		// Make sure that this blueprint is up-to-date with regards to its parent functions
+		FBlueprintEditorUtils::ConformCallsToParentFunctions(Blueprint);
 
-	// Conform implemented interfaces here, to ensure we generate all functions required by the interface as stubs
-	FBlueprintEditorUtils::ConformImplementedInterfaces(Blueprint);
+		// Conform implemented events here, to ensure we generate custom events if necessary after reparenting
+		FBlueprintEditorUtils::ConformImplementedEvents(Blueprint);
+
+		// Conform implemented interfaces here, to ensure we generate all functions required by the interface as stubs
+		FBlueprintEditorUtils::ConformImplementedInterfaces(Blueprint);
+	}
+
 
 	// Run thru the class defined variables first, get them registered
 	CreateClassVariablesFromBlueprint();
@@ -4160,15 +4182,6 @@ void FKismetCompilerContext::CompileFunctions(EInternalCompilerFlags InternalFla
 		// Copy over the CDO properties if we're not already regenerating on load.  In that case, the copy will be done after compile on load is complete
 		FBlueprintEditorUtils::PropagateParentBlueprintDefaults(NewClass);
 
-		if (Blueprint->HasAnyFlags(RF_BeingRegenerated))
-		{
-			if (CompileOptions.CompileType == EKismetCompileType::Full)
-			{
-				check(Blueprint->PRIVATE_InnermostPreviousCDO == NULL);
-				Blueprint->PRIVATE_InnermostPreviousCDO = OldCDO;
-			}
-		}
-
 		if(bPropagateValuesToCDO)
 		{
 			if( !Blueprint->HasAnyFlags(RF_BeingRegenerated) )
@@ -4176,17 +4189,10 @@ void FKismetCompilerContext::CompileFunctions(EInternalCompilerFlags InternalFla
 				// Propagate the old CDO's properties to the new
 				if( OldCDO )
 				{
-					if (ObjLoaded)
+					if (OldLinker && OldGenLinkerIdx != INDEX_NONE)
 					{
-						if (OldLinker && OldGenLinkerIdx != INDEX_NONE)
-						{
-							// If we have a list of objects that are loading, patch our export table. This also fixes up load flags
-							FBlueprintEditorUtils::PatchNewCDOIntoLinker(Blueprint->GeneratedClass->GetDefaultObject(), OldLinker, OldGenLinkerIdx, *ObjLoaded);
-						}
-						else
-						{
-							UE_LOG(LogK2Compiler, Warning, TEXT("Failed to patch linker table for blueprint CDO %s"), *NewCDO->GetName());
-						}
+						// If we have a list of objects that are loading, patch our export table. This also fixes up load flags
+						FBlueprintEditorUtils::PatchNewCDOIntoLinker(Blueprint->GeneratedClass->GetDefaultObject(), OldLinker, OldGenLinkerIdx, nullptr);
 					}
 
 					UEditorEngine::FCopyPropertiesForUnrelatedObjectsParams CopyDetails;
@@ -4199,17 +4205,6 @@ void FKismetCompilerContext::CompileFunctions(EInternalCompilerFlags InternalFla
 					// Don't perform generated class validation since we didn't do any value propagation.
 					bSkipGeneratedClassValidation = true;
 				}
-
-				// >>> Backwards Compatibility: Propagate data from the skel CDO to the gen CDO if we haven't already done so for this blueprint
-				if( !bIsSkeletonOnly && !Blueprint->IsGeneratedClassAuthoritative() && CompileOptions.CompileType != EKismetCompileType::Cpp )
-				{
-					UEditorEngine::FCopyPropertiesForUnrelatedObjectsParams CopyDetails;
-					CopyDetails.bAggressiveDefaultSubobjectReplacement = false;
-					CopyDetails.bDoDelta = false;
-					UEditorEngine::CopyPropertiesForUnrelatedObjects(Blueprint->SkeletonGeneratedClass->GetDefaultObject(), NewCDO, CopyDetails);
-					Blueprint->SetLegacyGeneratedClassIsAuthoritative();
-				}
-				// <<< End Backwards Compatibility
 			}
 
 			PropagateValuesToCDO(NewCDO, OldCDO);
@@ -4702,7 +4697,7 @@ TSharedPtr<FKismetCompilerContext> FKismetCompilerContext::GetCompilerForBP(UBlu
 	// so I have simply hard-coded it:
 	if(UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(BP))
 	{
-		return TSharedPtr<FKismetCompilerContext>(new FAnimBlueprintCompilerContext(AnimBP, InMessageLog, InCompileOptions, nullptr));
+		return TSharedPtr<FKismetCompilerContext>(new FAnimBlueprintCompilerContext(AnimBP, InMessageLog, InCompileOptions));
 	}
 	else if(CompilerContextFactoryFunction* FactoryFunction = CustomCompilerMap.Find(BP->GetClass()))
 	{
@@ -4710,7 +4705,7 @@ TSharedPtr<FKismetCompilerContext> FKismetCompilerContext::GetCompilerForBP(UBlu
 	}
 	else
 	{
-		return TSharedPtr<FKismetCompilerContext>(new FKismetCompilerContext(BP, InMessageLog, InCompileOptions, nullptr));
+		return TSharedPtr<FKismetCompilerContext>(new FKismetCompilerContext(BP, InMessageLog, InCompileOptions));
 	}
 }
 

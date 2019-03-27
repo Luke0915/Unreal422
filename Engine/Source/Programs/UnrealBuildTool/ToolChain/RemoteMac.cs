@@ -400,7 +400,7 @@ namespace UnrealBuildTool
 			RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(TargetDesc.ProjectFile, TargetDesc.Name, false, false, TargetDesc.ForeignPlugin);
 
 			// Create the target rules
-			TargetRules Rules = RulesAssembly.CreateTargetRules(TargetDesc.Name, TargetDesc.Platform, TargetDesc.Configuration, TargetDesc.Architecture, TargetDesc.ProjectFile, null);
+			TargetRules Rules = RulesAssembly.CreateTargetRules(TargetDesc.Name, TargetDesc.Platform, TargetDesc.Configuration, TargetDesc.Architecture, TargetDesc.ProjectFile, TargetDesc.AdditionalArguments);
 
 			// Check if we need to enable a nativized plugin, and compile the assembly for that if we do
 			FileReference NativizedPluginFile = Rules.GetNativizedPlugin();
@@ -430,7 +430,7 @@ namespace UnrealBuildTool
 				RemoteArguments.Add("-NoUBTMakefiles");
 
 				// Get the provisioning data for this project
-				IOSProvisioningData ProvisioningData = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(TargetDesc.Platform)).ReadProvisioningData(TargetDesc.ProjectFile);
+				IOSProvisioningData ProvisioningData = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(TargetDesc.Platform)).ReadProvisioningData(TargetDesc.ProjectFile, TargetDesc.AdditionalArguments.HasOption("-distribution"));
 				if(ProvisioningData == null || ProvisioningData.MobileProvisionFile == null)
 				{
 					throw new BuildException("Unable to find mobile provision for {0}. See log for more information.", TargetDesc.Name);
@@ -535,12 +535,20 @@ namespace UnrealBuildTool
 			FilesToDownload.AddRange(Manifest.BuildProducts.Select(x => new FileReference(x)));
 			DownloadFiles(FilesToDownload);
 
+			// Copy remote FrameworkAssets directory as it could contain resource bundles that must be packaged locally.
+			DirectoryReference BaseDir = DirectoryReference.FromFile(TargetDesc.ProjectFile) ?? UnrealBuildTool.EngineDirectory;
+			DirectoryReference FrameworkAssetsDir = DirectoryReference.Combine(BaseDir, "Intermediate", TargetDesc.Platform == UnrealTargetPlatform.IOS ? "IOS" : "TVOS", "FrameworkAssets");
+
+			Log.TraceInformation("[Remote] Downloading {0}", FrameworkAssetsDir);
+			DownloadDirectory(FrameworkAssetsDir);
+
 			// Write out all the local manifests
 			foreach(FileReference LocalManifestFile in LocalManifestFiles)
 			{
 				Log.TraceInformation("[Remote] Writing {0}", LocalManifestFile);
 				Utils.WriteClass<BuildManifest>(Manifest, LocalManifestFile.FullName, "");
 			}
+
 			return true;
 		}
 
@@ -577,7 +585,7 @@ namespace UnrealBuildTool
 				RemoteArguments.Add(String.Format("-Project={0}", GetRemotePath(TargetDesc.ProjectFile)));
 			}
 
-			foreach(string LocalArgument in TargetDesc.AdditionalArguments)
+			foreach (string LocalArgument in TargetDesc.AdditionalArguments)
 			{
 				int EqualsIdx = LocalArgument.IndexOf('=');
 				if(EqualsIdx == -1)
@@ -944,6 +952,28 @@ namespace UnrealBuildTool
 						throw new BuildException("Unable to download files from remote Mac (exit code {0})", Result);
 					}
 				}
+			}
+		}
+
+		/// <summary>
+		/// Download a directory from the remote Mac
+		/// </summary>
+		/// <param name="LocalDirectory">Directory to download</param>
+		private void DownloadDirectory(DirectoryReference LocalDirectory)
+		{
+			DirectoryReference.CreateDirectory(LocalDirectory);
+
+			string RemoteDirectory = GetRemotePath(LocalDirectory);
+
+			List<string> Arguments = new List<string>(CommonRsyncArguments);
+			Arguments.Add(String.Format("--rsync-path=\"[ ! -d {0} ] || rsync\"", EscapeShellArgument(RemoteDirectory)));
+			Arguments.Add(String.Format("\"{0}@{1}\":'{2}/'", UserName, ServerName, RemoteDirectory));
+			Arguments.Add(String.Format("\"{0}/\"", GetLocalCygwinPath(LocalDirectory)));
+
+			int Result = Rsync(String.Join(" ", Arguments));
+			if (Result != 0)
+			{
+				throw new BuildException("Unable to download '{0}' from the remote Mac (exit code {1}).", LocalDirectory, Result);
 			}
 		}
 

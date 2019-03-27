@@ -242,9 +242,11 @@ void FMetalRHIBuffer::Alloc(uint32 InSize, EResourceLockMode LockMode)
 	{
         check(LockMode != RLM_ReadOnly);
 		mtlpp::StorageMode Mode = (bUsePrivateMem ? mtlpp::StorageMode::Private : BUFFER_STORAGE_MODE);
-		FMetalPooledBufferArgs Args(GetMetalDeviceContext().GetDevice(), InSize, Mode);
+        FMetalPooledBufferArgs Args(GetMetalDeviceContext().GetDevice(), InSize, Usage, Mode);
 		Buffer = GetMetalDeviceContext().CreatePooledBuffer(Args);
 		check(Buffer && Buffer.GetPtr());
+        
+        Buffer.SetOwner(this);
 
         METAL_INC_DWORD_STAT_BY(Type, MemAlloc, InSize);
         
@@ -263,9 +265,10 @@ void FMetalRHIBuffer::Alloc(uint32 InSize, EResourceLockMode LockMode)
 	
 	if (bUsePrivateMem && !CPUBuffer)
 	{
-		FMetalPooledBufferArgs ArgsCPU(GetMetalDeviceContext().GetDevice(), InSize, mtlpp::StorageMode::Shared);
+        FMetalPooledBufferArgs ArgsCPU(GetMetalDeviceContext().GetDevice(), InSize, BUF_Dynamic, mtlpp::StorageMode::Shared);
 		CPUBuffer = GetMetalDeviceContext().CreatePooledBuffer(ArgsCPU);
 		check(CPUBuffer && CPUBuffer.GetPtr());
+        CPUBuffer.SetOwner(this);
         METAL_INC_DWORD_STAT_BY(Type, MemAlloc, InSize);
 		check(CPUBuffer.GetLength() >= Buffer.GetLength());
 	}
@@ -769,16 +772,16 @@ void FMetalDynamicRHI::UnlockStagingBuffer_RenderThread(class FRHICommandListImm
 	return RHIUnlockStagingBuffer(StagingBuffer);
 }
 
-FStagingBufferRHIRef FMetalDynamicRHI::RHICreateStagingBuffer(FVertexBufferRHIParamRef VertexBuffer)
+FStagingBufferRHIRef FMetalDynamicRHI::RHICreateStagingBuffer()
 {
-	return new FMetalStagingBuffer(VertexBuffer);
+	return new FMetalStagingBuffer();
 }
 
 FMetalStagingBuffer::~FMetalStagingBuffer()
 {
-	if(ReadbackStagingBuffer)
+	if (ShadowBuffer)
 	{
-		SafeReleaseMetalBuffer(ReadbackStagingBuffer);
+		SafeReleaseMetalBuffer(ShadowBuffer);
 	}
 }
 
@@ -786,13 +789,16 @@ FMetalStagingBuffer::~FMetalStagingBuffer()
 // If this was not fenced correctly it will not have the expected data.
 void *FMetalStagingBuffer::Lock(uint32 Offset, uint32 NumBytes)
 {
-	check(ReadbackStagingBuffer);
-	
-	uint8* BackingPtr = (uint8*) ReadbackStagingBuffer.GetContents();
-	return BackingPtr+Offset;
+	check(ShadowBuffer);
+	check(!bIsLocked);
+	bIsLocked = true;
+	uint8* BackingPtr = (uint8*)ShadowBuffer.GetContents();
+	return BackingPtr + Offset;
 }
 
 void FMetalStagingBuffer::Unlock()
 {
 	// does nothing in metal.
+	check(bIsLocked);
+	bIsLocked = false;
 }

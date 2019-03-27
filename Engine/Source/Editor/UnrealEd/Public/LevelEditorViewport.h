@@ -180,6 +180,8 @@ public:
 	virtual void BeginCameraMovement(bool bHasMovement) override;
 	virtual void EndCameraMovement() override;
 	virtual void SetVREditView(bool bGameViewEnable) override;
+	virtual bool GetPivotForOrbit(FVector& Pivot) const override;
+	virtual bool ShouldScaleCameraSpeedByDistance() const override;
 
 	virtual bool OverrideHighResScreenshotCaptureRegion(FIntRect& OutCaptureRegion) override;
 
@@ -799,4 +801,6 @@ private:
 
 	/** Stores the previous frame's value of bEditorCameraCut in order to reset it back to false on the next frame */
 	bool					bWasEditorCameraCut;
+
+	bool bApplyCameraSpeedScaleByDistance;
 };

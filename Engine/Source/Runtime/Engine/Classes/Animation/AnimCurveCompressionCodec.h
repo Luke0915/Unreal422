@@ -38,6 +38,9 @@ class ENGINE_API UAnimCurveCompressionCodec : public UObject
 	FGuid InstanceGuid;
 #endif
 
+	/** Allow us to convert DDC serialized path back into codec object */
+	virtual UAnimCurveCompressionCodec* GetCodec(const FString& Path) { return this; }
+
 	//////////////////////////////////////////////////////////////////////////
 
 #if WITH_EDITORONLY_DATA

@@ -26,6 +26,7 @@
 #include "Compilation/MovieSceneCompiler.h"
 #include "TimerManager.h"
 #include "UObject/Package.h"
+#include "Editor/WidgetCompilerLog.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -89,36 +90,13 @@ UUserWidget::UUserWidget(const FObjectInitializer& ObjectInitializer)
 
 UWidgetBlueprintGeneratedClass* UUserWidget::GetWidgetTreeOwningClass()
 {
-	UWidgetBlueprintGeneratedClass* RootBGClass = Cast<UWidgetBlueprintGeneratedClass>(GetClass());
-	UWidgetBlueprintGeneratedClass* BGClass = RootBGClass;
-
-	while ( BGClass )
+	UWidgetBlueprintGeneratedClass* WidgetClass = Cast<UWidgetBlueprintGeneratedClass>(GetClass());
+	if (WidgetClass != nullptr)
 	{
-		//TODO NickD: This conditional post load shouldn't be needed any more once the Fast Widget creation path is the only path!
-		// Force post load on the generated class so all subobjects are done (specifically the widget tree).
-		BGClass->ConditionalPostLoad();
-
-		const bool bNoRootWidget = ( nullptr == BGClass->WidgetTree ) || ( nullptr == BGClass->WidgetTree->RootWidget );
-
-		if ( bNoRootWidget )
-		{
-			UWidgetBlueprintGeneratedClass* SuperBGClass = Cast<UWidgetBlueprintGeneratedClass>(BGClass->GetSuperClass());
-			if ( SuperBGClass )
-			{
-				BGClass = SuperBGClass;
-				continue;
-			}
-			else
-			{
-				// If we reach a super class that isn't a UWidgetBlueprintGeneratedClass, return the root class.
-				return RootBGClass;
-			}
-		}
-
-		return BGClass;
+		WidgetClass = WidgetClass->FindWidgetTreeOwningClass();
 	}
 
-	return nullptr;
+	return WidgetClass;
 }
 
 void UUserWidget::TemplateInit()
@@ -1366,7 +1344,7 @@ void UUserWidget::OnDesignerChanged(const FDesignerChangedEventArgs& EventArgs)
 	}
 }
 
-void UUserWidget::ValidateBlueprint(const UWidgetTree& BlueprintWidgetTree, FCompilerResultsLog& CompileLog) const
+void UUserWidget::ValidateBlueprint(const UWidgetTree& BlueprintWidgetTree, IWidgetCompilerLog& CompileLog) const
 {
 	ValidateCompiledDefaults(CompileLog);
 	ValidateCompiledWidgetTree(BlueprintWidgetTree, CompileLog);
@@ -1963,7 +1941,7 @@ bool UUserWidget::ShouldSerializeWidgetTree(const ITargetPlatform* TargetPlatfor
 
 	// We preserve widget trees if you're a sub-object of an archetype that is going to serialize it's
 	// widget tree.
-	for (const UObject* It = this; It; It = It->GetOuter())
+	for (const UObject* It = GetOuter(); It; It = It->GetOuter())
 	{
 		if (It->HasAllFlags(RF_ArchetypeObject))
 		{
@@ -2169,6 +2147,15 @@ UUserWidget* UUserWidget::CreateInstanceInternal(UObject* Outer, TSubclassOf<UUs
 	}
 #endif
 
+#if !UE_BUILD_SHIPPING
+	// Check if the world is being torn down before we create a widget for it.
+	if (World)
+	{
+		// Look for indications that widgets are being created for a dead and dying world.
+		ensureMsgf(!World->bIsTearingDown, TEXT("Widget Class %s - Attempting to be created while tearing down the world."), *UserWidgetClass->GetName());
+	}
+#endif
+
 	if (!Outer)
 	{
 		FMessageLog("PIE").Error(FText::Format(LOCTEXT("OuterNull", "Unable to create the widget {0}, no outer provided."), FText::FromName(UserWidgetClass->GetFName())));
@@ -2186,7 +2173,7 @@ UUserWidget* UUserWidget::CreateInstanceInternal(UObject* Outer, TSubclassOf<UUs
 #endif
 
 			FObjectInstancingGraph ObjectInstancingGraph;
-			NewWidget = NewObject<UUserWidget>(Outer, UserWidgetClass, InstanceName, RF_NoFlags, Template, false, &ObjectInstancingGraph);
+			NewWidget = NewObject<UUserWidget>(Outer, UserWidgetClass, InstanceName, RF_Transactional, Template, false, &ObjectInstancingGraph);
 		}
 #if !WITH_EDITOR && (UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT)
 		else
@@ -2210,7 +2197,7 @@ UUserWidget* UUserWidget::CreateInstanceInternal(UObject* Outer, TSubclassOf<UUs
 
 	if (!NewWidget)
 	{
-		NewWidget = NewObject<UUserWidget>(Outer, UserWidgetClass, InstanceName, RF_NoFlags);
+		NewWidget = NewObject<UUserWidget>(Outer, UserWidgetClass, InstanceName, RF_Transactional);
 	}
 	
 	if (LocalPlayer)

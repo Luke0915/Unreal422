@@ -48,6 +48,10 @@ FName FTextureResource::TextureGroupStatFNames[TEXTUREGROUP_MAX] =
 	};
 #endif
 
+// This is used to prevent the PostEditChange to automatically update the material depedencies & material context, in some case we want to manually control this
+// to be more efficient.
+ENGINE_API bool GDisableAutomaticTextureMaterialUpdateDependencies = false;
+
 UTexture::FOnTextureSaved UTexture::PreSaveEvent;
 
 UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
@@ -55,6 +59,7 @@ UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
 {
 	SRGB = true;
 	Filter = TF_Default;
+	MipLoadOptions = ETextureMipLoadOptions::Default;
 #if WITH_EDITORONLY_DATA
 	AdjustBrightness = 1.0f;
 	AdjustBrightnessCurve = 1.0f;
@@ -118,12 +123,22 @@ bool UTexture::IsPostLoadThreadSafe() const
 	return false;
 }
 
-int32 UTexture::GetCachedLODBias() const
+#if WITH_EDITOR
+bool UTexture::CanEditChange(const UProperty* InProperty) const
 {
-	return CachedCombinedLODBias;
+	if (InProperty)
+	{
+		FString PropertyName = InProperty->GetName();
+
+		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UTexture, AdjustVibrance))
+		{
+			return !HasHDRSource();
+		}
+	}
+
+	return true;
 }
 
-#if WITH_EDITOR
 void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -182,27 +197,37 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 			SRGB = false;
 		}
 	}
-	else
+	else if (!GDisableAutomaticTextureMaterialUpdateDependencies)
 	{
-		FMaterialUpdateContext UpdateContext;
 		// Update any material that uses this texture and must force a recompile of cache ressource
+		TArray<UMaterial*> MaterialsToUpdate;
 		TSet<UMaterial*> BaseMaterialsThatUseThisTexture;
 		for (TObjectIterator<UMaterialInterface> It; It; ++It)
 		{
 			UMaterialInterface* MaterialInterface = *It;
 			if (DoesMaterialUseTexture(MaterialInterface, this))
 			{
-				UMaterial *Material = MaterialInterface->GetMaterial();
+				UMaterial* Material = MaterialInterface->GetMaterial();
 				bool MaterialAlreadyCompute = false;
 				BaseMaterialsThatUseThisTexture.Add(Material, &MaterialAlreadyCompute);
 				if (!MaterialAlreadyCompute)
 				{
 					if (Material->IsTextureForceRecompileCacheRessource(this))
 					{
-						UpdateContext.AddMaterial(Material);
+						MaterialsToUpdate.Add(Material);
 						Material->UpdateMaterialShaderCacheAndTextureReferences();
 					}
 				}
+			}
+		}
+
+		if (MaterialsToUpdate.Num())
+		{
+			FMaterialUpdateContext UpdateContext;
+
+			for (UMaterial* MaterialToUpdate: MaterialsToUpdate)
+			{
+				UpdateContext.AddMaterial(MaterialToUpdate);
 			}
 		}
 	}
@@ -665,14 +690,14 @@ void FTextureSource::Compress()
 				BulkData.Unlock();
 				bPNGCompressed = true;
 
-				BulkData.StoreCompressedOnDisk(ECompressionFlags::COMPRESS_None);
+				BulkData.StoreCompressedOnDisk(NAME_None);
 			}
 		}
 	}
 	else
 	{
 		//Can't PNG compress so just zlib compress the lot when its serialized out to disk. 
-		BulkData.StoreCompressedOnDisk(ECompressionFlags::COMPRESS_ZLIB);
+		BulkData.StoreCompressedOnDisk(NAME_Zlib);
 	}
 }
 

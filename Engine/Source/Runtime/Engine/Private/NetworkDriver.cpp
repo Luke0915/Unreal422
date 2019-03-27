@@ -62,7 +62,7 @@
 #include "Engine/ReplicationDriver.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Engine/LevelScriptActor.h"
-#include "Serialization/ArchiveCountMem.h"
+#include "Net/NetworkGranularMemoryLogging.h"
 
 #if USE_SERVER_PERF_COUNTERS
 #include "PerfCountersModule.h"
@@ -203,6 +203,12 @@ static TAutoConsoleVariable<int32> CVarActorChannelPool(
 	1,
 	TEXT("If nonzero, actor channels will be pooled to save memory and object creation cost."));
 
+static TAutoConsoleVariable<int32> CVarAllowReliableMulticastToNonRelevantChannels(
+	TEXT("net.AllowReliableMulticastToNonRelevantChannels"),
+	1,
+	TEXT("Allow Reliable Server Multicasts to be sent to non-Relevant Actors, as long as their is an existing ActorChannel.")
+);
+
 /*-----------------------------------------------------------------------------
 	UNetDriver implementation.
 -----------------------------------------------------------------------------*/
@@ -322,6 +328,7 @@ void UNetDriver::PostInitProperties()
 	
 		OnLevelRemovedFromWorldHandle = FWorldDelegates::LevelRemovedFromWorld.AddUObject(this, &UNetDriver::OnLevelRemovedFromWorld);
 		OnLevelAddedToWorldHandle = FWorldDelegates::LevelAddedToWorld.AddUObject(this, &UNetDriver::OnLevelAddedToWorld);
+		PostGarbageCollectHandle = FCoreUObjectDelegates::GetPostGarbageCollect().AddUObject(this, &UNetDriver::PostGarbageCollect);
 
 		LoadChannelDefinitions();
 	}
@@ -1398,7 +1405,7 @@ void UNetDriver::InitConnectionlessHandler()
 		if (ConnectionlessHandler.IsValid())
 		{
 			ConnectionlessHandler->NotifyAnalyticsProvider(AnalyticsProvider, AnalyticsAggregator);
-			ConnectionlessHandler->Initialize(Handler::Mode::Server, MAX_PACKET_SIZE, true);
+			ConnectionlessHandler->Initialize(Handler::Mode::Server, MAX_PACKET_SIZE, true, nullptr, nullptr, NetDriverName);
 
 			// Add handling for the stateless connect handshake, for connectionless packets, as the outermost layer
 			TSharedPtr<HandlerComponent> NewComponent =
@@ -1686,6 +1693,22 @@ void UNetDriver::TickDispatch( float DeltaTime )
 
 void UNetDriver::PostTickDispatch()
 {
+	// Flush out of order packet caches for connections that did not receive the missing packets during TickDispatch
+	if (ServerConnection != nullptr)
+	{
+		ServerConnection->FlushPacketOrderCache(true);
+	}
+
+	TArray<UNetConnection*> ClientConnCopy = ClientConnections;
+
+	for (UNetConnection* CurConn : ClientConnCopy)
+	{
+		if (!CurConn->IsPendingKill())
+		{
+			CurConn->FlushPacketOrderCache(true);
+		}
+	}
+
 	if (ReplicationDriver)
 	{
 		ReplicationDriver->PostTickDispatch();
@@ -2231,54 +2254,30 @@ void UNetDriver::Serialize( FArchive& Ar )
 		//		DDoSDetection data
 		// These are probably insignificant, though.
 
-#define WITH_SCOPED_COUNT_LOG 1
+		GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UNetDriver::Serialize");
 
-#if WITH_SCOPED_COUNT_LOG
-		const bool bIsCountMemArchive = FString(TEXT("FArchiveCountMem")).Equals(Ar.GetArchiveName());
-		auto GetMaxBytes = [bIsCountMemArchive](FArchive& InAr) -> uint64
-		{
-			return bIsCountMemArchive ? ((FArchiveCountMem&)InAr).GetMax() : 0;
-		};
-
-		uint64 BeforeAction = 0;
-		uint64 AfterAction = GetMaxBytes(Ar);
-
-#define SCOPED_COUNT_LOG(SCOPE_NAME, WORK) \
-	{ \
-		BeforeAction = AfterAction; \
-		WORK; \
-		AfterAction = GetMaxBytes(Ar); \
-		UE_LOG(LogNet, Log, TEXT("UNetDriver::Serialize: " SCOPE_NAME " is %d bytes"), AfterAction - BeforeAction); \
-	}
-
-#else
-		
-#define SCOPED_COUNT_LOG(SCOPE_NAME, WORK) WORK;
-
-#endif // WITH_SCOPED_COUNT_LOG
-
-		SCOPED_COUNT_LOG("MappedClientConnection", MappedClientConnections.CountBytes(Ar));
-		SCOPED_COUNT_LOG("RecentlyDisconnectedClients", RecentlyDisconnectedClients.CountBytes(Ar));
-		SCOPED_COUNT_LOG("GuidCache",
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("MappedClientConnection", MappedClientConnections.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RecentlyDisconnectedClients", RecentlyDisconnectedClients.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("GuidCache",
 			if (FNetGUIDCache const * const LocalGuidCache = GuidCache.Get())
 			{
 				LocalGuidCache->CountBytes(Ar);
 			}
 		);
 		
-		SCOPED_COUNT_LOG("LocalNetCache",
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LocalNetCache",
 			if (FClassNetCacheMgr const * const LocalNetCache = NetCache.Get())
 			{
 				LocalNetCache->CountBytes(Ar);
 			}
 		);
 
-		SCOPED_COUNT_LOG("LastPrioritizedActors", LastPrioritizedActors.CountBytes(Ar));
-		SCOPED_COUNT_LOG("LastRelevantActors", LastRelevantActors.CountBytes(Ar));
-		SCOPED_COUNT_LOG("LastSentActors", LastSentActors.CountBytes(Ar));
-		SCOPED_COUNT_LOG("LastNonRelevantActors", LastNonRelevantActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastPrioritizedActors", LastPrioritizedActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastRelevantActors", LastRelevantActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastSentActors", LastSentActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastNonRelevantActors", LastNonRelevantActors.CountBytes(Ar));
 
-		SCOPED_COUNT_LOG("DestroyedStartupOrDormantActors",
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DestroyedStartupOrDormantActors",
 			DestroyedStartupOrDormantActors.CountBytes(Ar);
 
 			for (const auto& DestroyedStartupOrDormantActorPair : DestroyedStartupOrDormantActors)
@@ -2286,14 +2285,14 @@ void UNetDriver::Serialize( FArchive& Ar )
 				if (FActorDestructionInfo const * const DestructionInfo = DestroyedStartupOrDormantActorPair.Value.Get())
 				{
 					Ar.CountBytes(sizeof(FActorDestructionInfo), sizeof(FActorDestructionInfo));
-					Ar << const_cast<FString&>(DestructionInfo->PathName);
+					DestructionInfo->PathName.CountBytes(Ar);
 				}
 			}
 		);
 
-		SCOPED_COUNT_LOG("RenamedStartupActors", RenamedStartupActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RenamedStartupActors", RenamedStartupActors.CountBytes(Ar));
 
-		SCOPED_COUNT_LOG("RepChangedPropertyTrackerMap",
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RepChangedPropertyTrackerMap",
 			RepChangedPropertyTrackerMap.CountBytes(Ar);
 
 			for (const auto& RepChangedPropertyTrackerPair : RepChangedPropertyTrackerMap)
@@ -2302,7 +2301,7 @@ void UNetDriver::Serialize( FArchive& Ar )
 			}
 		);
 
-		SCOPED_COUNT_LOG("RepLayoutMap",
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RepLayoutMap",
 			RepLayoutMap.CountBytes(Ar);
 
 			for (const auto& RepLayoutPair : RepLayoutMap)
@@ -2315,7 +2314,7 @@ void UNetDriver::Serialize( FArchive& Ar )
 			}
 		);
 
-		SCOPED_COUNT_LOG("ReplicationChangeListMap", 
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ReplicationChangeListMap", 
 			ReplicationChangeListMap.CountBytes(Ar);
 
 			for (const auto& ReplicationChangeListPair : ReplicationChangeListMap)
@@ -2324,22 +2323,33 @@ void UNetDriver::Serialize( FArchive& Ar )
 			}
 		);
 
-		SCOPED_COUNT_LOG("GuidToReplicatorMap", GuidToReplicatorMap.CountBytes(Ar));
-		SCOPED_COUNT_LOG("UnmappedReplicators", UnmappedReplicators.CountBytes(Ar));
-		SCOPED_COUNT_LOG("AllOwnedReplicators", AllOwnedReplicators.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("GuidToReplicatorMap", GuidToReplicatorMap.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("UnmappedReplicators", UnmappedReplicators.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("AllOwnedReplicators",
+		
+			// AllOwnedReplicators is the superset of all initialized FObjectReplicators,
+			// including DormantReplicators, Replicators on Channels, and UnmappedReplicators.
+			AllOwnedReplicators.CountBytes(Ar);
+			
+			for (FObjectReplicator const * const OwnedReplicator : AllOwnedReplicators)
+			{
+				if (OwnedReplicator)
+				{
+					Ar.CountBytes(sizeof(FObjectReplicator), sizeof(FObjectReplicator));
+					OwnedReplicator->CountBytes(Ar);
+				}
+			}
+		);
 
 		// Replicators are owned by UActorChannels, and so we don't track them here.
 
-		SCOPED_COUNT_LOG("NetworkObjects",
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("NetworkObjects",
 			if (FNetworkObjectList const * const NetObjList = NetworkObjects.Get())
 			{
 				Ar.CountBytes(sizeof(FNetworkObjectList), sizeof(FNetworkObjectList));
 				NetworkObjects->CountBytes(Ar);
 			}
 		);
-
-#undef SCOPED_COUNT_LOG
-#undef WITH_SCOPED_COUNT_LOG
 	}
 }
 
@@ -2373,6 +2383,7 @@ void UNetDriver::FinishDestroy()
 
 		FWorldDelegates::LevelRemovedFromWorld.Remove(OnLevelRemovedFromWorldHandle);
 		FWorldDelegates::LevelAddedToWorld.Remove(OnLevelAddedToWorldHandle);
+		FCoreUObjectDelegates::GetPostGarbageCollect().Remove(PostGarbageCollectHandle);
 	}
 	else
 	{
@@ -3110,34 +3121,42 @@ UChildConnection* UNetDriver::CreateChild(UNetConnection* Parent)
 	return Child;
 }
 
-void UNetDriver::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+void UNetDriver::PostGarbageCollect()
 {
-	UNetDriver* This = CastChecked<UNetDriver>(InThis);
-	Super::AddReferencedObjects(This, Collector);
+	// We can't perform this logic in AddReferencedObjects because destroying GCObjects
+	// during Garbage Collection is illegal (@see UGCObjectReferencer::RemoveObject).
+	// FRepLayout's are GC objects, and either map could be holding onto the last reference
+	// to a given RepLayout.
 
-	// Compact any invalid entries
-	for (auto It = This->RepLayoutMap.CreateIterator(); It; ++It)
+	for (auto It = RepLayoutMap.CreateIterator(); It; ++It)
 	{
-		if (!It.Value().IsValid())
+		if (!It.Key().IsValid())
 		{
 			It.RemoveCurrent();
 		}
 	}
 
-	for (auto It = This->ReplicationChangeListMap.CreateIterator(); It; ++It)
+	for (auto It = ReplicationChangeListMap.CreateIterator(); It; ++It)
 	{
-		if (It.Value().IsValid())
-		{
-			FRepChangelistState* const ChangelistState = It.Value()->GetRepChangelistState();
-			if (ChangelistState && ChangelistState->RepLayout.IsValid())
-			{
-				ChangelistState->RepLayout->AddReferencedObjects(Collector);
-			}
-		}
-		else
+		if (!It.Value().IsObjectValid())
 		{
 			It.RemoveCurrent();
 		}
+	}
+}
+
+void UNetDriver::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	UNetDriver* This = CastChecked<UNetDriver>(InThis);
+	Super::AddReferencedObjects(This, Collector);
+
+	// TODO: It feels like we could get away without FRepLayout needing to track references.
+	//			E.G., if we detected that FObjectReplicator / FReplicationChangelistMgrs detected
+	//			their associated objects were destroyed, we could destroy the Shadow Buffers
+	//			which should be the last thing referencing the FRepLayout and the Properties.
+	for (auto It = This->RepLayoutMap.CreateIterator(); It; ++It)
+	{
+		It.Value()->AddReferencedObjects(Collector);
 	}
 	
 	for (FObjectReplicator* Replicator : This->AllOwnedReplicators)
@@ -3151,6 +3170,7 @@ void UNetDriver::AddReferencedObjects(UObject* InThis, FReferenceCollector& Coll
 		Collector.AddReferencedObject(It.Value(), This);
 	}
 }
+
 
 #if DO_ENABLE_NET_TEST
 
@@ -5017,10 +5037,7 @@ void UNetDriver::CleanupWorldForSeamlessTravel()
 				// skips over AWorldSettings actors for an unknown reason.
 				if (Level->GetWorldSettings())
 				{
-					if (ServerConnection != nullptr)
-					{
-						NotifyActorLevelUnloaded(Level->GetWorldSettings());
-					}
+					NotifyActorLevelUnloaded(Level->GetWorldSettings());
 				}
 			}
 		}
@@ -5082,7 +5099,7 @@ static void	DumpRelevantActors( UWorld* InWorld )
 
 TSharedPtr<FRepChangedPropertyTracker> UNetDriver::FindOrCreateRepChangedPropertyTracker(UObject* Obj)
 {
-	check(IsServer());
+	check(IsServer() || MaySendProperties());
 
 	FRepChangedPropertyTrackerWrapper * GlobalPropertyTrackerPtr = RepChangedPropertyTrackerMap.Find( Obj );
 
@@ -5110,27 +5127,25 @@ TSharedPtr<FRepChangedPropertyTracker> UNetDriver::FindOrCreateRepChangedPropert
 
 TSharedPtr<FRepLayout> UNetDriver::GetObjectClassRepLayout( UClass * Class )
 {
-	TSharedPtr<FRepLayout> * RepLayoutPtr = RepLayoutMap.Find( Class );
+	TSharedPtr<FRepLayout>* RepLayoutPtr = RepLayoutMap.Find(Class);
 
-	if ( !RepLayoutPtr ) 
+	if (!RepLayoutPtr) 
 	{
-		FRepLayout * RepLayout = new FRepLayout();
-		RepLayout->InitFromObjectClass( Class, ServerConnection );
-		RepLayoutPtr = &RepLayoutMap.Add( Class, TSharedPtr<FRepLayout>( RepLayout ) );
+		ECreateRepLayoutFlags Flags = MaySendProperties() ? ECreateRepLayoutFlags::MaySendProperties : ECreateRepLayoutFlags::None;
+		RepLayoutPtr = &RepLayoutMap.Add(Class, FRepLayout::CreateFromClass(Class, ServerConnection, Flags));
 	}
 
 	return *RepLayoutPtr;
 }
 
-TSharedPtr<FRepLayout> UNetDriver::GetFunctionRepLayout( UFunction * Function )
+TSharedPtr<FRepLayout> UNetDriver::GetFunctionRepLayout(UFunction * Function)
 {
-	TSharedPtr<FRepLayout> * RepLayoutPtr = RepLayoutMap.Find( Function );
+	TSharedPtr<FRepLayout>* RepLayoutPtr = RepLayoutMap.Find(Function);
 
-	if ( !RepLayoutPtr ) 
+	if (!RepLayoutPtr) 
 	{
-		FRepLayout * RepLayout = new FRepLayout();
-		RepLayout->InitFromFunction( Function, ServerConnection );
-		RepLayoutPtr = &RepLayoutMap.Add( Function, TSharedPtr<FRepLayout>( RepLayout ) );
+		ECreateRepLayoutFlags Flags = MaySendProperties() ? ECreateRepLayoutFlags::MaySendProperties : ECreateRepLayoutFlags::None;
+		RepLayoutPtr = &RepLayoutMap.Add(Function, FRepLayout::CreateFromFunction(Function, ServerConnection, Flags));
 	}
 
 	return *RepLayoutPtr;
@@ -5138,13 +5153,12 @@ TSharedPtr<FRepLayout> UNetDriver::GetFunctionRepLayout( UFunction * Function )
 
 TSharedPtr<FRepLayout> UNetDriver::GetStructRepLayout( UStruct * Struct )
 {
-	TSharedPtr<FRepLayout> * RepLayoutPtr = RepLayoutMap.Find( Struct );
+	TSharedPtr<FRepLayout>* RepLayoutPtr = RepLayoutMap.Find(Struct);
 
-	if ( !RepLayoutPtr ) 
+	if (!RepLayoutPtr) 
 	{
-		FRepLayout * RepLayout = new FRepLayout();
-		RepLayout->InitFromStruct( Struct, ServerConnection );
-		RepLayoutPtr = &RepLayoutMap.Add( Struct, TSharedPtr<FRepLayout>( RepLayout ) );
+		ECreateRepLayoutFlags Flags = MaySendProperties() ? ECreateRepLayoutFlags::MaySendProperties : ECreateRepLayoutFlags::None;
+		RepLayoutPtr = &RepLayoutMap.Add(Struct, FRepLayout::CreateFromStruct(Struct, ServerConnection, Flags));
 	}
 
 	return *RepLayoutPtr;
@@ -5152,7 +5166,7 @@ TSharedPtr<FRepLayout> UNetDriver::GetStructRepLayout( UStruct * Struct )
 
 TSharedPtr< FReplicationChangelistMgr > UNetDriver::GetReplicationChangeListMgr( UObject* Object )
 {
-	check(IsServer());
+	check(IsServer() || MaySendProperties());
 
 	FReplicationChangelistMgrWrapper* ReplicationChangeListMgrPtr = ReplicationChangeListMap.Find(Object);
 
@@ -5165,7 +5179,9 @@ TSharedPtr< FReplicationChangelistMgr > UNetDriver::GetReplicationChangeListMgr(
 
 	if (!ReplicationChangeListMgrPtr)
 	{
-		ReplicationChangeListMgrPtr = &ReplicationChangeListMap.Add(Object, FReplicationChangelistMgrWrapper(Object, TSharedPtr< FReplicationChangelistMgr >(new FReplicationChangelistMgr(this, Object))));
+		const TSharedPtr<const FRepLayout> RepLayout = GetObjectClassRepLayout(Object->GetClass());
+		FReplicationChangelistMgrWrapper Wrapper(Object, RepLayout->CreateReplicationChangelistMgr(Object));
+		ReplicationChangeListMgrPtr = &ReplicationChangeListMap.Add(Object, Wrapper);
 	}
 
 	return ReplicationChangeListMgrPtr->ReplicationChangelistMgr;
@@ -5302,6 +5318,11 @@ void UNetDriver::ProcessRemoteFunction(class AActor* Actor, UFunction* Function,
 	SCOPE_CYCLE_COUNTER(STAT_NetProcessRemoteFunc);
 	SCOPE_CYCLE_UOBJECT(Function, Function);
 
+	{
+		UObject* TestObject = (SubObject == nullptr) ? Actor : SubObject;
+		ensureMsgf(TestObject->IsSupportedForNetworking() || TestObject->IsNameStableForNetworking(), TEXT("Attempted to call ProcessRemoteFunction with object that is not supported for networking. Object: %s Function: %s"), *TestObject->GetPathName(), *Function->GetName());
+	}
+
 	bool bBlockSendRPC = false;
 
 	SendRPCDel.ExecuteIfBound(Actor, Function, Parameters, OutParms, Stack, SubObject, bBlockSendRPC);
@@ -5335,13 +5356,18 @@ void UNetDriver::ProcessRemoteFunction(class AActor* Actor, UFunction* Function,
 				{
 					// Only send or queue multicasts if the actor is relevant to the connection
 					FNetViewer Viewer(Connection, 0.f);
-					if (Actor->IsNetRelevantFor(Viewer.InViewer, Viewer.ViewTarget, Viewer.ViewLocation))
-					{
-						if (Connection->GetUChildConnection() != nullptr)
-						{
-							Connection = ((UChildConnection*)Connection)->Parent;
-						}
 
+					if (Connection->GetUChildConnection() != nullptr)
+					{
+						Connection = ((UChildConnection*)Connection)->Parent;
+					}
+
+					// It's possible that an actor is not relevant to a specific connection, but the channel is still alive (due to hysteresis).
+					// However, it's also possible that the Actor could become relevant again before the channel ever closed, and in that case we
+					// don't want to lose Reliable RPCs.
+					if (Actor->IsNetRelevantFor(Viewer.InViewer, Viewer.ViewTarget, Viewer.ViewLocation) ||
+						((Function->FunctionFlags & FUNC_NetReliable) && !!CVarAllowReliableMulticastToNonRelevantChannels.GetValueOnGameThread() && Connection->FindActorChannelRef(Actor)))
+					{
 						// We don't want to call this unless necessary, and it will internally handle being called multiple times before a clear
 						// Builds any shared serialization state for this rpc
 						RepLayout->BuildSharedSerializationForRPC(Parameters);
@@ -5421,7 +5447,7 @@ bool UNetDriver::ShouldCallRemoteFunction(UObject* Object, UFunction* Function, 
 
 bool UNetDriver::ShouldClientDestroyActor(AActor* Actor) const
 {
-	return true;
+	return (Actor && !Actor->IsA(ALevelScriptActor::StaticClass()));
 }
 
 FAutoConsoleCommandWithWorld	DumpRelevantActorsCommand(

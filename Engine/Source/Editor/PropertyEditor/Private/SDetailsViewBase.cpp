@@ -111,14 +111,17 @@ void SDetailsViewBase::HideFilterArea(bool bHide)
 
 static void GetPropertiesInOrderDisplayedRecursive(const TArray< TSharedRef<FDetailTreeNode> >& TreeNodes, TArray< FPropertyPath > &OutLeaves)
 {
-	for (auto& TreeNode : TreeNodes)
+	for( const TSharedRef<FDetailTreeNode>& TreeNode : TreeNodes )
 	{
-		if (TreeNode->IsLeaf())
+		const bool bIsPropertyRoot = TreeNode->IsLeaf() ||
+			(	TreeNode->GetPropertyNode() && 
+				TreeNode->GetPropertyNode()->GetProperty() );
+		if( bIsPropertyRoot )
 		{
 			FPropertyPath Path = TreeNode->GetPropertyPath();
 			// Some leaf nodes are not associated with properties, specifically the collision presets.
 			// @todo doc: investigate what we can do about this, result is that for these fields
-			// we can't highlight hte property in the diff tool.
+			// we can't highlight the property in the diff tool.
 			if( Path.GetNumProperties() != 0 )
 			{
 				OutLeaves.Push(Path);
@@ -324,8 +327,20 @@ void SDetailsViewBase::UpdatePropertyMaps()
 		// We need to be able to create a new detail layout and properly clean up the old one in the process
 		check(!LayoutData.DetailLayout.IsValid() || LayoutData.DetailLayout.IsUnique());
 
+		// Allow customizations to perform cleanup as the delete occurs later on
+		for (TSharedPtr<IDetailCustomization>& DetailCustomization : LayoutData.CustomizationClassInstances)
+		{
+			if (DetailCustomization.IsValid())
+			{
+				DetailCustomization->PendingDelete();
+			}
+		}
+
 		// All the current customization instances need to be deleted when it is safe
 		CustomizationClassInstancesPendingDelete.Append(LayoutData.CustomizationClassInstances);
+
+		// All the current detail layouts need to be deleted when it is safe
+		DetailLayoutsPendingDelete.Add(LayoutData.DetailLayout);
 	}
 
 	FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
@@ -646,7 +661,7 @@ EVisibility SDetailsViewBase::GetFilterBoxVisibility() const
 	// Visible if we allow search and we have anything to search otherwise collapsed so it doesn't take up room	
 	if (DetailsViewArgs.bAllowSearch && IsConnected())
 	{
-		if (RootTreeNodes.Num() > 0 || HasActiveSearch() || CurrentFilter.bShowOnlyModifiedProperties || CurrentFilter.bShowOnlyDiffering)
+		if (RootTreeNodes.Num() > 0 || HasActiveSearch() || !CurrentFilter.IsEmptyFilter())
 		{
 			Result = EVisibility::Visible;
 		}
@@ -693,6 +708,9 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 
 	// Empty all the customization instances that need to be deleted
 	CustomizationClassInstancesPendingDelete.Empty();
+
+	// Empty all the detail layouts that need to be deleted
+	DetailLayoutsPendingDelete.Empty();
 
 	FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
 

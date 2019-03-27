@@ -143,7 +143,7 @@ ULandscapeMaterialInstanceConstant* ALandscapeProxy::GetLayerThumbnailMIC(UMater
 	ULandscapeMaterialInstanceConstant* MaterialInstance = NewObject<ULandscapeMaterialInstanceConstant>(GetTransientPackage());
 	MaterialInstance->bIsLayerThumbnail = true;
 	MaterialInstance->bMobile = false;
-	MaterialInstance->SetParentEditorOnly(LandscapeMaterial);
+	MaterialInstance->SetParentEditorOnly(LandscapeMaterial, false);
 
 	FStaticParameterSet StaticParameters;
 	MaterialInstance->GetStaticParameterValues(StaticParameters);
@@ -161,8 +161,13 @@ ULandscapeMaterialInstanceConstant* ALandscapeProxy::GetLayerThumbnailMIC(UMater
 			LayerParameter.WeightmapIndex = INDEX_NONE;
 		}
 	}
-	MaterialInstance->UpdateStaticPermutation(StaticParameters);
 
+	// Don't recreate the render state of everything, only update the materials context
+	{
+		FMaterialUpdateContext MaterialUpdateContext(FMaterialUpdateContext::EOptions::Default & ~FMaterialUpdateContext::EOptions::RecreateRenderStates);
+		MaterialInstance->UpdateStaticPermutation(StaticParameters, &MaterialUpdateContext);
+	}
+	
 	FLinearColor Mask(1.0f, 0.0f, 0.0f, 0.0f);
 	MaterialInstance->SetVectorParameterValueEditorOnly(FName(*FString::Printf(TEXT("LayerMask_%s"), *LayerName.ToString())), Mask);
 	MaterialInstance->SetTextureParameterValueEditorOnly(FName(TEXT("Weightmap0")), ThumbnailWeightmap);
@@ -208,7 +213,7 @@ FString ULandscapeComponent::GetLayerAllocationKey(const TArray<FWeightmapLayerA
 	return Result;
 }
 
-UMaterialInstanceConstant* ULandscapeComponent::GetCombinationMaterial(const TArray<FWeightmapLayerAllocationInfo>& Allocations, int8 InLODIndex, bool bMobile /*= false*/) const
+UMaterialInstanceConstant* ULandscapeComponent::GetCombinationMaterial(FMaterialUpdateContext* InMaterialUpdateContext, const TArray<FWeightmapLayerAllocationInfo>& Allocations, int8 InLODIndex, bool bMobile /*= false*/) const
 {
 	check(GIsEditor);
 
@@ -255,7 +260,7 @@ UMaterialInstanceConstant* ULandscapeComponent::GetCombinationMaterial(const TAr
 			CombinationMaterialInstance = LandscapeCombinationMaterialInstance;
 			UE_LOG(LogLandscape, Log, TEXT("Looking for key %s, making new combination %s"), *LayerKey, *CombinationMaterialInstance->GetName());
 			Proxy->MaterialInstanceConstantMap.Add(*LayerKey, CombinationMaterialInstance);
-			CombinationMaterialInstance->SetParentEditorOnly(MaterialToUse);
+			CombinationMaterialInstance->SetParentEditorOnly(MaterialToUse, false);
 
 			CombinationMaterialInstance->BasePropertyOverrides.bOverride_BlendMode = bOverrideBlendMode;
 			if (bOverrideBlendMode)
@@ -272,7 +277,7 @@ UMaterialInstanceConstant* ULandscapeComponent::GetCombinationMaterial(const TAr
 					StaticParameters.TerrainLayerWeightParameters.Add(FStaticTerrainLayerWeightParameter(LayerParameter, Allocation.WeightmapTextureIndex, true, FGuid(), !Allocation.LayerInfo->bNoWeightBlend));
 				}
 			}
-			CombinationMaterialInstance->UpdateStaticPermutation(StaticParameters);
+			CombinationMaterialInstance->UpdateStaticPermutation(StaticParameters, InMaterialUpdateContext);
 
 			CombinationMaterialInstance->PostEditChange();
 		}
@@ -326,12 +331,16 @@ void ULandscapeComponent::UpdateMaterialInstances_Internal(FMaterialUpdateContex
 	int8 TessellatedMaterialCount = 0;
 	int8 MaterialIndex = 0;
 
+	TArray<FWeightmapLayerAllocationInfo>& WeightmapBaseLayerAllocation = GetWeightmapLayerAllocations();
+	TArray<UTexture2D*>& WeightmapBaseTexture = GetWeightmapTextures();
+	UTexture2D* BaseHeightmap = GetHeightmap();
+
 	for (auto It = MaterialPerLOD.CreateConstIterator(); It; ++It)
 	{
 		const int8 MaterialLOD = It.Value();
 
 		// Find or set a matching MIC in the Landscape's map.
-		UMaterialInstanceConstant* CombinationMaterialInstance = GetCombinationMaterial(WeightmapLayerAllocations, MaterialLOD, false);
+		UMaterialInstanceConstant* CombinationMaterialInstance = GetCombinationMaterial(&Context, WeightmapBaseLayerAllocation, MaterialLOD, false);
 
 		if (CombinationMaterialInstance != nullptr)
 		{
@@ -351,24 +360,24 @@ void ULandscapeComponent::UpdateMaterialInstances_Internal(FMaterialUpdateContex
 			FLinearColor Masks[4] = { FLinearColor(1.0f, 0.0f, 0.0f, 0.0f), FLinearColor(0.0f, 1.0f, 0.0f, 0.0f), FLinearColor(0.0f, 0.0f, 1.0f, 0.0f), FLinearColor(0.0f, 0.0f, 0.0f, 1.0f) };
 
 			// Set the layer mask
-			for (int32 AllocIdx = 0; AllocIdx < WeightmapLayerAllocations.Num(); AllocIdx++)
+			for (int32 AllocIdx = 0; AllocIdx < WeightmapBaseLayerAllocation.Num(); AllocIdx++)
 			{
-				FWeightmapLayerAllocationInfo& Allocation = WeightmapLayerAllocations[AllocIdx];
+				FWeightmapLayerAllocationInfo& Allocation = WeightmapBaseLayerAllocation[AllocIdx];
 
 				FName LayerName = Allocation.LayerInfo == ALandscapeProxy::VisibilityLayer ? UMaterialExpressionLandscapeVisibilityMask::ParameterName : Allocation.LayerInfo ? Allocation.LayerInfo->LayerName : NAME_None;
 				MaterialInstance->SetVectorParameterValueEditorOnly(FName(*FString::Printf(TEXT("LayerMask_%s"), *LayerName.ToString())), Masks[Allocation.WeightmapTextureChannel]);
 			}
 
 			// Set the weightmaps
-			for (int32 i = 0; i < WeightmapTextures.Num(); i++)
+			for (int32 i = 0; i < WeightmapBaseTexture.Num(); i++)
 			{
-				MaterialInstance->SetTextureParameterValueEditorOnly(FName(*FString::Printf(TEXT("Weightmap%d"), i)), WeightmapTextures[i]);
+				MaterialInstance->SetTextureParameterValueEditorOnly(FName(*FString::Printf(TEXT("Weightmap%d"), i)), WeightmapBaseTexture[i]);
 			}
 
 			// Set the heightmap, if needed.
-			if (HeightmapTexture)
+			if (BaseHeightmap)
 			{
-				MaterialInstance->SetTextureParameterValueEditorOnly(FName(TEXT("Heightmap")), HeightmapTexture);
+				MaterialInstance->SetTextureParameterValueEditorOnly(FName(TEXT("Heightmap")), BaseHeightmap);
 			}
 			MaterialInstance->PostEditChange();
 
@@ -412,7 +421,10 @@ void ULandscapeComponent::UpdateMaterialInstances_Internal(FMaterialUpdateContex
 		{
 			const int8 MaterialLOD = It.Value();
 
-			MobileCombinationMaterialInstances[MobileMaterialIndex] = GetCombinationMaterial(MobileWeightmapLayerAllocations, MaterialLOD, true);
+			UMaterialInstanceConstant* MobileCombinationMaterialInstance = GetCombinationMaterial(&Context, MobileWeightmapLayerAllocations, MaterialLOD, true);
+			MobileCombinationMaterialInstances[MobileMaterialIndex] = MobileCombinationMaterialInstance;
+			Context.AddMaterialInstance(MobileCombinationMaterialInstance);
+						
 			++MobileMaterialIndex;
 		}
 	}
@@ -436,10 +448,27 @@ void ULandscapeComponent::UpdateMaterialInstances()
 	RecreateRenderStateContext.Reset();
 }
 
+void ULandscapeComponent::UpdateMaterialInstances(FMaterialUpdateContext& InOutMaterialContext, TArray<FComponentRecreateRenderStateContext>& InOutRecreateRenderStateContext)
+{
+	InOutRecreateRenderStateContext.Add(this);
+	UpdateMaterialInstances_Internal(InOutMaterialContext);
+}
+
+void ALandscapeProxy::UpdateAllComponentMaterialInstances(FMaterialUpdateContext& InOutMaterialContext, TArray<FComponentRecreateRenderStateContext>& InOutRecreateRenderStateContext)
+{
+	for (ULandscapeComponent* Component : LandscapeComponents)
+	{
+		Component->UpdateMaterialInstances(InOutMaterialContext, InOutRecreateRenderStateContext);
+	}
+
+}
+
 void ALandscapeProxy::UpdateAllComponentMaterialInstances()
 {
 	// we're not having the material update context recreate render states because we will manually do it for only our components
 	TArray<FComponentRecreateRenderStateContext> RecreateRenderStateContexts;
+	RecreateRenderStateContexts.Reserve(LandscapeComponents.Num());
+
 	for (ULandscapeComponent* Component : LandscapeComponents)
 	{
 		RecreateRenderStateContexts.Emplace(Component);
@@ -539,6 +568,7 @@ void ULandscapeComponent::PostEditUndo()
 void ALandscapeProxy::FixupWeightmaps()
 {
 	WeightmapUsageMap.Empty();
+
 	for (ULandscapeComponent* Component : LandscapeComponents)
 	{
 		Component->FixupWeightmaps();
@@ -554,6 +584,9 @@ void ULandscapeComponent::FixupWeightmaps()
 
 		if (Info)
 		{
+			WeightmapTexturesUsage.Empty();
+			WeightmapTexturesUsage.AddDefaulted(WeightmapTextures.Num());
+
 			TArray<ULandscapeLayerInfoObject*> LayersToDelete;
 			bool bFixedLayerDeletion = false;
 
@@ -615,16 +648,26 @@ void ULandscapeComponent::FixupWeightmaps()
 				}
 
 				UTexture2D* WeightmapTexture = WeightmapTextures[Allocation.WeightmapTextureIndex];
-				FLandscapeWeightmapUsage& Usage = Proxy->WeightmapUsageMap.FindOrAdd(WeightmapTexture);
+
+				ULandscapeWeightmapUsage** TempUsage = Proxy->WeightmapUsageMap.Find(WeightmapTexture);
+
+				if (TempUsage == nullptr)
+				{
+					TempUsage = &Proxy->WeightmapUsageMap.Add(WeightmapTexture, NewObject<ULandscapeWeightmapUsage>(GetLandscapeProxy()));
+					(*TempUsage)->ProceduralLayerGuid.Invalidate();
+				}
+
+				ULandscapeWeightmapUsage* Usage = *TempUsage;
+				WeightmapTexturesUsage[Allocation.WeightmapTextureIndex] = Usage; // Keep a ref to it for faster access
 
 				// Detect a shared layer allocation, caused by a previous undo or layer deletion bugs
-				if (Usage.ChannelUsage[Allocation.WeightmapTextureChannel] != nullptr &&
-					Usage.ChannelUsage[Allocation.WeightmapTextureChannel] != this)
+				if (Usage->ChannelUsage[Allocation.WeightmapTextureChannel] != nullptr &&
+					Usage->ChannelUsage[Allocation.WeightmapTextureChannel] != this)
 				{
 					FFormatNamedArguments Arguments;
 					Arguments.Add(TEXT("LayerName"), FText::FromString(Allocation.GetLayerName().ToString()));
 					Arguments.Add(TEXT("LandscapeName"), FText::FromString(GetName()));
-					Arguments.Add(TEXT("ChannelName"), FText::FromString(Usage.ChannelUsage[Allocation.WeightmapTextureChannel]->GetName()));
+					Arguments.Add(TEXT("ChannelName"), FText::FromString(Usage->ChannelUsage[Allocation.WeightmapTextureChannel]->GetName()));
 					FMessageLog("MapCheck").Warning()
 						->AddToken(FTextToken::Create(FText::Format(LOCTEXT("MapCheck_Message_FixedUpSharedLayerWeightmap", "Fixed up shared weightmap texture for layer {LayerName} in component '{LandscapeName}' (shares with '{ChannelName}')"), Arguments)))
 						->AddToken(FMapErrorToken::Create(FMapErrors::FixedUpSharedLayerWeightmap));
@@ -634,7 +677,7 @@ void ULandscapeComponent::FixupWeightmaps()
 				}
 				else
 				{
-					Usage.ChannelUsage[Allocation.WeightmapTextureChannel] = this;
+					Usage->ChannelUsage[Allocation.WeightmapTextureChannel] = this;
 				}
 			}
 
@@ -655,7 +698,9 @@ void ULandscapeComponent::FixupWeightmaps()
 
 void ULandscapeComponent::UpdateLayerWhitelistFromPaintedLayers()
 {
-	for (const auto& Allocation : WeightmapLayerAllocations)
+	TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = GetWeightmapLayerAllocations();
+
+	for (const auto& Allocation : ComponentWeightmapLayerAllocations)
 	{
 		LayerWhitelist.AddUnique(Allocation.LayerInfo);
 	}
@@ -1127,10 +1172,13 @@ void ULandscapeComponent::UpdateCollisionLayerData(const FColor* const* const We
 		bool bExistingLayerMismatch = false;
 		int32 DataLayerIdx = INDEX_NONE;
 
+		TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = GetWeightmapLayerAllocations(true);
+		TArray<UTexture2D*>& ComponentWeightmapsTexture = GetWeightmapTextures(true);
+
 		// Find the layers we're interested in
-		for (int32 AllocIdx = 0; AllocIdx < WeightmapLayerAllocations.Num(); AllocIdx++)
+		for (int32 AllocIdx = 0; AllocIdx < ComponentWeightmapLayerAllocations.Num(); AllocIdx++)
 		{
-			FWeightmapLayerAllocationInfo& AllocInfo = WeightmapLayerAllocations[AllocIdx];
+			FWeightmapLayerAllocationInfo& AllocInfo = ComponentWeightmapLayerAllocations[AllocIdx];
 			ULandscapeLayerInfoObject* LayerInfo = AllocInfo.LayerInfo;
 			if (LayerInfo == ALandscapeProxy::VisibilityLayer || LayerInfo != nullptr)
 			{
@@ -1199,7 +1247,7 @@ void ULandscapeComponent::UpdateCollisionLayerData(const FColor* const* const We
 				DominantLayerData = (uint8*)CollisionComp->DominantLayerData.Lock(LOCK_READ_WRITE);
 			}
 
-			const int32 WeightmapSizeU = WeightmapTextures[0]->Source.GetSizeX();
+			const int32 WeightmapSizeU = ComponentWeightmapsTexture[0]->Source.GetSizeX();
 			const int32 MipSizeU = WeightmapSizeU >> CollisionMipLevel;
 
 			// Ratio to convert update region coordinate to collision mip coordinates
@@ -1360,16 +1408,18 @@ void ULandscapeComponent::UpdateCollisionLayerData(const FColor* const* const We
 
 void ULandscapeComponent::UpdateCollisionLayerData()
 {
+	TArray<UTexture2D*>& ComponentWeightmapsTexture = GetWeightmapTextures(true);
+
 	// Generate the dominant layer data
 	TArray<FColor*> WeightmapTextureMipData;
 	TArray<TArray<uint8>> CachedWeightmapTextureMipData;
 
-	WeightmapTextureMipData.Empty(WeightmapTextures.Num());
-	CachedWeightmapTextureMipData.Empty(WeightmapTextures.Num());
-	for (int32 WeightmapIdx = 0; WeightmapIdx < WeightmapTextures.Num(); ++WeightmapIdx)
+	WeightmapTextureMipData.Empty(ComponentWeightmapsTexture.Num());
+	CachedWeightmapTextureMipData.Empty(ComponentWeightmapsTexture.Num());
+	for (int32 WeightmapIdx = 0; WeightmapIdx < ComponentWeightmapsTexture.Num(); ++WeightmapIdx)
 	{
 		TArray<uint8> MipData;
-		WeightmapTextures[WeightmapIdx]->Source.GetMipData(MipData, CollisionMipLevel);
+		ComponentWeightmapsTexture[WeightmapIdx]->Source.GetMipData(MipData, CollisionMipLevel);
 		WeightmapTextureMipData.Add((FColor*)MipData.GetData());
 		CachedWeightmapTextureMipData.Add(MoveTemp(MipData));
 	}
@@ -1378,10 +1428,10 @@ void ULandscapeComponent::UpdateCollisionLayerData()
 	TArray<TArray<uint8>> SimpleCollisionCachedWeightmapTextureMipData;
 	if (SimpleCollisionMipLevel > CollisionMipLevel)
 	{
-		for (int32 WeightmapIdx = 0; WeightmapIdx < WeightmapTextures.Num(); ++WeightmapIdx)
+		for (int32 WeightmapIdx = 0; WeightmapIdx < ComponentWeightmapsTexture.Num(); ++WeightmapIdx)
 		{
 			TArray<uint8> MipData;
-			WeightmapTextures[WeightmapIdx]->Source.GetMipData(MipData, SimpleCollisionMipLevel);
+			ComponentWeightmapsTexture[WeightmapIdx]->Source.GetMipData(MipData, SimpleCollisionMipLevel);
 			SimpleCollisionWeightmapMipData.Add((FColor*)MipData.GetData());
 			SimpleCollisionCachedWeightmapTextureMipData.Add(MoveTemp(MipData));
 		}
@@ -2140,6 +2190,8 @@ ULandscapeLayerInfoObject* ALandscapeProxy::CreateLayerInfo(const TCHAR* LayerNa
 }
 
 #define HEIGHTDATA(X,Y) (HeightData[ FMath::Clamp<int32>(Y,0,VertsY) * VertsX + FMath::Clamp<int32>(X,0,VertsX) ])
+ENGINE_API extern bool GDisableAutomaticTextureMaterialUpdateDependencies;
+
 LANDSCAPE_API void ALandscapeProxy::Import(
 	const FGuid Guid,
 	const int32 MinX, const int32 MinY, const int32 MaxX, const int32 MaxY,
@@ -2316,10 +2368,12 @@ LANDSCAPE_API void ALandscapeProxy::Import(
 
 			UE_LOG(LogLandscape, Log, TEXT("%s needs %d alphamaps"), *LandscapeComponent->GetName(), EditingAlphaLayerData.Num());
 
+			TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = LandscapeComponent->GetWeightmapLayerAllocations();
+
 			// Calculate weightmap weights for this component
 			WeightValues.Empty(EditingAlphaLayerData.Num());
 			WeightValues.AddZeroed(EditingAlphaLayerData.Num());
-			LandscapeComponent->WeightmapLayerAllocations.Empty(EditingAlphaLayerData.Num());
+			ComponentWeightmapLayerAllocations.Empty(EditingAlphaLayerData.Num());
 
 			TArray<bool, TInlineAllocator<16>> IsNoBlendArray;
 			IsNoBlendArray.Empty(EditingAlphaLayerData.Num());
@@ -2329,7 +2383,7 @@ LANDSCAPE_API void ALandscapeProxy::Import(
 			{
 				// Lookup the original layer name
 				WeightValues[WeightLayerIndex] = EditingAlphaLayerData[WeightLayerIndex].AlphaValues;
-				new(LandscapeComponent->WeightmapLayerAllocations) FWeightmapLayerAllocationInfo(ImportLayerInfos[EditingAlphaLayerData[WeightLayerIndex].LayerIndex].LayerInfo);
+				new(ComponentWeightmapLayerAllocations) FWeightmapLayerAllocationInfo(ImportLayerInfos[EditingAlphaLayerData[WeightLayerIndex].LayerIndex].LayerInfo);
 				IsNoBlendArray[WeightLayerIndex] = ImportLayerInfos[EditingAlphaLayerData[WeightLayerIndex].LayerIndex].LayerInfo->bNoWeightBlend;
 			}
 
@@ -2364,7 +2418,7 @@ LANDSCAPE_API void ALandscapeProxy::Import(
 						{
 							// Remove the layer as it has no contribution
 							WeightValues.RemoveAt(BelowWeightLayerIndex);
-							LandscapeComponent->WeightmapLayerAllocations.RemoveAt(BelowWeightLayerIndex);
+							ComponentWeightmapLayerAllocations.RemoveAt(BelowWeightLayerIndex);
 							IsNoBlendArray.RemoveAt(BelowWeightLayerIndex);
 
 							// The current layer has been re-numbered
@@ -2397,14 +2451,7 @@ LANDSCAPE_API void ALandscapeProxy::Import(
 						}
 					}
 
-					if (TotalWeight == 0)
-					{
-						if (MaxLayerIdx >= 0)
-						{
-							WeightValues[MaxLayerIdx][Idx] = 255;
-						}
-					}
-					else if (TotalWeight != 255)
+					if (TotalWeight > 0 && TotalWeight != 255)
 					{
 						// normalization...
 						float Factor = 255.0f / TotalWeight;
@@ -2492,18 +2539,23 @@ LANDSCAPE_API void ALandscapeProxy::Import(
 					}
 				}
 
+				TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = LandscapeComponent->GetWeightmapLayerAllocations();
+				TArray<UTexture2D*>& ComponentWeightmapTextures = LandscapeComponent->GetWeightmapTextures();
+				TArray<ULandscapeWeightmapUsage*>& ComponentWeightmapTexturesUsage = LandscapeComponent->GetWeightmapTexturesUsage();
+
 				if (BestAllocationIndex != -1)
 				{
 					FWeightmapTextureAllocation& Allocation = TextureAllocations[BestAllocationIndex];
-					FLandscapeWeightmapUsage& WeightmapUsage = WeightmapUsageMap.FindChecked(Allocation.Texture);
+					ULandscapeWeightmapUsage* WeightmapUsage = WeightmapUsageMap.FindChecked(Allocation.Texture);
+					ComponentWeightmapTexturesUsage.Add(WeightmapUsage);
 
 					UE_LOG(LogLandscape, Log, TEXT("  ==> Storing %d channels starting at %s[%d]"), RemainingLayers, *Allocation.Texture->GetName(), Allocation.ChannelsInUse);
 
 					for (int32 i = 0; i < RemainingLayers; i++)
 					{
-						LandscapeComponent->WeightmapLayerAllocations[LayerIndex + i].WeightmapTextureIndex = LandscapeComponent->WeightmapTextures.Num();
-						LandscapeComponent->WeightmapLayerAllocations[LayerIndex + i].WeightmapTextureChannel = Allocation.ChannelsInUse;
-						WeightmapUsage.ChannelUsage[Allocation.ChannelsInUse] = LandscapeComponent;
+						ComponentWeightmapLayerAllocations[LayerIndex + i].WeightmapTextureIndex = ComponentWeightmapTextures.Num();
+						ComponentWeightmapLayerAllocations[LayerIndex + i].WeightmapTextureChannel = Allocation.ChannelsInUse;
+						WeightmapUsage->ChannelUsage[Allocation.ChannelsInUse] = LandscapeComponent;
 						switch (Allocation.ChannelsInUse)
 						{
 						case 1:
@@ -2524,7 +2576,7 @@ LANDSCAPE_API void ALandscapeProxy::Import(
 					}
 
 					LayerIndex += RemainingLayers;
-					LandscapeComponent->WeightmapTextures.Add(Allocation.Texture);
+					ComponentWeightmapTextures.Add(Allocation.Texture);
 				}
 				else
 				{
@@ -2534,39 +2586,40 @@ LANDSCAPE_API void ALandscapeProxy::Import(
 
 					const int32 ThisAllocationLayers = FMath::Min<int32>(RemainingLayers, 4);
 					new(TextureAllocations) FWeightmapTextureAllocation(ComponentX, ComponentY, ThisAllocationLayers, WeightmapTexture, MipData);
-					FLandscapeWeightmapUsage& WeightmapUsage = WeightmapUsageMap.Add(WeightmapTexture, FLandscapeWeightmapUsage());
+					ULandscapeWeightmapUsage* WeightmapUsage = WeightmapUsageMap.Add(WeightmapTexture, NewObject<ULandscapeWeightmapUsage>(this));
+					ComponentWeightmapTexturesUsage.Add(WeightmapUsage);
 
 					UE_LOG(LogLandscape, Log, TEXT("  ==> Storing %d channels in new texture %s"), ThisAllocationLayers, *WeightmapTexture->GetName());
 
 					WeightmapTextureDataPointers.Add((uint8*)&MipData->R);
-					LandscapeComponent->WeightmapLayerAllocations[LayerIndex + 0].WeightmapTextureIndex = LandscapeComponent->WeightmapTextures.Num();
-					LandscapeComponent->WeightmapLayerAllocations[LayerIndex + 0].WeightmapTextureChannel = 0;
-					WeightmapUsage.ChannelUsage[0] = LandscapeComponent;
+					ComponentWeightmapLayerAllocations[LayerIndex + 0].WeightmapTextureIndex = ComponentWeightmapTextures.Num();
+					ComponentWeightmapLayerAllocations[LayerIndex + 0].WeightmapTextureChannel = 0;
+					WeightmapUsage->ChannelUsage[0] = LandscapeComponent;
 
 					if (ThisAllocationLayers > 1)
 					{
 						WeightmapTextureDataPointers.Add((uint8*)&MipData->G);
-						LandscapeComponent->WeightmapLayerAllocations[LayerIndex + 1].WeightmapTextureIndex = LandscapeComponent->WeightmapTextures.Num();
-						LandscapeComponent->WeightmapLayerAllocations[LayerIndex + 1].WeightmapTextureChannel = 1;
-						WeightmapUsage.ChannelUsage[1] = LandscapeComponent;
+						ComponentWeightmapLayerAllocations[LayerIndex + 1].WeightmapTextureIndex = ComponentWeightmapTextures.Num();
+						ComponentWeightmapLayerAllocations[LayerIndex + 1].WeightmapTextureChannel = 1;
+						WeightmapUsage->ChannelUsage[1] = LandscapeComponent;
 
 						if (ThisAllocationLayers > 2)
 						{
 							WeightmapTextureDataPointers.Add((uint8*)&MipData->B);
-							LandscapeComponent->WeightmapLayerAllocations[LayerIndex + 2].WeightmapTextureIndex = LandscapeComponent->WeightmapTextures.Num();
-							LandscapeComponent->WeightmapLayerAllocations[LayerIndex + 2].WeightmapTextureChannel = 2;
-							WeightmapUsage.ChannelUsage[2] = LandscapeComponent;
+							ComponentWeightmapLayerAllocations[LayerIndex + 2].WeightmapTextureIndex = ComponentWeightmapTextures.Num();
+							ComponentWeightmapLayerAllocations[LayerIndex + 2].WeightmapTextureChannel = 2;
+							WeightmapUsage->ChannelUsage[2] = LandscapeComponent;
 
 							if (ThisAllocationLayers > 3)
 							{
 								WeightmapTextureDataPointers.Add((uint8*)&MipData->A);
-								LandscapeComponent->WeightmapLayerAllocations[LayerIndex + 3].WeightmapTextureIndex = LandscapeComponent->WeightmapTextures.Num();
-								LandscapeComponent->WeightmapLayerAllocations[LayerIndex + 3].WeightmapTextureChannel = 3;
-								WeightmapUsage.ChannelUsage[3] = LandscapeComponent;
+								ComponentWeightmapLayerAllocations[LayerIndex + 3].WeightmapTextureIndex = ComponentWeightmapTextures.Num();
+								ComponentWeightmapLayerAllocations[LayerIndex + 3].WeightmapTextureChannel = 3;
+								WeightmapUsage->ChannelUsage[3] = LandscapeComponent;
 							}
 						}
 					}
-					LandscapeComponent->WeightmapTextures.Add(WeightmapTexture);
+					ComponentWeightmapTextures.Add(WeightmapTexture);
 
 					LayerIndex += ThisAllocationLayers;
 				}
@@ -2704,21 +2757,69 @@ LANDSCAPE_API void ALandscapeProxy::Import(
 		PendingTexturePlatformDataCreation.Add(HeightmapInfo.HeightmapTexture);
 	}
 
-	for (UTexture2D* Texture : PendingTexturePlatformDataCreation)
+	// Build a list of all unique materials the landscape uses
+	TArray<UMaterialInterface*> LandscapeMaterials;
+
+	for (ULandscapeComponent* Component : LandscapeComponents)
 	{
-		Texture->FinishCachePlatformData();
-		Texture->PostEditChange();
+		int8 MaxLOD = FMath::CeilLogTwo(Component->SubsectionSizeQuads + 1) - 1;
+
+		for (int8 LODIndex = 0; LODIndex < MaxLOD; ++LODIndex)
+		{
+			UMaterialInterface* Material = Component->GetLandscapeMaterial(LODIndex);
+			LandscapeMaterials.AddUnique(Material);
+		}
 	}
 
-	// Update MaterialInstances (must be done after textures are fully initialized)
-	UpdateAllComponentMaterialInstances();
+	// Update all materials and recreate render state of all landscape components
+	TArray<FComponentRecreateRenderStateContext> RecreateRenderStateContexts;
+
+	{
+		// We disable automatic material update context, to manage it manually
+		GDisableAutomaticTextureMaterialUpdateDependencies = true;
+	
+		FMaterialUpdateContext UpdateContext(FMaterialUpdateContext::EOptions::Default & ~FMaterialUpdateContext::EOptions::RecreateRenderStates);
+
+		for (UTexture2D* Texture : PendingTexturePlatformDataCreation)
+		{
+			Texture->FinishCachePlatformData();
+			Texture->PostEditChange();
+			
+			TSet<UMaterial*> BaseMaterialsThatUseThisTexture;
+
+			for (UMaterialInterface* MaterialInterface : LandscapeMaterials)
+			{
+				if (DoesMaterialUseTexture(MaterialInterface, Texture))
+				{
+					UMaterial* Material = MaterialInterface->GetMaterial();
+					bool MaterialAlreadyCompute = false;
+					BaseMaterialsThatUseThisTexture.Add(Material, &MaterialAlreadyCompute);
+
+					if (!MaterialAlreadyCompute)
+					{
+						if (Material->IsTextureForceRecompileCacheRessource(Texture))
+						{
+							UpdateContext.AddMaterial(Material);
+							Material->UpdateMaterialShaderCacheAndTextureReferences();
+						}
+					}
+				}
+			}
+		}
+		
+		GDisableAutomaticTextureMaterialUpdateDependencies = false;
+
+		// Update MaterialInstances (must be done after textures are fully initialized)
+		UpdateAllComponentMaterialInstances(UpdateContext, RecreateRenderStateContexts);
+	}
+
+	// Recreate the render state for this component, needed to update the static drawlist which has cached the MaterialRenderProxies
+	// Must be after the FMaterialUpdateContext is destroyed
+	RecreateRenderStateContexts.Reset();
 
 	if (GetMutableDefault<UEditorExperimentalSettings>()->bProceduralLandscape)
 	{
 		SetupProceduralLayers(NumComponentsX, NumComponentsY);
-		
-		FEditorDelegates::PreSaveWorld.AddUObject(GetLandscapeActor(), &ALandscape::OnPreSaveWorld);
-		FEditorDelegates::PostSaveWorld.AddUObject(GetLandscapeActor(), &ALandscape::OnPostSaveWorld);
 	}
 
 	if (GetLevel()->bIsVisible)
@@ -2812,10 +2913,11 @@ bool ALandscapeProxy::ExportToRawMesh(int32 InExportLOD, FMeshDescription& OutRa
 		// Check if there are any holes
 		const int32 VisThreshold = 170;
 		TArray<uint8> VisDataMap;
+		TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = Component->GetWeightmapLayerAllocations();
 
-		for (int32 AllocIdx = 0; AllocIdx < Component->WeightmapLayerAllocations.Num(); AllocIdx++)
+		for (int32 AllocIdx = 0; AllocIdx < ComponentWeightmapLayerAllocations.Num(); AllocIdx++)
 		{
-			FWeightmapLayerAllocationInfo& AllocInfo = Component->WeightmapLayerAllocations[AllocIdx];
+			FWeightmapLayerAllocationInfo& AllocInfo = ComponentWeightmapLayerAllocations[AllocIdx];
 			if (AllocInfo.LayerInfo == ALandscapeProxy::VisibilityLayer)
 			{
 				CDI.GetWeightmapTextureData(AllocInfo.LayerInfo, VisDataMap);
@@ -2982,32 +3084,20 @@ bool ALandscapeProxy::ExportToRawMesh(int32 InExportLOD, FMeshDescription& OutRa
 							auto AddTriangle = [&OutRawMesh, &EdgeHardnesses, &EdgeCreaseSharpnesses, &PolygonGroupID, &VertexIDs, &VertexInstanceIDs](int32 BaseIndex)
 							{
 								//Create a polygon from this triangle
-								TArray<FMeshDescription::FContourPoint> Contours;
+								TArray<FVertexInstanceID> PerimeterVertexInstances;
+								PerimeterVertexInstances.SetNum(3);
 								for (int32 Corner = 0; Corner < 3; ++Corner)
 								{
-									int32 ContourPointIndex = Contours.AddDefaulted();
-									FMeshDescription::FContourPoint& ContourPoint = Contours[ContourPointIndex];
-									//Find the matching edge ID
-									uint32 CornerIndices[2];
-									CornerIndices[0] = BaseIndex + ((Corner + 0) % 3);
-									CornerIndices[1] = BaseIndex + ((Corner + 1) % 3);
-
-									FVertexID EdgeVertexIDs[2];
-									EdgeVertexIDs[0] = VertexIDs[CornerIndices[0]];
-									EdgeVertexIDs[1] = VertexIDs[CornerIndices[1]];
-
-									FEdgeID MatchEdgeId = OutRawMesh.GetVertexPairEdge(EdgeVertexIDs[0], EdgeVertexIDs[1]);
-									if (MatchEdgeId == FEdgeID::Invalid)
-									{
-										MatchEdgeId = OutRawMesh.CreateEdge(EdgeVertexIDs[0], EdgeVertexIDs[1]);
-										EdgeHardnesses[MatchEdgeId] = false;
-										EdgeCreaseSharpnesses[MatchEdgeId] = 0.0f;
-									}
-									ContourPoint.EdgeID = MatchEdgeId;
-									ContourPoint.VertexInstanceID = VertexInstanceIDs[CornerIndices[0]];
+									PerimeterVertexInstances[Corner] = VertexInstanceIDs[BaseIndex + Corner];
 								}
 								// Insert a polygon into the mesh
-								const FPolygonID NewPolygonID = OutRawMesh.CreatePolygon(PolygonGroupID, Contours);
+								TArray<FEdgeID> NewEdgeIDs;
+								const FPolygonID NewPolygonID = OutRawMesh.CreatePolygon(PolygonGroupID, PerimeterVertexInstances, &NewEdgeIDs);
+								for (const FEdgeID NewEdgeID : NewEdgeIDs)
+								{
+									EdgeHardnesses[NewEdgeID] = false;
+									EdgeCreaseSharpnesses[NewEdgeID] = 0.0f;
+								}
 								//Triangulate the polygon
 								FMeshPolygon& Polygon = OutRawMesh.GetPolygon(NewPolygonID);
 								OutRawMesh.ComputePolygonTriangulation(NewPolygonID, Polygon.Triangles);
@@ -3877,7 +3967,9 @@ void ALandscapeProxy::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	bool bRemovedAnyLayers = false;
 	for (ULandscapeComponent* Component : LandscapeComponents)
 	{
-		int32 NumNullLayers = Algo::CountIf(Component->WeightmapLayerAllocations, [](const FWeightmapLayerAllocationInfo& Allocation) { return Allocation.LayerInfo == nullptr; });
+		TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = Component->GetWeightmapLayerAllocations(false);
+
+		int32 NumNullLayers = Algo::CountIf(ComponentWeightmapLayerAllocations, [](const FWeightmapLayerAllocationInfo& Allocation) { return Allocation.LayerInfo == nullptr; });
 		if (NumNullLayers > 0)
 		{
 			FLandscapeEditDataInterface LandscapeEdit(Info);
@@ -4443,14 +4535,18 @@ void ULandscapeInfo::ClearSelectedRegion(bool bIsComponentwise /*= true*/)
 	}
 }
 
-void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* DataInterface)
+void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* DataInterface, bool InCanUseCurrentEditingWeightmap, bool InSaveToTransactionBuffer, bool InInitPlatformDataAsync, TArray<UTexture2D*>* OutNewCreatedTextures)
 {
 	ALandscapeProxy* Proxy = GetLandscapeProxy();
 
+	TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = GetWeightmapLayerAllocations(InCanUseCurrentEditingWeightmap);
+	TArray<UTexture2D*>& ComponentWeightmapTextures = GetWeightmapTextures(InCanUseCurrentEditingWeightmap);
+	TArray<ULandscapeWeightmapUsage*>& ComponentWeightmapTexturesUsage = GetWeightmapTexturesUsage(InCanUseCurrentEditingWeightmap);
+
 	int32 NeededNewChannels = 0;
-	for (int32 LayerIdx = 0; LayerIdx < WeightmapLayerAllocations.Num(); LayerIdx++)
+	for (int32 LayerIdx = 0; LayerIdx < ComponentWeightmapLayerAllocations.Num(); LayerIdx++)
 	{
-		if (WeightmapLayerAllocations[LayerIdx].WeightmapTextureIndex == 255)
+		if (ComponentWeightmapLayerAllocations[LayerIdx].WeightmapTextureIndex == 255)
 		{
 			NeededNewChannels++;
 		}
@@ -4462,18 +4558,20 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 		return;
 	}
 
-	Modify();
-	//Landscape->Modify();
-	Proxy->Modify();
+	if (InSaveToTransactionBuffer)
+	{
+		Modify();
+		Proxy->Modify();
+	}
 
 	// UE_LOG(LogLandscape, Log, TEXT("----------------------"));
 	// UE_LOG(LogLandscape, Log, TEXT("Component %s needs %d layers (%d new)"), *GetName(), WeightmapLayerAllocations.Num(), NeededNewChannels);
 
 	// See if our existing textures have sufficient space
 	int32 ExistingTexAvailableChannels = 0;
-	for (int32 TexIdx = 0; TexIdx < WeightmapTextures.Num(); TexIdx++)
+	for (int32 TexIdx = 0; TexIdx < ComponentWeightmapTextures.Num(); TexIdx++)
 	{
-		FLandscapeWeightmapUsage* Usage = Proxy->WeightmapUsageMap.Find(WeightmapTextures[TexIdx]);
+		ULandscapeWeightmapUsage* Usage = ComponentWeightmapTexturesUsage[TexIdx];
 		check(Usage);
 
 		ExistingTexAvailableChannels += Usage->FreeChannelCount();
@@ -4489,35 +4587,44 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 		// UE_LOG(LogLandscape, Log, TEXT("Existing texture has available channels"));
 
 		// Allocate using our existing textures' spare channels.
-		for (int32 TexIdx = 0; TexIdx < WeightmapTextures.Num(); TexIdx++)
+		int32 CurrentAlloc = 0;
+		for (int32 TexIdx = 0; TexIdx < ComponentWeightmapTextures.Num(); TexIdx++)
 		{
-			FLandscapeWeightmapUsage* Usage = Proxy->WeightmapUsageMap.Find(WeightmapTextures[TexIdx]);
+			ULandscapeWeightmapUsage* Usage = ComponentWeightmapTexturesUsage[TexIdx];
 
 			for (int32 ChanIdx = 0; ChanIdx < 4; ChanIdx++)
 			{
 				if (Usage->ChannelUsage[ChanIdx] == nullptr)
 				{
-					for (int32 LayerIdx = 0; LayerIdx < WeightmapLayerAllocations.Num(); LayerIdx++)
+					// Find next allocation to treat
+					for (; CurrentAlloc < ComponentWeightmapLayerAllocations.Num(); ++CurrentAlloc)
 					{
-						FWeightmapLayerAllocationInfo& AllocInfo = WeightmapLayerAllocations[LayerIdx];
+						FWeightmapLayerAllocationInfo& AllocInfo = ComponentWeightmapLayerAllocations[CurrentAlloc];
+						
 						if (AllocInfo.WeightmapTextureIndex == 255)
 						{
-							// Zero out the data for this texture channel
-							if (DataInterface)
-							{
-								DataInterface->ZeroTextureChannel(WeightmapTextures[TexIdx], ChanIdx);
-							}
-
-							AllocInfo.WeightmapTextureIndex = TexIdx;
-							AllocInfo.WeightmapTextureChannel = ChanIdx;
-							Usage->ChannelUsage[ChanIdx] = this;
-							NeededNewChannels--;
-
-							if (NeededNewChannels == 0)
-							{
-								return;
-							}
+							break;
 						}
+					}
+
+					FWeightmapLayerAllocationInfo& AllocInfo = ComponentWeightmapLayerAllocations[CurrentAlloc];
+					check(AllocInfo.WeightmapTextureIndex == 255);
+
+					// Zero out the data for this texture channel
+					if (DataInterface)
+					{
+						DataInterface->ZeroTextureChannel(ComponentWeightmapTextures[TexIdx], ChanIdx);
+					}
+
+					AllocInfo.WeightmapTextureIndex = TexIdx;
+					AllocInfo.WeightmapTextureChannel = ChanIdx;
+					Usage->ChannelUsage[ChanIdx] = this;
+
+					NeededNewChannels--;
+
+					if (NeededNewChannels == 0)
+					{
+						return;
 					}
 				}
 			}
@@ -4529,15 +4636,16 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 	// UE_LOG(LogLandscape, Log, TEXT("Reallocating."));
 
 	// We are totally reallocating the weightmap
-	int32 TotalNeededChannels = WeightmapLayerAllocations.Num();
+	int32 TotalNeededChannels = ComponentWeightmapLayerAllocations.Num();
 	int32 CurrentLayer = 0;
 	TArray<UTexture2D*> NewWeightmapTextures;
+	TArray<ULandscapeWeightmapUsage*> NewComponentWeightmapTexturesUsage;
 	while (TotalNeededChannels > 0)
 	{
 		// UE_LOG(LogLandscape, Log, TEXT("Still need %d channels"), TotalNeededChannels);
 
 		UTexture2D* CurrentWeightmapTexture = nullptr;
-		FLandscapeWeightmapUsage* CurrentWeightmapUsage = nullptr;
+		ULandscapeWeightmapUsage* CurrentWeightmapUsage = nullptr;
 
 		if (TotalNeededChannels < 4)
 		{
@@ -4545,22 +4653,34 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 
 			// see if we can find a suitable existing weightmap texture with sufficient channels
 			int32 BestDistanceSquared = MAX_int32;
-			for (TMap<UTexture2D*, struct FLandscapeWeightmapUsage>::TIterator It(Proxy->WeightmapUsageMap); It; ++It)
+			for (auto& ItPair : Proxy->WeightmapUsageMap)
 			{
-				FLandscapeWeightmapUsage* TryWeightmapUsage = &It.Value();
-				if (TryWeightmapUsage->FreeChannelCount() >= TotalNeededChannels)
+				ULandscapeWeightmapUsage* TryWeightmapUsage = ItPair.Value;
+				//
+				FGuid ProceduralLayerGuidToSeek = InCanUseCurrentEditingWeightmap ? CurrentProceduralLayerGuid : FGuid();
+
+				if (TryWeightmapUsage->FreeChannelCount() >= TotalNeededChannels && TryWeightmapUsage->ProceduralLayerGuid == ProceduralLayerGuidToSeek)
 				{
-					// See if this candidate is closer than any others we've found
-					for (int32 ChanIdx = 0; ChanIdx < 4; ChanIdx++)
+					if (TryWeightmapUsage->FreeChannelCount() == 4)
 					{
-						if (TryWeightmapUsage->ChannelUsage[ChanIdx] != nullptr)
+						CurrentWeightmapTexture = ItPair.Key;
+						CurrentWeightmapUsage = TryWeightmapUsage;
+						break;
+					}
+					else
+					{
+						// See if this candidate is closer than any others we've found
+						for (int32 ChanIdx = 0; ChanIdx < 4; ChanIdx++)
 						{
-							int32 TryDistanceSquared = (TryWeightmapUsage->ChannelUsage[ChanIdx]->GetSectionBase() - GetSectionBase()).SizeSquared();
-							if (TryDistanceSquared < BestDistanceSquared)
+							if (TryWeightmapUsage->ChannelUsage[ChanIdx] != nullptr)
 							{
-								CurrentWeightmapTexture = It.Key();
-								CurrentWeightmapUsage = TryWeightmapUsage;
-								BestDistanceSquared = TryDistanceSquared;
+								int32 TryDistanceSquared = (TryWeightmapUsage->ChannelUsage[ChanIdx]->GetSectionBase() - GetSectionBase()).SizeSquared();
+								if (TryDistanceSquared < BestDistanceSquared)
+								{
+									CurrentWeightmapTexture = ItPair.Key;
+									CurrentWeightmapUsage = TryWeightmapUsage;
+									BestDistanceSquared = TryDistanceSquared;
+								}
 							}
 						}
 					}
@@ -4579,16 +4699,32 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 
 			// We need a new weightmap texture
 			CurrentWeightmapTexture = GetLandscapeProxy()->CreateLandscapeTexture(WeightmapSize, WeightmapSize, TEXTUREGROUP_Terrain_Weightmap, TSF_BGRA8);
+
 			// Alloc dummy mips
-			CreateEmptyTextureMips(CurrentWeightmapTexture);
-			CurrentWeightmapTexture->PostEditChange();
+			CreateEmptyTextureMips(CurrentWeightmapTexture, true);
+
+			if (InInitPlatformDataAsync)
+			{
+				CurrentWeightmapTexture->BeginCachePlatformData();
+				CurrentWeightmapTexture->ClearAllCachedCookedPlatformData();
+			}
+			else
+			{
+				CurrentWeightmapTexture->PostEditChange();
+			}
+
+			if (OutNewCreatedTextures != nullptr)
+			{
+				OutNewCreatedTextures->Add(CurrentWeightmapTexture);
+			}
 
 			// Store it in the usage map
-			CurrentWeightmapUsage = &Proxy->WeightmapUsageMap.Add(CurrentWeightmapTexture, FLandscapeWeightmapUsage());
-
+			CurrentWeightmapUsage = Proxy->WeightmapUsageMap.Add(CurrentWeightmapTexture, NewObject<ULandscapeWeightmapUsage>(GetLandscapeProxy()));
+			CurrentWeightmapUsage->ProceduralLayerGuid = InCanUseCurrentEditingWeightmap ? CurrentProceduralLayerGuid : FGuid();
 			// UE_LOG(LogLandscape, Log, TEXT("Making a new texture %s"), *CurrentWeightmapTexture->GetName());
 		}
 
+		NewComponentWeightmapTexturesUsage.Add(CurrentWeightmapUsage);
 		NewWeightmapTextures.Add(CurrentWeightmapTexture);
 
 		for (int32 ChanIdx = 0; ChanIdx < 4 && TotalNeededChannels > 0; ChanIdx++)
@@ -4598,7 +4734,7 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 			if (CurrentWeightmapUsage->ChannelUsage[ChanIdx] == nullptr)
 			{
 				// Use this allocation
-				FWeightmapLayerAllocationInfo& AllocInfo = WeightmapLayerAllocations[CurrentLayer];
+				FWeightmapLayerAllocationInfo& AllocInfo = ComponentWeightmapLayerAllocations[CurrentLayer];
 
 				if (AllocInfo.WeightmapTextureIndex == 255)
 				{
@@ -4611,7 +4747,7 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 				}
 				else
 				{
-					UTexture2D* OldWeightmapTexture = WeightmapTextures[AllocInfo.WeightmapTextureIndex];
+					UTexture2D* OldWeightmapTexture = ComponentWeightmapTextures[AllocInfo.WeightmapTextureIndex];
 
 					// Copy the data
 					if (ensure(DataInterface != nullptr)) // it's not safe to skip the copy
@@ -4622,7 +4758,7 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 					}
 
 					// Remove the old allocation
-					FLandscapeWeightmapUsage* OldWeightmapUsage = Proxy->WeightmapUsageMap.Find(OldWeightmapTexture);
+					ULandscapeWeightmapUsage* OldWeightmapUsage = ComponentWeightmapTexturesUsage[AllocInfo.WeightmapTextureIndex];
 					OldWeightmapUsage->ChannelUsage[AllocInfo.WeightmapTextureChannel] = nullptr;
 				}
 
@@ -4636,15 +4772,12 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 		}
 	}
 
-	// Replace the weightmap textures
-	WeightmapTextures = MoveTemp(NewWeightmapTextures);
-
 	if (DataInterface)
 	{
 		// Update the mipmaps for the textures we edited
-		for (int32 Idx = 0; Idx < WeightmapTextures.Num(); Idx++)
+		for (int32 Idx = 0; Idx < NewWeightmapTextures.Num(); Idx++)
 		{
-			UTexture2D* WeightmapTexture = WeightmapTextures[Idx];
+			UTexture2D* WeightmapTexture = NewWeightmapTextures[Idx];
 			FLandscapeTextureDataInfo* WeightmapDataInfo = DataInterface->GetTextureDataInfo(WeightmapTexture);
 
 			int32 NumMips = WeightmapTexture->Source.GetNumMips();
@@ -4658,17 +4791,21 @@ void ULandscapeComponent::ReallocateWeightmaps(FLandscapeEditDataInterface* Data
 			ULandscapeComponent::UpdateWeightmapMips(NumSubsections, SubsectionSizeQuads, WeightmapTexture, WeightmapTextureMipData, 0, 0, MAX_int32, MAX_int32, WeightmapDataInfo);
 		}
 	}
+
+	// Replace the weightmap textures
+	SetWeightmapTextures(MoveTemp(NewWeightmapTextures), InCanUseCurrentEditingWeightmap);
+	SetWeightmapTexturesUsage(MoveTemp(NewComponentWeightmapTexturesUsage), InCanUseCurrentEditingWeightmap);	
 }
 
 void ALandscapeProxy::RemoveInvalidWeightmaps()
 {
 	if (GIsEditor)
 	{
-		for (TMap< UTexture2D*, struct FLandscapeWeightmapUsage >::TIterator It(WeightmapUsageMap); It; ++It)
+		for (TMap< UTexture2D*, ULandscapeWeightmapUsage* >::TIterator It(WeightmapUsageMap); It; ++It)
 		{
 			UTexture2D* Tex = It.Key();
-			FLandscapeWeightmapUsage& Usage = It.Value();
-			if (Usage.FreeChannelCount() == 4) // Invalid Weight-map
+			ULandscapeWeightmapUsage* Usage = It.Value();
+			if (Usage->FreeChannelCount() == 4) // Invalid Weight-map
 			{
 				if (Tex)
 				{
@@ -4677,7 +4814,8 @@ void ALandscapeProxy::RemoveInvalidWeightmaps()
 					Tex->MarkPackageDirty();
 					Tex->ClearFlags(RF_Standalone);
 				}
-				WeightmapUsageMap.Remove(Tex);
+
+				It.RemoveCurrent();
 			}
 		}
 
@@ -4692,16 +4830,20 @@ void ALandscapeProxy::RemoveInvalidWeightmaps()
 
 void ULandscapeComponent::RemoveInvalidWeightmaps()
 {
+	TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = GetWeightmapLayerAllocations();
+	TArray<UTexture2D*>& ComponentWeightmapTextures = GetWeightmapTextures();
+	TArray<ULandscapeWeightmapUsage*>& ComponentWeightmapTexturesUsage = GetWeightmapTexturesUsage();
+
 	// Adjust WeightmapTextureIndex index for other layers
 	TSet<int32> UnUsedTextureIndices;
 	{
 		TSet<int32> UsedTextureIndices;
-		for (int32 LayerIdx = 0; LayerIdx < WeightmapLayerAllocations.Num(); LayerIdx++)
+		for (int32 LayerIdx = 0; LayerIdx < ComponentWeightmapLayerAllocations.Num(); LayerIdx++)
 		{
-			UsedTextureIndices.Add(WeightmapLayerAllocations[LayerIdx].WeightmapTextureIndex);
+			UsedTextureIndices.Add(ComponentWeightmapLayerAllocations[LayerIdx].WeightmapTextureIndex);
 		}
 
-		for (int32 WeightIdx = 0; WeightIdx < WeightmapTextures.Num(); ++WeightIdx)
+		for (int32 WeightIdx = 0; WeightIdx < ComponentWeightmapTextures.Num(); ++WeightIdx)
 		{
 			if (!UsedTextureIndices.Contains(WeightIdx))
 			{
@@ -4714,16 +4856,18 @@ void ULandscapeComponent::RemoveInvalidWeightmaps()
 	for (int32 UnusedIndex : UnUsedTextureIndices)
 	{
 		int32 WeightmapTextureIndexToRemove = UnusedIndex - RemovedTextures;
-		WeightmapTextures[WeightmapTextureIndexToRemove]->SetFlags(RF_Transactional);
-		WeightmapTextures[WeightmapTextureIndexToRemove]->Modify();
-		WeightmapTextures[WeightmapTextureIndexToRemove]->MarkPackageDirty();
-		WeightmapTextures[WeightmapTextureIndexToRemove]->ClearFlags(RF_Standalone);
-		WeightmapTextures.RemoveAt(WeightmapTextureIndexToRemove);
+		ComponentWeightmapTextures[WeightmapTextureIndexToRemove]->SetFlags(RF_Transactional);
+		ComponentWeightmapTextures[WeightmapTextureIndexToRemove]->Modify();
+		ComponentWeightmapTextures[WeightmapTextureIndexToRemove]->MarkPackageDirty();
+		ComponentWeightmapTextures[WeightmapTextureIndexToRemove]->ClearFlags(RF_Standalone);
+		ComponentWeightmapTextures.RemoveAt(WeightmapTextureIndexToRemove);
+
+		ComponentWeightmapTexturesUsage.RemoveAt(WeightmapTextureIndexToRemove);
 
 		// Adjust WeightmapTextureIndex index for other layers
-		for (int32 LayerIdx = 0; LayerIdx < WeightmapLayerAllocations.Num(); LayerIdx++)
+		for (int32 LayerIdx = 0; LayerIdx < ComponentWeightmapLayerAllocations.Num(); LayerIdx++)
 		{
-			FWeightmapLayerAllocationInfo& Allocation = WeightmapLayerAllocations[LayerIdx];
+			FWeightmapLayerAllocationInfo& Allocation = ComponentWeightmapLayerAllocations[LayerIdx];
 
 			if (Allocation.WeightmapTextureIndex > WeightmapTextureIndexToRemove)
 			{
@@ -4845,7 +4989,7 @@ void ULandscapeComponent::InitWeightmapData(TArray<ULandscapeLayerInfoObject*>& 
 		new (WeightmapLayerAllocations)FWeightmapLayerAllocationInfo(LayerInfos[Idx]);
 	}
 
-	ReallocateWeightmaps(nullptr);
+	ReallocateWeightmaps();
 
 	check(WeightmapLayerAllocations.Num() > 0 && WeightmapTextures.Num() > 0);
 
@@ -4905,6 +5049,8 @@ void ULandscapeComponent::InitWeightmapData(TArray<ULandscapeLayerInfoObject*>& 
 
 	LODIndexToMaterialIndex.Empty(1);
 	LODIndexToMaterialIndex.Add(0);
+
+	//  TODO: need to update procedural?
 }
 
 #define MAX_LANDSCAPE_EXPORT_COMPONENTS_NUM		16
@@ -5353,7 +5499,7 @@ void ULandscapeComponent::GeneratePlatformPixelData()
 			const int8 MaterialLOD = It.Value();
 
 			// Find or set a matching MIC in the Landscape's map.
-			MobileCombinationMaterialInstances[MaterialIndex] = GetCombinationMaterial(MobileWeightmapLayerAllocations, MaterialLOD, true);
+			MobileCombinationMaterialInstances[MaterialIndex] = GetCombinationMaterial(nullptr, MobileWeightmapLayerAllocations, MaterialLOD, true);
 			check(MobileCombinationMaterialInstances[MaterialIndex] != nullptr);
 
 			UMaterialInstanceConstant* NewMobileMaterialInstance = NewObject<ULandscapeMaterialInstanceConstant>(GetOutermost());
@@ -5475,7 +5621,12 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 			}
 		}
 	}
-	check(VertexOrder.Num() == FMath::Square(SubsectionSizeVerts) * FMath::Square(NumSubsections));
+
+	if (VertexOrder.Num() != FMath::Square(SubsectionSizeVerts) * FMath::Square(NumSubsections)) 
+	{
+		UE_LOG(LogLandscape, Warning, TEXT("VertexOrder count of %d did not match expected size of %d"), 
+			VertexOrder.Num(), FMath::Square(SubsectionSizeVerts) * FMath::Square(NumSubsections));
+	}
 
 	int32 NumMobileVerices = FMath::Square(SubsectionSizeVerts * NumSubsections);
 	TArray<FLandscapeMobileVertex> MobileVertices;
@@ -5878,7 +6029,7 @@ bool ALandscapeProxy::LandscapeExportHeightmapToRenderTarget(UTextureRenderTarge
 	for (auto& TriangleList : TrianglesPerHeightmap)
 	{
 		FCanvasTriangleItem TriItemList(MoveTemp(TriangleList.Value.TriangleList), nullptr);
-		TriItemList.MaterialRenderProxy = TriangleList.Value.HeightmapMID->GetRenderProxy(false);
+		TriItemList.MaterialRenderProxy = TriangleList.Value.HeightmapMID->GetRenderProxy();
 		TriItemList.BlendMode = SE_BLEND_Opaque;
 		TriItemList.SetColor(FLinearColor::White);
 
@@ -5890,9 +6041,8 @@ bool ALandscapeProxy::LandscapeExportHeightmapToRenderTarget(UTextureRenderTarge
 	// Tell the rendering thread to draw any remaining batched elements
 	Canvas.Flush_GameThread(true);
 
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-		DrawHeightmapRTCommand,
-		FTextureRenderTargetResource*, RenderTargetResource, RenderTargetResource,
+	ENQUEUE_RENDER_COMMAND(DrawHeightmapRTCommand)(
+		[RenderTargetResource](FRHICommandListImmediate& RHICmdList)
 		{
 			// Copy (resolve) the rendered image from the frame buffer to its render target texture
 			RHICmdList.CopyToResolveTarget(

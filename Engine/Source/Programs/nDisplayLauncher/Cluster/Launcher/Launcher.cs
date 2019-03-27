@@ -58,7 +58,6 @@ namespace nDisplayLauncher.Cluster
 		#region Launcher_Params
 		private Dictionary<string, string> _RenderApiParams = new Dictionary<string, string>
 		{
-			{"OpenGL3",    "-opengl3" },
 			{"OpenGL4",    "-opengl4" },
 			{"DirectX 11", "-dx11" },
 			{"DirectX 12", "-dx12" }
@@ -451,7 +450,7 @@ namespace nDisplayLauncher.Cluster
 			}
 			catch (Exception)
 			{
-				SelectedRenderApiParam = RenderApiParams.SingleOrDefault(x => x.Key == "OpenGL3");
+				SelectedRenderApiParam = RenderApiParams.SingleOrDefault(x => x.Key == "DirectX 11");
 			}
 
 			try
@@ -501,6 +500,12 @@ namespace nDisplayLauncher.Cluster
 		public void ProcessCommand(ClusterCommandType Cmd, object[] Args = null)
 		{
 			Configuration Config = Parser.Parse(SelectedConfig);
+			if (Config == null)
+			{
+				AppLogger.Log("Couldn't parse the config file. Please make sure it's correct.");
+				return;
+			}
+
 			if (Config.ClusterNodes.Count < 1)
 			{
 				AppLogger.Log("No cluster nodes found in the config file");

@@ -16,18 +16,25 @@ UScrollBox::UScrollBox(const FObjectInitializer& ObjectInitializer)
 	, ConsumeMouseWheel(EConsumeMouseWheel::WhenScrollingPossible)
 	, ScrollbarThickness(5.0f, 5.0f)
 	, AlwaysShowScrollbar(false)
+	, AlwaysShowScrollbarTrack(false)
 	, AllowOverscroll(true)
 	, NavigationDestination(EDescendantScrollDestination::IntoView)
 	, NavigationScrollPadding(0.0f)
 {
 	bIsVariable = false;
 
-	SScrollBox::FArguments Defaults;
-	Visibility = UWidget::ConvertRuntimeToSerializedVisibility(Defaults._Visibility.Get());
+	Visibility = ESlateVisibility::Visible;
 	Clipping = EWidgetClipping::ClipToBounds;
 
-	WidgetStyle = *Defaults._Style;
-	WidgetBarStyle = *Defaults._ScrollBarStyle;
+	{
+		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BY DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
+		static const FScrollBoxStyle StaticScrollBoxStyle = FCoreStyle::Get().GetWidgetStyle<FScrollBoxStyle>("ScrollBox");
+		static const FScrollBarStyle StaticScrollBarStyle = FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar");
+
+		WidgetStyle = StaticScrollBoxStyle;
+		WidgetBarStyle = StaticScrollBarStyle;
+	}
+
 	bAllowRightClickDragScrolling = true;
 }
 
@@ -97,8 +104,10 @@ void UScrollBox::SynchronizeProperties()
 	MyScrollBox->SetScrollBarVisibility(UWidget::ConvertSerializedVisibilityToRuntime(ScrollBarVisibility));
 	MyScrollBox->SetScrollBarThickness(ScrollbarThickness);
 	MyScrollBox->SetScrollBarAlwaysVisible(AlwaysShowScrollbar);
+	MyScrollBox->SetScrollBarTrackAlwaysVisible(AlwaysShowScrollbarTrack);
 	MyScrollBox->SetAllowOverscroll(AllowOverscroll ? EAllowOverscroll::Yes : EAllowOverscroll::No);
 	MyScrollBox->SetScrollBarRightClickDragAllowed(bAllowRightClickDragScrolling);
+	MyScrollBox->SetConsumeMouseWheel(ConsumeMouseWheel);
 }
 
 float UScrollBox::GetScrollOffset() const
@@ -193,6 +202,16 @@ void UScrollBox::PostLoad()
 	}
 }
 
+void UScrollBox::SetConsumeMouseWheel(EConsumeMouseWheel NewConsumeMouseWheel)
+{
+	ConsumeMouseWheel = NewConsumeMouseWheel;
+
+	if (MyScrollBox.IsValid())
+	{
+		MyScrollBox->SetConsumeMouseWheel(NewConsumeMouseWheel);
+	}
+}
+
 void UScrollBox::SetOrientation(EOrientation NewOrientation)
 {
 	Orientation = NewOrientation;
@@ -247,6 +266,14 @@ void UScrollBox::SetAllowOverscroll(bool NewAllowOverscroll)
 	if (MyScrollBox.IsValid())
 	{
 		MyScrollBox->SetAllowOverscroll(AllowOverscroll ? EAllowOverscroll::Yes : EAllowOverscroll::No);
+	}
+}
+
+void UScrollBox::EndInertialScrolling()
+{
+	if (MyScrollBox.IsValid())
+	{
+		MyScrollBox->EndInertialScrolling();
 	}
 }
 

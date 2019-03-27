@@ -21,7 +21,6 @@
 #include "VideoInputTab/SMediaFrameworkVideoInput.h"
 #include "UI/MediaFrameworkUtilitiesEditorStyle.h"
 #include "UI/MediaProfileMenuEntry.h"
-#include "UI/SGenlockProviderTab.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 
@@ -43,6 +42,7 @@ public:
 	{
 		if (GEditor)
 		{
+			FMediaProfileCommands::Register();
 			FMediaFrameworkUtilitiesEditorStyle::Register();
 
 			GEditor->ActorFactories.Add(NewObject<UActorFactoryMediaBundle>());
@@ -71,11 +71,9 @@ public:
 					true);
 
 				SMediaFrameworkCapture::RegisterNomadTabSpawner(MediaBrowserGroup);
-				SGenlockProviderTab::RegisterNomadTabSpawner(MediaBrowserGroup);
 				SMediaFrameworkVideoInput::RegisterNomadTabSpawner(MediaBrowserGroup);
 			}
 			FMediaProfileMenuEntry::Register();
-			FMediaProfileCommands::Register();
 		}
 	}
 
@@ -83,10 +81,8 @@ public:
 	{
 		if (!GIsRequestingExit && GEditor && UObjectInitialized())
 		{
-			FMediaProfileCommands::Unregister();
 			FMediaProfileMenuEntry::Unregister();
 			SMediaFrameworkVideoInput::UnregisterNomadTabSpawner();
-			SGenlockProviderTab::UnregisterNomadTabSpawner();
 			SMediaFrameworkCapture::UnregisterNomadTabSpawner();
 
 			FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -110,6 +106,7 @@ public:
 			GEditor->ActorFactories.RemoveAll([](const UActorFactory* ActorFactory) { return ActorFactory->IsA<UActorFactoryMediaBundle>(); });
 
 			FMediaFrameworkUtilitiesEditorStyle::Unregister();
+			FMediaProfileCommands::Unregister();
 		}
 	}
 

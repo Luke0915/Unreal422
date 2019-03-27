@@ -11,7 +11,9 @@
 #include "SocialChatChannel.h"
 #include "SocialManager.h"
 #include "Party/SocialParty.h"
+#include "Interfaces/OnlineGroupsInterface.h"
 #include "SocialPartyChatRoom.h"
+#include "ChatSlashCommands.h"
 
 USocialChatRoom* USocialChatManager::GetChatRoom(const FChatRoomId& ChannelId) const
 {
@@ -111,6 +113,32 @@ void USocialChatManager::ExitChatRoom(const FChatRoomId& RoomId, ESocialSubsyste
 	}
 }
 
+void USocialChatManager::OnChannelCreatedInternal(USocialChatChannel& CreatedChannel)
+{
+	ESocialChannelType ChannelType = CreatedChannel.GetChannelType();
+	switch (ChannelType)
+	{
+		case ESocialChannelType::Founder:
+		case ESocialChannelType::General:
+		case ESocialChannelType::Party:
+		case ESocialChannelType::Team:
+		{
+			ChannelsByType.Add(ChannelType, &CreatedChannel);
+		}
+		break;
+	}
+
+	OnChannelCreated().Broadcast(CreatedChannel);
+}
+
+void USocialChatManager::OnChannelLeftInternal(USocialChatChannel& ChannelLeft)
+{
+	ESocialChannelType ChannelType = ChannelLeft.GetChannelType();
+	ChannelsByType.Remove(ChannelType);
+
+	OnChannelLeft().Broadcast(ChannelLeft);
+}
+
 USocialChatChannel& USocialChatManager::CreateChatChannel(USocialUser& InRecipient)
 {
 	return FindOrCreateChannel(InRecipient);
@@ -187,6 +215,15 @@ USocialToolkit& USocialChatManager::GetOwningToolkit() const
 	return *OwnerToolkit;
 }
 
+USocialChatChannel* USocialChatManager::GetChatRoomForType(ESocialChannelType Key)
+{
+	if (TWeakObjectPtr<USocialChatChannel>* Channel = ChannelsByType.Find(Key))
+	{
+		return Channel->Get();
+	}
+	return nullptr;
+}
+
 // This should only be possible for external code to do this via an ISocialUser directly
 // The user will hold a weak ptr to the direct message channel - if invalid, it'll ask the chat manager to make a channel for it
 // That way we still hit all the channel creation events but give the user fast access when sending whispers
@@ -229,6 +266,11 @@ void USocialChatManager::InitializeChatManager()
 	{
 		// separate warning?  this is the expected result of running a subsystem-less execution (testing / no network)
 	}
+
+
+	// KAIROS INIT
+	// MERGE-REVIEW: OnFinishedStartupQueries has bee removed
+	//OwningToolkit.OnFinishedStartupQueries().AddUObject(this, &ThisClass::InitializeGroupChannels);
 }
 
 IOnlineChatPtr USocialChatManager::GetOnlineChatInterface(ESocialSubsystem InSocialSubsystem) const
@@ -260,7 +302,7 @@ USocialChatRoom& USocialChatManager::FindOrCreateRoom(const FChatRoomId& RoomId)
 
 	NewRoomChannel->Initialize(&GetOwningToolkit().GetLocalUser(), RoomId, ChannelType);
 	ChatRoomsById.Add(RoomId, NewRoomChannel);
-	OnChannelCreated().Broadcast(*NewRoomChannel);
+	OnChannelCreatedInternal(*NewRoomChannel);
 
 	return *NewRoomChannel;
 }
@@ -280,7 +322,7 @@ USocialChatChannel& USocialChatManager::FindOrCreateChannel(USocialUser& SocialU
 
 	NewPMChannel->Initialize(&SocialUser, FChatRoomId(TEXT("private")), ESocialChannelType::Private);
 	DirectChannelsByTargetUser.Add(&SocialUser, NewPMChannel);
-	OnChannelCreated().Broadcast(*NewPMChannel);
+	OnChannelCreatedInternal(*NewPMChannel);
 
 	return *NewPMChannel;
 }
@@ -300,7 +342,7 @@ USocialChatChannel& USocialChatManager::FindOrCreateChannel(const FText& Display
 
 	NewReadOnlyChannel->Initialize(&GetOwningToolkit().GetLocalUser(), DisplayName.ToString(), ESocialChannelType::General);
 	ReadOnlyChannelsByDisplayName.Add(DisplayName.ToString(), NewReadOnlyChannel);
-	OnChannelCreated().Broadcast(*NewReadOnlyChannel);
+	OnChannelCreatedInternal(*NewReadOnlyChannel);
 
 	return *NewReadOnlyChannel;
 }
@@ -361,7 +403,7 @@ void USocialChatManager::HandleChatRoomExit(const FUniqueNetId& LocalUserId, con
 		if (ensure(Room))
 		{
 			ChatRoomsById.Remove(RoomId);
-			OnChannelLeft().Broadcast(**Room);
+			OnChannelLeftInternal(**Room);
 		}
 	}
 	else
@@ -429,3 +471,100 @@ ESocialChannelType USocialChatManager::TryChannelTypeLookupByRoomId(const FChatR
 {
 	return ESocialChannelType::System;
 }
+
+
+//----------------------------------------------------------------------
+// KIAROS GROUP MANAGEMENT, tbd channels?
+
+void USocialChatManager::InitializeGroupChannels()
+{
+	ESocialSubsystem InSocialSubsystem = ESocialSubsystem::Primary;
+
+	GetOwningToolkit().QueueUserDependentAction(
+		GetOwningToolkit().GetLocalUserNetId(InSocialSubsystem), FUserDependentAction::CreateUObject(this, &ThisClass::LocalUserInitialized));
+}
+
+void USocialChatManager::LocalUserInitialized(USocialUser& LocalUser)
+{
+	ESocialSubsystem InSocialSubsystem = ESocialSubsystem::Primary;
+
+	IOnlineGroupsPtr GroupInterface = GetOnlineGroupInterface();
+	if (GroupInterface.IsValid())
+	{
+		GroupInterface->OnGroupUpdated.AddUObject(this, &ThisClass::OnGroupUpdated);
+
+		const TSharedPtr<const FUniqueNetId> LocalUserNetId = LocalUser.GetUserId(InSocialSubsystem).GetUniqueNetId();
+		check(LocalUserNetId.IsValid());
+
+		GroupInterface->QueryUserMembership(*LocalUserNetId.Get(), *LocalUserNetId.Get(), FOnGroupsRequestCompleted::CreateUObject(this, &ThisClass::RefreshGroupsRequestCompleted));
+	}
+}
+
+void USocialChatManager::RefreshGroupsRequestCompleted(FGroupsResult Result)
+{
+	IOnlineGroupsPtr GroupInterface = GetOnlineGroupInterface();
+	if (GroupInterface.IsValid())
+	{
+		USocialToolkit& OwningToolkit = GetOwningToolkit();
+
+		USocialUser& LocalUser = OwningToolkit.GetLocalUser();
+		const TSharedPtr<const FUniqueNetId> LocalUserNetId = LocalUser.GetUserId(ESocialSubsystem::Primary).GetUniqueNetId();
+		check(LocalUserNetId.IsValid());
+
+		TSharedPtr<const IUserMembership> Membership = GroupInterface->GetCachedUserMembership(*LocalUserNetId.Get(), *LocalUserNetId.Get());
+		if (Membership.IsValid())
+		{
+			TArray<FUserMembershipEntry> GroupMemberships;
+			Membership->CopyEntries(GroupMemberships);
+
+			for (const FUserMembershipEntry& Entry : GroupMemberships)
+			{
+				USocialGroupChannel& GroupChannel = FindOrCreateGroupChannel(GroupInterface, *Entry.GroupId.Get());
+				GroupChannel.SetDisplayName(Entry.Name);
+			}
+		}
+	}
+}
+
+void USocialChatManager::OnGroupUpdated(const FUniqueNetId& GroupId)
+{
+	printf("");
+}
+
+void USocialChatManager::GetGroupChannels(TArray<USocialGroupChannel*>& JoinedChannels) const
+{
+	for (auto& Entry : GroupChannels)
+	{
+		JoinedChannels.Add(Entry.Value);
+	}
+}
+
+IOnlineGroupsPtr USocialChatManager::GetOnlineGroupInterface(ESocialSubsystem InSocialSubsystem) const
+{
+	if (IOnlineSubsystem* OnlineSub = GetOwningToolkit().GetSocialOss(InSocialSubsystem))
+	{
+		return OnlineSub->GetGroupsInterface();
+	}
+
+	return nullptr;
+}
+
+USocialGroupChannel& USocialChatManager::FindOrCreateGroupChannel(IOnlineGroupsPtr InGroupInterface, const FUniqueNetId& GroupId)
+{
+	TSubclassOf<USocialGroupChannel> NewGroupClass = GetClassForGroupChannel();
+	check(NewGroupClass);
+
+	USocialGroupChannel* NewGroupChannel = NewObject<USocialGroupChannel>(this, NewGroupClass);
+	check(NewGroupChannel);
+
+	GroupChannels.Add(FUniqueNetIdRepl(GroupId), NewGroupChannel);
+
+	NewGroupChannel->Initialize(InGroupInterface, GetOwningToolkit().GetLocalUser(), GroupId);
+
+	//TODO
+	//OnChannelCreated().Broadcast(*NewRoomChannel);
+
+	return *NewGroupChannel;
+}
+
+//----------------------------------------------------------------------

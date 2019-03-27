@@ -85,7 +85,7 @@ namespace NetworkProfiler
 					SerializedToken = new TokenSendBunch( BinaryStream, InNetworkStream.GetVersion() );
 					break;
 				case ETokenTypes.SendRPC:
-					SerializedToken = new TokenSendRPC( BinaryStream );
+					SerializedToken = new TokenSendRPC( BinaryStream, InNetworkStream.GetVersion() );
 					break;
 				case ETokenTypes.ReplicateActor:
 					SerializedToken = new TokenReplicateActor( BinaryStream );
@@ -127,7 +127,16 @@ namespace NetworkProfiler
 					SerializedToken = new TokenNameReference( BinaryStream );
 					break;
 				case ETokenTypes.ConnectionReference:
-					SerializedToken = new TokenConnectionReference( BinaryStream );
+					{
+						if (InNetworkStream.GetVersion() < 12)
+						{
+							SerializedToken = new TokenConnectionReference(BinaryStream);
+						}
+						else
+						{
+							SerializedToken = new TokenConnectionStringReference(BinaryStream);
+						}
+					}
 					break;
 				case ETokenTypes.ConnectionChange:
 					SerializedToken = new TokenConnectionChanged( BinaryStream );
@@ -228,7 +237,7 @@ namespace NetworkProfiler
 		{
 			TreeNode Child = TokenHelper.AddNode( Tree, "Socket SendTo" );
 
-			Child = Child.Nodes.Add( "Destination : " + StreamParser.NetworkStream.GetIpString( ConnectionIndex ) );
+			Child = Child.Nodes.Add( "Destination : " + StreamParser.NetworkStream.GetIpString( ConnectionIndex, StreamParser.NetworkStream.GetVersion() ) );
 
 			Child.Nodes.Add( "SocketName          : " + StreamParser.NetworkStream.GetName( SocketNameIndex ) );
 			Child.Nodes.Add( "DesiredBytesSent    : " + ( NumPacketIdBits + NumBunchBits + NumAckBits + NumPaddingBits ) / 8.0f );
@@ -323,20 +332,30 @@ namespace NetworkProfiler
 		/** Name table index of function name. */
 		public int FunctionNameIndex;
 		/** Number of bits serialized/sent for the header. */
-		public UInt16 NumHeaderBits;
+		public int NumHeaderBits;
 		/** Number of bits serialized/sent for the parameters. */
-		public UInt16 NumParameterBits;
+		public int NumParameterBits;
 		/** Number of bits serialized/sent for the footer. */
-		public UInt16 NumFooterBits;
+		public int NumFooterBits;
 
 		/** Constructor, serializing members from passed in stream. */
-		public TokenSendRPC( BinaryReader BinaryStream )
+		public TokenSendRPC(BinaryReader BinaryStream, UInt32 Version)
 		{
-			ActorNameIndex = TokenHelper.LoadPackedInt( BinaryStream );
-			FunctionNameIndex = TokenHelper.LoadPackedInt( BinaryStream );
-			NumHeaderBits = BinaryStream.ReadUInt16(); 					
-			NumParameterBits = BinaryStream.ReadUInt16();
-			NumFooterBits = BinaryStream.ReadUInt16();
+			ActorNameIndex = TokenHelper.LoadPackedInt(BinaryStream);
+			FunctionNameIndex = TokenHelper.LoadPackedInt(BinaryStream);
+
+			if (Version < 13)
+			{
+				NumHeaderBits = BinaryStream.ReadUInt16();
+				NumParameterBits = BinaryStream.ReadUInt16();
+				NumFooterBits = BinaryStream.ReadUInt16();
+			}
+			else
+			{
+				NumHeaderBits = TokenHelper.LoadPackedInt(BinaryStream);
+				NumParameterBits = TokenHelper.LoadPackedInt(BinaryStream);
+				NumFooterBits = TokenHelper.LoadPackedInt(BinaryStream);
+			}
 		}
 
 		/**
@@ -748,6 +767,24 @@ namespace NetworkProfiler
 		public TokenConnectionReference( BinaryReader BinaryStream )
 		{
 			Address = BinaryStream.ReadUInt64();
+		}
+	}
+
+	/**
+	 * Token for connection reference as a string.
+	 * This allows for support for different address formats without having to do any additional work.
+	 * Addresses are pushed in via the ToString(true) call on an FInternetAddr
+	 */
+	class TokenConnectionStringReference : TokenBase
+	{
+		/** Address of connection */
+		public string Address = null;
+
+		/** Constructor, serializing members from passed in stream. */
+		public TokenConnectionStringReference(BinaryReader BinaryStream)
+		{
+			int StrLength = Math.Abs(BinaryStream.ReadInt32());
+			Address = new string(BinaryStream.ReadChars(StrLength));
 		}
 	}
 

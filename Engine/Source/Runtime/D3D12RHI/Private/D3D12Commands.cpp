@@ -124,15 +124,12 @@ void FD3D12DynamicRHI::RHISetStreamOutTargets(uint32 NumTargets, const FVertexBu
 	CmdContext.StateCache.SetStreamOutTargets(NumTargets, D3DVertexBuffers, D3DOffsets);
 }
 
-// Rasterizer state.
-void FD3D12CommandContext::RHISetRasterizerState(FRasterizerStateRHIParamRef NewStateRHI)
-{
-	// This shouldn't be used. Instead use RHISetGraphicsPipelineState.
-	unimplemented();
-}
-
 void FD3D12CommandContext::RHISetComputeShader(FComputeShaderRHIParamRef ComputeShaderRHI)
 {
+#if D3D12_RHI_RAYTRACING
+	StateCache.TransitionComputeState(D3D12PT_Compute);
+#endif
+
 	// TODO: Eventually the high-level should just use RHISetComputePipelineState() directly similar to how graphics PSOs are handled.
 	FD3D12ComputePipelineState* const ComputePipelineState = FD3D12DynamicRHI::ResourceCast(RHICreateComputePipelineState(ComputeShaderRHI).GetReference());
 	RHISetComputePipelineState(ComputePipelineState);
@@ -168,7 +165,7 @@ void FD3D12CommandContext::RHIDispatchComputeShader(uint32 ThreadGroupCountX, ui
 		CommitComputeShaderConstants();
 	}
 	CommitComputeResourceTables(ComputeShader);
-	StateCache.ApplyState<true>();
+	StateCache.ApplyState<D3D12PT_Compute>();
 
 	numDispatches++;
 	CommandListHandle->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
@@ -197,7 +194,7 @@ void FD3D12CommandContext::RHIDispatchIndirectComputeShader(FVertexBufferRHIPara
 	FD3D12ResourceLocation& Location = ArgumentBuffer->ResourceLocation;
 	FD3D12DynamicRHI::TransitionResource(CommandListHandle, Location.GetResource(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 
-	StateCache.ApplyState<true>();
+	StateCache.ApplyState<D3D12PT_Compute>();
 
 	numDispatches++;
 	CommandListHandle->ExecuteIndirect(
@@ -395,24 +392,35 @@ void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess Tran
 	}
 }
 
-void FD3D12CommandContext::RHIEnqueueStagedRead(FStagingBufferRHIParamRef StagingBufferRHI, FGPUFenceRHIParamRef FenceRHI, uint32 Offset, uint32 NumBytes)
+
+void FD3D12CommandContext::RHICopyToStagingBuffer(FVertexBufferRHIParamRef SourceBufferRHI, FStagingBufferRHIParamRef StagingBufferRHI, uint32 Offset, uint32 NumBytes, FGPUFenceRHIParamRef FenceRHI)
 {
 	FD3D12StagingBuffer* StagingBuffer = FD3D12DynamicRHI::ResourceCast(StagingBufferRHI);
 	check(StagingBuffer);
+	ensureMsgf(!StagingBuffer->bIsLocked, TEXT("Attempting to Copy to a locked staging buffer. This may have undefined behavior"));
 
-	FD3D12VertexBuffer* VertexBuffer = FD3D12DynamicRHI::ResourceCast(StagingBuffer->GetBackingBuffer());
+	FD3D12VertexBuffer* VertexBuffer = FD3D12DynamicRHI::ResourceCast(SourceBufferRHI);
 	check(VertexBuffer);
 
 	// Only get data from the first gpu for now.
 	FD3D12Device* StagingDevice = VertexBuffer->GetParentDevice();
-	StagingBuffer->StagedRead.SafeRelease();
-	VERIFYD3D12RESULT(GetParentDevice()->GetParentAdapter()->CreateBuffer(D3D12_HEAP_TYPE_READBACK, GetGPUMask(), GetGPUMask(), Offset + NumBytes, StagingBuffer->StagedRead.GetInitReference()));
-	
+
+	// Ensure our shadow buffer is large enough to hold the readback.
+	if (!StagingBuffer->StagedRead || StagingBuffer->ShadowBufferSize < NumBytes)
+	{
+		// @todo-mattc I feel like we should allocate more than NumBytes to handle small reads without blowing tons of space. Need to pool this.
+		// Hopefully d3d12 will do smart pooling out of an internal heap.
+		StagingBuffer->SafeRelease();
+
+		VERIFYD3D12RESULT(GetParentDevice()->GetParentAdapter()->CreateBuffer(D3D12_HEAP_TYPE_READBACK, GetGPUMask(), GetGPUMask(), NumBytes, &StagingBuffer->StagedRead, TEXT("StagedRead")));
+		StagingBuffer->ShadowBufferSize = NumBytes;
+	}
+
 	{
 		FD3D12Resource* pSourceResource = VertexBuffer->ResourceLocation.GetResource();
 		D3D12_RESOURCE_DESC const& SourceBufferDesc = pSourceResource->GetDesc();
 
-		FD3D12Resource* pDestResource = StagingBuffer->StagedRead.GetReference();
+		FD3D12Resource* pDestResource = StagingBuffer->StagedRead;
 		D3D12_RESOURCE_DESC const& DestBufferDesc = pDestResource->GetDesc();
 
 		FD3D12DynamicRHI::TransitionResource(CommandListHandle, pSourceResource, D3D12_RESOURCE_STATE_COPY_SOURCE, 0);
@@ -427,6 +435,7 @@ void FD3D12CommandContext::RHIEnqueueStagedRead(FStagingBufferRHIParamRef Stagin
 
 	if (FenceRHI)
 	{
+		// @todo-mattc we don't want to flush here. That should be the caller's responsibility.
 		RHISubmitCommandsHint();
 		FD3D12GPUFence* Fence = FD3D12DynamicRHI::ResourceCast(FenceRHI);
 		Fence->WriteInternal(ED3D12CommandQueueType::Default);
@@ -462,16 +471,6 @@ void FD3D12CommandContext::RHISetScissorRect(bool bEnable, uint32 MinX, uint32 M
 		const CD3DX12_RECT ScissorRect(0, 0, GetMax2DTextureDimension(), GetMax2DTextureDimension());
 		StateCache.SetScissorRect(ScissorRect);
 	}
-}
-
-/**
-* Set bound shader state. This will set the vertex decl/shader, and pixel shader
-* @param BoundShaderState - state resource
-*/
-void FD3D12CommandContext::RHISetBoundShaderState(FBoundShaderStateRHIParamRef BoundShaderStateRHI)
-{
-	// This shouldn't be used. Instead use RHISetGraphicsPipelineState.
-	unimplemented();
 }
 
 static inline D3D_PRIMITIVE_TOPOLOGY GetD3D12PrimitiveType(EPrimitiveType PrimitiveType, bool bUsingTessellation)
@@ -567,7 +566,10 @@ void FD3D12CommandContext::RHISetGraphicsPipelineState(FGraphicsPipelineStateRHI
 	// @TODO : really should only discard the constants if the shader state has actually changed.
 	bDiscardSharedConstants = true;
 
-	RHIEnableDepthBoundsTest(GraphicsPipelineState->PipelineStateInitializer.bDepthBounds);
+	if (!GraphicsPipelineState->PipelineStateInitializer.bDepthBounds)
+	{
+		StateCache.SetDepthBounds(0.0f, 1.0f);
+	}
 
 	StateCache.SetGraphicsPipelineState(GraphicsPipelineState);
 	StateCache.SetStencilRef(0);
@@ -905,21 +907,9 @@ void FD3D12CommandContext::ValidateExclusiveDepthStencilAccess(FExclusiveDepthSt
 	}
 }
 
-void FD3D12CommandContext::RHISetDepthStencilState(FDepthStencilStateRHIParamRef NewStateRHI, uint32 StencilRef)
-{
-	// This shouldn't be used. Instead use RHISetGraphicsPipelineState.
-	unimplemented();
-}
-
 void FD3D12CommandContext::RHISetStencilRef(uint32 StencilRef)
 {
 	StateCache.SetStencilRef(StencilRef);
-}
-
-void FD3D12CommandContext::RHISetBlendState(FBlendStateRHIParamRef NewStateRHI, const FLinearColor& BlendFactor)
-{
-	// This shouldn't be used. Instead use RHISetGraphicsPipelineState.
-	unimplemented();
 }
 
 void FD3D12CommandContext::RHISetBlendFactor(const FLinearColor& BlendFactor)
@@ -1451,7 +1441,7 @@ void FD3D12CommandContext::RHIDrawPrimitive(uint32 BaseVertexIndex, uint32 NumPr
 
 	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
 
-	StateCache.ApplyState();
+	StateCache.ApplyState<D3D12PT_Graphics>();
 	numDraws++;
 	CommandListHandle->DrawInstanced(VertexCount, FMath::Max<uint32>(1, NumInstances), BaseVertexIndex, 0);
 #if UE_BUILD_DEBUG	
@@ -1480,7 +1470,7 @@ void FD3D12CommandContext::RHIDrawPrimitiveIndirect(FVertexBufferRHIParamRef Arg
 	FD3D12ResourceLocation& Location = ArgumentBuffer->ResourceLocation;
 	FD3D12DynamicRHI::TransitionResource(CommandListHandle, Location.GetResource(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 
-	StateCache.ApplyState();
+	StateCache.ApplyState<D3D12PT_Graphics>();
 
 	numDraws++;
 	CommandListHandle->ExecuteIndirect(
@@ -1526,7 +1516,7 @@ void FD3D12CommandContext::RHIDrawIndexedIndirect(FIndexBufferRHIParamRef IndexB
 	FD3D12ResourceLocation& Location = ArgumentsBuffer->ResourceLocation;
 	FD3D12DynamicRHI::TransitionResource(CommandListHandle, Location.GetResource(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 
-	StateCache.ApplyState();
+	StateCache.ApplyState<D3D12PT_Graphics>();
 
 	numDraws++;
 	CommandListHandle->ExecuteIndirect(
@@ -1576,7 +1566,7 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitive(FIndexBufferRHIParamRef Index
 
 	StateCache.SetIndexBuffer(&IndexBuffer->ResourceLocation, Format, 0);
 	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
-	StateCache.ApplyState();
+	StateCache.ApplyState<D3D12PT_Graphics>();
 
 	numDraws++;
 	CommandListHandle->DrawIndexedInstanced(IndexCount, FMath::Max<uint32>(1, NumInstances), StartIndex, BaseVertexIndex, FirstInstance);
@@ -1611,7 +1601,7 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitiveIndirect(FIndexBufferRHIParamR
 	FD3D12ResourceLocation& Location = ArgumentBuffer->ResourceLocation;
 	FD3D12DynamicRHI::TransitionResource(CommandListHandle, Location.GetResource(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 
-	StateCache.ApplyState();
+	StateCache.ApplyState<D3D12PT_Graphics>();
 
 	numDraws++;
 	CommandListHandle->ExecuteIndirect(
@@ -1674,7 +1664,7 @@ void FD3D12CommandContext::RHIEndDrawPrimitiveUP()
 	CommitNonComputeShaderConstants();
 	StateCache.SetStreamSource(BufferLocation, 0, PendingUP.VertexDataStride, VBOffset);
 	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
-	StateCache.ApplyState();
+	StateCache.ApplyState<D3D12PT_Graphics>();
 	numDraws++;
 	CommandListHandle->DrawInstanced(PendingUP.NumVertices, 1, 0, 0);
 #if UE_BUILD_DEBUG	
@@ -1740,7 +1730,7 @@ void FD3D12CommandContext::RHIEndDrawIndexedPrimitiveUP()
 	StateCache.SetStreamSource(VertexBufferLocation, 0, PendingUP.VertexDataStride, VBOffset);
 	StateCache.SetIndexBuffer(IndexBufferLocation, PendingUP.IndexDataStride == sizeof(uint16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, 0);
 	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
-	StateCache.ApplyState();
+	StateCache.ApplyState<D3D12PT_Graphics>();
 
 	numDraws++;
 	CommandListHandle->DrawIndexedInstanced(PendingUP.NumIndices, 1, 0, PendingUP.MinVertexIndex, 0);
@@ -1958,14 +1948,6 @@ void FD3D12DynamicRHI::RHIExecuteCommandList(FRHICommandList* CmdList)
 	check(0); // this path has gone stale and needs updated methods, starting at ERCT_SetScissorRect
 }
 
-
-void FD3D12CommandContext::RHIEnableDepthBoundsTest(bool bEnable)
-{
-	if (!bEnable)
-	{
-		StateCache.SetDepthBounds(0.0f, 1.0f);
-	}
-}
 
 void FD3D12CommandContext::RHISetDepthBounds(float MinDepth, float MaxDepth)
 {

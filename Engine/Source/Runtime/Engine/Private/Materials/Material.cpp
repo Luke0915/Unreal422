@@ -112,16 +112,16 @@ int32 FMaterialResource::CompilePropertyAndSetMaterialProperty(EMaterialProperty
 	Compiler->SetMaterialProperty(Property, OverrideShaderFrequency, bUsePreviousFrameTime);
 
 	EShaderFrequency ShaderFrequency = Compiler->GetCurrentShaderFrequency();
-
+	
 	int32 SelectionColorIndex = INDEX_NONE;
 
-	if (ShaderFrequency == SF_Pixel && 
-		GetMaterialDomain() != MD_Volume && 
+	if (ShaderFrequency == SF_Pixel &&
+		GetMaterialDomain() != MD_Volume &&
 		Compiler->IsDevelopmentFeatureEnabled(NAME_SelectionColor))
 	{
-		SelectionColorIndex = Compiler->ComponentMask(Compiler->VectorParameter(NAME_SelectionColor,FLinearColor::Black),1,1,1,0);
+		SelectionColorIndex = Compiler->ComponentMask(Compiler->VectorParameter(NAME_SelectionColor, FLinearColor::Black), 1, 1, 1, 0);
 	}
-	
+
 	//Compile the material instance if we have one.
 	UMaterialInterface* MaterialInterface = MaterialInstance ? static_cast<UMaterialInterface*>(MaterialInstance) : Material;
 
@@ -233,6 +233,7 @@ void FMaterialResource::GatherExpressionsForCustomInterpolators(TArray<UMaterial
 void FMaterialResource::GetShaderMapId(EShaderPlatform Platform, FMaterialShaderMapId& OutId) const
 {
 	FMaterial::GetShaderMapId(Platform, OutId);
+#if WITH_EDITOR
 	Material->AppendReferencedFunctionIdsTo(OutId.ReferencedFunctions);
 	Material->AppendReferencedParameterCollectionIdsTo(OutId.ReferencedParameterCollections);
 
@@ -242,19 +243,11 @@ void FMaterialResource::GetShaderMapId(EShaderPlatform Platform, FMaterialShader
 	{
 		MaterialInstance->GetBasePropertyOverridesHash(OutId.BasePropertyOverridesHash);
 
-#if !WITH_EDITOR
-		if (FMaterial::GetLoadedCookedShaderMapId() && MaterialInstance->bHasStaticPermutationResource)
-		{
-			OutId.UpdateParameterSet(MaterialInstance->GetStaticParameters());
-		}
-		else
-#endif
-		{
-			FStaticParameterSet CompositedStaticParameters;
-			MaterialInstance->GetStaticParameterValues(CompositedStaticParameters);
-			OutId.UpdateParameterSet(CompositedStaticParameters);		
-		}
+		FStaticParameterSet CompositedStaticParameters;
+		MaterialInstance->GetStaticParameterValues(CompositedStaticParameters);
+		OutId.UpdateParameterSet(CompositedStaticParameters);		
 	}
+#endif // WITH_EDITOR
 }
 
 /**
@@ -271,16 +264,16 @@ public:
 	 */
 	void GameThread_Destroy()
 	{
-		ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-			FDestroyDefaultMaterialInstanceCommand,
-			FDefaultMaterialInstance*,Resource,this,
-		{
-			delete Resource;
-		});
+		FDefaultMaterialInstance* Resource = this;
+		ENQUEUE_RENDER_COMMAND(FDestroyDefaultMaterialInstanceCommand)(
+			[Resource](FRHICommandList& RHICmdList)
+			{
+				delete Resource;
+			});
 	}
 
 	// FMaterialRenderProxy interface.
-	virtual void GetMaterialWithFallback(ERHIFeatureLevel::Type InFeatureLevel, const FMaterialRenderProxy*& OutMaterialRenderProxy, const class FMaterial*& OutMaterial) const
+	virtual const FMaterial& GetMaterialWithFallback(ERHIFeatureLevel::Type InFeatureLevel, const FMaterialRenderProxy*& OutFallbackMaterialRenderProxy) const
 	{
 		const FMaterialResource* MaterialResource = Material->GetMaterialResource(InFeatureLevel);
 		if (MaterialResource && MaterialResource->GetRenderingThreadShaderMap())
@@ -289,20 +282,19 @@ public:
 			checkSlow(MaterialResource->GetRenderingThreadShaderMap()->IsCompilationFinalized());
 			// The shader map reference should have been NULL'ed if it did not compile successfully
 			checkSlow(MaterialResource->GetRenderingThreadShaderMap()->CompiledSuccessfully());
-			OutMaterialRenderProxy = this;
-			OutMaterial = MaterialResource;
-			return;
+			return *MaterialResource;
 		}
 
 		// If we are the default material, must not try to fall back to the default material in an error state as that will be infinite recursion
 		check(!Material->IsDefaultMaterial());
 
-		GetFallbackRenderProxy().GetMaterialWithFallback(InFeatureLevel, OutMaterialRenderProxy, OutMaterial);
+		OutFallbackMaterialRenderProxy = &GetFallbackRenderProxy();
+		return OutFallbackMaterialRenderProxy->GetMaterialWithFallback(InFeatureLevel, OutFallbackMaterialRenderProxy);
 	}
 
 	virtual FMaterial* GetMaterialNoFallback(ERHIFeatureLevel::Type InFeatureLevel) const
 	{
-		checkSlow(IsInRenderingThread());
+		checkSlow(IsInParallelRenderingThread());
 		return Material->GetMaterialResource(InFeatureLevel);
 	}
 
@@ -316,24 +308,6 @@ public:
 		const FMaterialResource* MaterialResource = Material->GetMaterialResource(Context.Material.GetFeatureLevel());
 		if(MaterialResource && MaterialResource->GetRenderingThreadShaderMap())
 		{
-			if(ParameterInfo.Name == NAME_SelectionColor)
-			{
-				*OutValue = FLinearColor::Black;
-				if( GIsEditor && Context.bShowSelection )
-				{
-					if( IsSelected() )
-					{
-						// Note this code is only used for mesh selections in mesh editors now
-						// Selected objects in the level editor now goes through the selection outline post process effect where it applies the highlight intensity there
-						*OutValue = GEngine->GetSelectedMaterialColor() * GEngine->SelectionMeshSectionHighlightIntensity;
-					}
-					else if( IsHovered() )
-					{
-						*OutValue = GEngine->GetHoveredMaterialColor() * GEngine->HoverHighlightIntensity;
-					}
-				}
-				return true;
-			}
 			return false;
 		}
 		else
@@ -392,9 +366,8 @@ public:
 	virtual FString GetFriendlyName() const { return Material->GetName(); }
 
 	// Constructor.
-	FDefaultMaterialInstance(UMaterial* InMaterial,bool bInSelected,bool bInHovered):
-		FMaterialRenderProxy(bInSelected, bInHovered),
-		Material(InMaterial)
+	FDefaultMaterialInstance(UMaterial* InMaterial)
+		: Material(InMaterial)
 	{}
 
 private:
@@ -402,7 +375,7 @@ private:
 	/** Get the fallback material. */
 	FMaterialRenderProxy& GetFallbackRenderProxy() const
 	{
-		return *(UMaterial::GetDefaultMaterial(Material->MaterialDomain)->GetRenderProxy(IsSelected(),IsHovered()));
+		return *(UMaterial::GetDefaultMaterial(Material->MaterialDomain)->GetRenderProxy());
 	}
 
 	UMaterial* Material;
@@ -455,7 +428,8 @@ void UMaterialInterface::InitDefaultMaterials()
 	// the default materials is only done very early in the boot process.
 	static bool bInitialized = false;
 	if (!bInitialized)
-	{		
+	{
+		SCOPED_BOOT_TIMING("UMaterialInterface::InitDefaultMaterials");
 		check(IsInGameThread());
 		if (!IsInGameThread())
 		{
@@ -540,7 +514,6 @@ void UMaterialInterface::PostLoadDefaultMaterials()
 			UMaterial* Material = GDefaultMaterials[Domain];
 #if USE_EVENT_DRIVEN_ASYNC_LOAD_AT_BOOT_TIME
 			check(Material || (GIsInitialLoad && GEventDrivenLoaderEnabled));
-			check((GIsInitialLoad && GEventDrivenLoaderEnabled) || !Material->HasAnyFlags(RF_NeedLoad)); //-V595
 			if (Material && !Material->HasAnyFlags(RF_NeedLoad))
 #else
 			check(Material);
@@ -610,7 +583,7 @@ void SetCompactFullNameFromObject(FCompactFullName &Dest, UObject* InDepObject)
 
 FString MaterialDomainString(EMaterialDomain MaterialDomain)
 {
-	static const UEnum* Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EMaterialDomain"));
+	static const UEnum* Enum = StaticEnum<EMaterialDomain>();
 	check(Enum);
 	return Enum->GetNameStringByValue(int64(MaterialDomain));
 }
@@ -899,6 +872,7 @@ UMaterial::UMaterial(const FObjectInitializer& ObjectInitializer)
 	BlendableLocation = BL_AfterTonemapping;
 	BlendablePriority = 0;
 	BlendableOutputAlpha = false;
+	bEnableStencilTest = false;
 
 	bUseEmissiveForDynamicAreaLighting = false;
 	bBlockGI = false;
@@ -931,12 +905,7 @@ void UMaterial::PostInitProperties()
 	Super::PostInitProperties();
 	if(!HasAnyFlags(RF_ClassDefaultObject))
 	{
-		DefaultMaterialInstances[0] = new FDefaultMaterialInstance(this,false,false);
-		if(GIsEditor)
-		{
-			DefaultMaterialInstances[1] = new FDefaultMaterialInstance(this,true,false);
-			DefaultMaterialInstances[2] = new FDefaultMaterialInstance(this,false,true);
-		}
+		DefaultMaterialInstance = new FDefaultMaterialInstance(this);
 	}
 
 	// Initialize StateId to something unique, in case this is a new material
@@ -1169,7 +1138,7 @@ void UMaterial::OverrideTexture(const UTexture* InTextureToOverride, UTexture* O
 
 	if (bShouldRecacheMaterialExpressions)
 	{
-		RecacheUniformExpressions();
+		RecacheUniformExpressions(false);
 		RecacheMaterialInstanceUniformExpressions(this);
 	}
 #endif // #if WITH_EDITOR
@@ -1200,7 +1169,7 @@ void UMaterial::OverrideVectorParameterDefault(const FMaterialParameterInfo& Par
 
 	if (bShouldRecacheMaterialExpressions)
 	{
-		RecacheUniformExpressions();
+		RecacheUniformExpressions(false);
 		RecacheMaterialInstanceUniformExpressions(this);
 	}
 #endif // #if WITH_EDITOR
@@ -1232,13 +1201,13 @@ void UMaterial::OverrideScalarParameterDefault(const FMaterialParameterInfo& Par
 
 	if (bShouldRecacheMaterialExpressions)
 	{
-		RecacheUniformExpressions();
+		RecacheUniformExpressions(false);
 		RecacheMaterialInstanceUniformExpressions(this);
 	}
 #endif // #if WITH_EDITOR
 }
 
-void UMaterial::RecacheUniformExpressions() const
+void UMaterial::RecacheUniformExpressions(bool bRecreateUniformBuffer) const
 {
 	bool bUsingNewLoader = EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME && GEventDrivenLoaderEnabled;
 
@@ -1248,11 +1217,9 @@ void UMaterial::RecacheUniformExpressions() const
 		UMaterial::GetDefaultMaterial(MD_Surface);
 	}
 
-	// Only cache the unselected + unhovered material instance. Selection color
-	// can change at runtime and would invalidate the parameter cache.
-	if (DefaultMaterialInstances[0])
+	if (DefaultMaterialInstance)
 	{
-		DefaultMaterialInstances[0]->CacheUniformExpressions_GameThread();
+		DefaultMaterialInstance->CacheUniformExpressions_GameThread(bRecreateUniformBuffer);
 	}
 }
 
@@ -2933,10 +2900,9 @@ bool UMaterial::GetRefractionSettings(float& OutBiasValue) const
 	return true;
 }
 
-FMaterialRenderProxy* UMaterial::GetRenderProxy(bool Selected,bool Hovered) const
+FMaterialRenderProxy* UMaterial::GetRenderProxy() const
 {
-	check(!( Selected || Hovered ) || GIsEditor);
-	return DefaultMaterialInstances[Selected ? 1 : ( Hovered ? 2 : 0 )];
+	return DefaultMaterialInstance;
 }
 
 UPhysicalMaterial* UMaterial::GetPhysicalMaterial() const
@@ -3060,8 +3026,8 @@ bool UMaterial::IsTextureForceRecompileCacheRessource(UTexture *Texture)
 void UMaterial::UpdateMaterialShaderCacheAndTextureReferences()
 {
 	// If the material changes, then the debug view material must reset to prevent parameters mismatch
-	void ClearAllDebugViewMaterials();
-	ClearAllDebugViewMaterials();
+	void ClearDebugViewMaterials(UMaterialInterface*);
+	ClearDebugViewMaterials(this);
 
 	//Cancel any current compilation jobs that are in flight for this material.
 	CancelOutstandingCompilation();
@@ -3097,7 +3063,10 @@ void UMaterial::CacheResourceShadersForRendering(bool bRegenerateId)
 		FlushResourceShaderMaps();
 	}
 
-	UpdateResourceAllocations();
+	// Resources cannot be deleted before uniform expressions are recached because
+	// UB layouts will be accessed and they are owned by material resources
+	FMaterialResourceDeferredDeletionArray ResourcesToFree;
+	UpdateResourceAllocations(&ResourcesToFree);
 
 	if (FApp::CanEverRender())
 	{
@@ -3152,7 +3121,21 @@ void UMaterial::CacheResourceShadersForRendering(bool bRegenerateId)
 			}
 		}
 
-		RecacheUniformExpressions();
+		// Material reload can call this function again. Don't recreate since mesh
+		// draw commands cache a pointer to the uniform buffer
+		RecacheUniformExpressions(!FPlatformProperties::RequiresCookedData());
+	}
+
+	if (ResourcesToFree.Num())
+	{
+		ENQUEUE_RENDER_COMMAND(CmdFreeUnusedMaterialResources)(
+			[ResourcesToFreeRT = MoveTemp(ResourcesToFree)](FRHICommandList&)
+		{
+			for (int32 Idx = 0; Idx < ResourcesToFreeRT.Num(); ++Idx)
+			{
+				delete ResourcesToFreeRT[Idx];
+			}
+		});
 	}
 }
 
@@ -3731,7 +3714,7 @@ void UMaterial::GetQualityLevelNodeUsage(TArray<bool, TInlineAllocator<EMaterial
 	}
 }
 
-void UMaterial::UpdateResourceAllocations()
+void UMaterial::UpdateResourceAllocations(FMaterialResourceDeferredDeletionArray* ResourcesToFree)
 {
 	if (FApp::CanEverRender())
 	{
@@ -3749,7 +3732,14 @@ void UMaterial::UpdateResourceAllocations()
 				FMaterialResource*& Resource = MaterialResources[Quality][Feature];
 				if (Feature != ActiveFeatureLevel || Quality != ActiveQualityLevel)
 				{
-					delete Resource;
+					if (ResourcesToFree)
+					{
+						ResourcesToFree->Add(Resource);
+					}
+					else
+					{
+						delete Resource;
+					}
 					Resource = nullptr;
 				}
 				else
@@ -4036,7 +4026,7 @@ void UMaterial::DumpDebugInfo()
 	UE_LOG(LogConsoleResponse, Display, TEXT("----------------------------- %s"), *GetFullName());
 
 	{
-		static const UEnum* Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EMaterialDomain"));
+		static const UEnum* Enum = StaticEnum<EMaterialDomain>();
 		check(Enum);
 		UE_LOG(LogConsoleResponse, Display, TEXT("  MaterialDomain %s"), *Enum->GetNameStringByValue(int64(MaterialDomain)));
 	}
@@ -4084,13 +4074,7 @@ void UMaterial::SaveShaderStableKeysInner(const class ITargetPlatform* TP, const
 
 void UMaterial::PropagateDataToMaterialProxy()
 {
-	for (int32 i = 0; i < ARRAY_COUNT(DefaultMaterialInstances); i++)
-	{
-		if (DefaultMaterialInstances[i])
-		{
-			UpdateMaterialRenderProxy(*DefaultMaterialInstances[i]);
-		}
-	}
+	UpdateMaterialRenderProxy(*DefaultMaterialInstance);
 }
 #if WITH_EDITOR
 void UMaterial::BeginCacheForCookedPlatformData( const ITargetPlatform *TargetPlatform )
@@ -4144,6 +4128,9 @@ bool UMaterial::IsCachedCookedPlatformDataLoaded( const ITargetPlatform* TargetP
 
 void UMaterial::ClearCachedCookedPlatformData( const ITargetPlatform *TargetPlatform )
 {
+	// Make sure that all CacheShaders render thead commands are finished before we destroy FMaterialResources.
+	FlushRenderingCommands();
+
 	TArray<FMaterialResource*> *CachedMaterialResourcesForPlatform = CachedMaterialResourcesForCooking.Find( TargetPlatform );
 	if ( CachedMaterialResourcesForPlatform != NULL )
 	{
@@ -4157,6 +4144,9 @@ void UMaterial::ClearCachedCookedPlatformData( const ITargetPlatform *TargetPlat
 
 void UMaterial::ClearAllCachedCookedPlatformData()
 {
+	// Make sure that all CacheShaders render thead commands are finished before we destroy FMaterialResources.
+	FlushRenderingCommands();
+
 	for ( auto It : CachedMaterialResourcesForCooking )
 	{
 		TArray<FMaterialResource*> &CachedMaterialResourcesForPlatform = It.Value;
@@ -4245,14 +4235,18 @@ bool UMaterial::CanEditChange(const UProperty* InProperty) const
 
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, BlendableLocation) ||
 			PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, BlendablePriority) || 
-			PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, BlendableOutputAlpha)	)
+			PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, BlendableOutputAlpha) ||
+			PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, bEnableStencilTest) ||
+			PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, StencilCompare) ||
+			PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, StencilRefValue)
+			)
 		{
 			return MaterialDomain == MD_PostProcess;
 		}
 
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, BlendMode))
 		{
-			return MaterialDomain == MD_DeferredDecal || MaterialDomain == MD_Surface || MaterialDomain == MD_Volume || MaterialDomain == MD_UI;
+			return MaterialDomain == MD_DeferredDecal || MaterialDomain == MD_Surface || MaterialDomain == MD_Volume || MaterialDomain == MD_UI || (MaterialDomain == MD_PostProcess && BlendableOutputAlpha);
 		}
 	
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UMaterial, ShadingModel))
@@ -4327,8 +4321,8 @@ void UMaterial::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEve
 	FlushRenderingCommands();
 
 	// If the material changes, then the debug view material must reset to prevent parameters mismatch
-	void ClearAllDebugViewMaterials();
-	ClearAllDebugViewMaterials();
+	void ClearDebugViewMaterials(UMaterialInterface*);
+	ClearDebugViewMaterials(this);
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
@@ -4718,12 +4712,9 @@ void UMaterial::BeginDestroy()
 {
 	Super::BeginDestroy();
 
-	for (int32 InstanceIndex = 0; InstanceIndex < 3; ++InstanceIndex)
+	if (DefaultMaterialInstance)
 	{
-		if (DefaultMaterialInstances[InstanceIndex])
-		{
-			BeginReleaseResource(DefaultMaterialInstances[InstanceIndex]);
-		}
+		BeginReleaseResource(DefaultMaterialInstance);
 	}
 
 	ReleaseFence.BeginFence();
@@ -4753,13 +4744,10 @@ void UMaterial::ReleaseResources()
 		ClearAllCachedCookedPlatformData();
 	}
 #endif
-	for (int32 InstanceIndex = 0; InstanceIndex < 3; ++InstanceIndex)
+	if (DefaultMaterialInstance)
 	{
-		if (DefaultMaterialInstances[InstanceIndex])
-		{
-			DefaultMaterialInstances[InstanceIndex]->GameThread_Destroy();
-			DefaultMaterialInstances[InstanceIndex] = NULL;
-		}
+		DefaultMaterialInstance->GameThread_Destroy();
+		DefaultMaterialInstance = nullptr;
 	}
 }
 
@@ -4770,22 +4758,13 @@ void UMaterial::FinishDestroy()
 	Super::FinishDestroy();
 }
 
-void UMaterial::NotifyObjectReferenceEliminated() const
-{
-	UE_LOG(LogMaterial, Error, TEXT("Garbage collector eliminated reference from material!  Material referenced objects should not be cleaned up via MarkPendingKill().\n           Material=%s"), 
-		*GetPathName());
-}
-
 void UMaterial::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 {
 	Super::GetResourceSizeEx(CumulativeResourceSize);
 
-	for (int32 InstanceIndex = 0; InstanceIndex < 3; ++InstanceIndex)
+	if (DefaultMaterialInstance)
 	{
-		if (DefaultMaterialInstances[InstanceIndex])
-		{
-			CumulativeResourceSize.AddDedicatedSystemMemoryBytes(sizeof(FDefaultMaterialInstance));
-		}
+		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(sizeof(FDefaultMaterialInstance));
 	}
 
 	for (int32 QualityLevelIndex = 0; QualityLevelIndex < EMaterialQualityLevel::Num; QualityLevelIndex++)
@@ -5734,6 +5713,12 @@ void UMaterial::AllMaterialsCacheResourceShadersForRendering(bool bUpdateProgres
 	GetObjectsOfClass(UMaterial::StaticClass(), MaterialArray, true, RF_ClassDefaultObject, EInternalObjectFlags::None);
 	float TaskIncrement = (float)100.0f / MaterialArray.Num();
 
+	// ensure default materials are cached first. Default materials must be available to fallback to during async compile.
+ 	MaterialArray.Sort([](const UObject& L, const UObject& R)
+ 	{
+ 		return ((const UMaterial&)L).IsDefaultMaterial() > ((const UMaterial&)R).IsDefaultMaterial();
+	});
+
 	for (UObject* MaterialObj : MaterialArray)
 	{
 		UMaterial* Material = (UMaterial*)MaterialObj;
@@ -5765,7 +5750,7 @@ static void ListSceneColorMaterials()
 		for (TObjectIterator<UMaterialInterface> It; It; ++It)
 		{
 			UMaterialInterface* Mat = *It;
-			const FMaterial* MatRes = Mat->GetRenderProxy(false)->GetMaterial(FeatureLevel);
+			const FMaterial* MatRes = Mat->GetRenderProxy()->GetMaterial(FeatureLevel);
 			if (MatRes && MatRes->RequiresSceneColorCopy_GameThread())
 			{
 				UMaterial* BaseMat = Mat->GetMaterial();

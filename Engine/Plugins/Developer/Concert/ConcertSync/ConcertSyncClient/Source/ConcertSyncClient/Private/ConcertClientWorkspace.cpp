@@ -15,6 +15,7 @@
 #include "ConcertActivityEvents.h"
 #include "ConcertWorkspaceData.h"
 #include "ConcertClientDataStore.h"
+#include "ConcertClientLiveTransactionAuthors.h"
 
 #include "Containers/Ticker.h"
 #include "Containers/ArrayBuilder.h"
@@ -45,6 +46,8 @@
 	#include "Editor/UnrealEdEngine.h"
 	#include "Editor/TransBuffer.h"
 	#include "LevelEditor.h"
+	#include "FileHelpers.h"
+	#include "GameMapsSettings.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "ConcertClientWorkspace"
@@ -210,24 +213,34 @@ void FConcertClientWorkspace::BindSession(const TSharedRef<IConcertClientSession
 	// Create Activity Ledger
 	ActivityLedger = MakeUnique<FConcertClientActivityLedger>(InSession);
 
+	// Create the service tracking which clients have live transaction on which packages.
+	LiveTransactionAuthors = MakeUnique<FConcertClientLiveTransactionAuthors>(InSession);
+
 	// Register to Transaction ledger
 	TransactionManager->GetMutableLedger().OnAddFinalizedTransaction().AddLambda([this](const FConcertTransactionFinalizedEvent& FinalizedEvent, uint64 TransactionIndex)
+	{
+		FConcertSessionClientInfo SessionClientInfo;
+		if (Session->FindSessionClient(FinalizedEvent.TransactionEndpointId, SessionClientInfo))
 		{
-			FConcertSessionClientInfo SessionClientInfo;
-			if (Session->FindSessionClient(FinalizedEvent.TransactionEndpointId, SessionClientInfo))
-			{
-				ActivityLedger->RecordFinalizedTransaction(FinalizedEvent, TransactionIndex, SessionClientInfo.ClientInfo);
-			}
-			else
-			{
-				// When the transaction originated from our client
-				IConcertClientPtr ConcertClient = IConcertModule::Get().GetClientInstance(); //TODO any less awkward way to get the client info?
-				if (ConcertClient.IsValid())
-				{
-					ActivityLedger->RecordFinalizedTransaction(FinalizedEvent, TransactionIndex, ConcertClient->GetClientInfo());
-				}
-			}
-		});
+			ActivityLedger->RecordFinalizedTransaction(FinalizedEvent, TransactionIndex, SessionClientInfo.ClientInfo);
+			LiveTransactionAuthors->AddLiveTransaction(FinalizedEvent.ModifiedPackages, SessionClientInfo.ClientInfo, TransactionIndex);
+		}
+		else
+		{
+			// When the transaction originated from our client
+			const FConcertClientInfo& ClientInfo = Session->GetLocalClientInfo();
+			ActivityLedger->RecordFinalizedTransaction(FinalizedEvent, TransactionIndex, ClientInfo);
+			LiveTransactionAuthors->AddLiveTransaction(FinalizedEvent.ModifiedPackages, ClientInfo, TransactionIndex);
+		}
+	});
+
+	TransactionManager->GetMutableLedger().OnLiveTransactionsTrimmed().AddLambda([this](const FName& PackageName, uint64 UpToIndex)
+	{
+		LiveTransactionAuthors->TrimLiveTransactions(PackageName, UpToIndex);
+	});
+
+	// Get the live transactions from the transaction ledger, match live transactions to their authors using the activity ledger and populate the live transaction author tracker.
+	ResolveLiveTransactionAuthors(TransactionManager->GetLedger(), *ActivityLedger, *LiveTransactionAuthors);
 
 	// Register Session events
 	SessionConnectedHandle = Session->OnConnectionChanged().AddRaw(this, &FConcertClientWorkspace::HandleConnectionChanged);
@@ -256,13 +269,6 @@ void FConcertClientWorkspace::BindSession(const TSharedRef<IConcertClientSession
 	PostPIEStartedHandle = FEditorDelegates::PostPIEStarted.AddRaw(this, &FConcertClientWorkspace::HandlePostPIEStarted);
 	SwitchBeginPIEAndSIEHandle = FEditorDelegates::OnSwitchBeginPIEAndSIE.AddRaw(this, &FConcertClientWorkspace::HandleSwitchBeginPIEAndSIE);
 	EndPIEHandle = FEditorDelegates::EndPIE.AddRaw(this, &FConcertClientWorkspace::HandleEndPIE);
-
-	// Register Map Change Events
-	if (GIsEditor)
-	{
-		FLevelEditorModule& LevelEditor = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		MapChangedHandle = LevelEditor.OnMapChanged().AddRaw(this, &FConcertClientWorkspace::HandleMapChanged);
-	}
 
 	// Register Object Transaction events
 	if (GUnrealEd)
@@ -297,12 +303,12 @@ void FConcertClientWorkspace::UnbindSession()
 		SandboxPlatformFile.Reset();
 
 		// Gather file with live transactions that also need to be reloaded, overlaps from the sandbox are filtered directly in ReloadPackages
-		PackagesPendingHotReload.Append(TransactionManager->GetLedger().GetPackagesNamesWithLiveTransactions());
-
-		if (!GIsRequestingExit)
+		for (const FName PackageNameWithLiveTransactions : TransactionManager->GetLedger().GetPackagesNamesWithLiveTransactions())
 		{
-			HotReloadPendingPackages();
-			PurgePendingPackages();
+			if (!PackagesPendingPurge.Contains(PackageNameWithLiveTransactions))
+			{
+				PackagesPendingHotReload.Add(PackageNameWithLiveTransactions);
+			}
 		}
 #endif
 
@@ -314,6 +320,9 @@ void FConcertClientWorkspace::UnbindSession()
 
 		// Destroy Activity ledger
 		ActivityLedger.Reset();
+
+		// Destroy the object tracking the live transaction authors.
+		LiveTransactionAuthors.Reset();
 
 		// Unregister Session events
 		if (SessionConnectedHandle.IsValid())
@@ -361,16 +370,6 @@ void FConcertClientWorkspace::UnbindSession()
 			EndPIEHandle.Reset();
 		}
 
-		// Unregister Map Change Events
-		if (MapChangedHandle.IsValid())
-		{
-			if (FLevelEditorModule* LevelEditor = FModuleManager::GetModulePtr<FLevelEditorModule>("LevelEditor"))
-			{
-				LevelEditor->OnMapChanged().Remove(MapChangedHandle);
-			}
-			MapChangedHandle.Reset();
-		}
-
 		// Unregister Object Transaction events
 		if (GUnrealEd && TransactionStateChangedHandle.IsValid())
 		{
@@ -384,6 +383,33 @@ void FConcertClientWorkspace::UnbindSession()
 		{
 			FCoreUObjectDelegates::OnObjectTransacted.Remove(ObjectTransactedHandle);
 			ObjectTransactedHandle.Reset();
+		}
+
+		if (!GIsRequestingExit)
+		{
+			// Hot reload after unregistering from most delegates to prevent events triggered by hot-reloading (such as asset deleted) to be recorded as transaction.
+			HotReloadPendingPackages();
+
+			// Get the current world edited.
+			if (UWorld* World = GEditor->GetEditorWorldContext().World())
+			{
+				// If the current world package is scheduled to be purged (it doesn't exist outside the session).
+				if (PackagesPendingPurge.Contains(World->GetOutermost()->GetFName()))
+				{
+					// Replace the current world because it doesn't exist outside the session (it cannot be saved anymore, even with 'Save Current As').
+					FString StartupMapPackage = GetDefault<UGameMapsSettings>()->EditorStartupMap.GetLongPackageName();
+					if (FPackageName::DoesPackageExist(StartupMapPackage))
+					{
+						UEditorLoadingAndSavingUtils::NewMapFromTemplate(StartupMapPackage, /*bSaveExistingMap*/ false);
+					}
+					else
+					{
+						UEditorLoadingAndSavingUtils::NewBlankMap(/*bSaveExistingMap*/ false);
+					}
+				}
+
+				PurgePendingPackages();
+			}
 		}
 #endif
 
@@ -581,20 +607,9 @@ void FConcertClientWorkspace::HandleAssetRenamed(const FAssetData& Data, const F
 
 void FConcertClientWorkspace::HandleAssetLoaded(UObject* InAsset)
 {
-	const FName LoadedPackageName = InAsset->GetOutermost()->GetFName();
-
-	// Skip world assets that are being loaded as the editor world
-	// We handle these via HandleMapChanged instead (which also calls this function, but the entry in UWorld::WorldTypePreLoadMap will have been removed by then)
-	if (const EWorldType::Type* WorldTypePtr = UWorld::WorldTypePreLoadMap.Find(LoadedPackageName))
+	if (TransactionManager.IsValid() && bHasSyncedWorkspace)
 	{
-		if (*WorldTypePtr == EWorldType::Editor)
-		{
-			return;
-		}
-	}
-
-	if (TransactionManager.IsValid())
-	{
+		const FName LoadedPackageName = InAsset->GetOutermost()->GetFName();
 		TransactionManager->ReplayTransactions(LoadedPackageName);
 	}
 }
@@ -653,14 +668,6 @@ void FConcertClientWorkspace::HandleEndPIE(const bool InIsSimulating)
 	}
 }
 
-void FConcertClientWorkspace::HandleMapChanged(UWorld* InWorld, EMapChangeType InMapChangeType)
-{
-	if (InMapChangeType == EMapChangeType::NewMap || InMapChangeType == EMapChangeType::LoadMap)
-	{
-		HandleAssetLoaded(InWorld);
-	}
-}
-
 void FConcertClientWorkspace::HandleTransactionStateChanged(const FTransactionContext& InTransactionContext, const ETransactionStateEventType InTransactionState)
 {
 	if (TransactionManager.IsValid())
@@ -700,6 +707,9 @@ void FConcertClientWorkspace::OnEndFrame()
 		}
 		TransactionManager->ReplayAllTransactions();
 
+		// We process all pending transactions we just replayed before finalizing the sync to prevent package being loaded as a result to trigger replaying transactions again
+		TransactionManager->ProcessPending();
+
 		// Finalize the sync
 		bHasSyncedWorkspace = true;
 		InitialSyncSlowTask.Reset();
@@ -736,7 +746,7 @@ void FConcertClientWorkspace::HandleWorkspaceSyncPackageEvent(const FConcertSess
 	if (InitialSyncSlowTask.IsValid())
 	{
 		InitialSyncSlowTask->TotalAmountOfWork = InitialSyncSlowTask->CompletedWork + Event.RemainingWork + 1;
-		InitialSyncSlowTask->EnterProgressFrame(FMath::Min<float>(Event.RemainingWork, 1.0f), FText::Format(LOCTEXT("SynchronizedTransactionFmt", "Synchronized Package {0}..."), FText::FromName(Event.Package.Info.PackageName)));
+		InitialSyncSlowTask->EnterProgressFrame(FMath::Min<float>(Event.RemainingWork, 1.0f), FText::Format(LOCTEXT("SynchronizedPackageFmt", "Synchronized Package {0}..."), FText::FromName(Event.Package.Info.PackageName)));
 	}
 
 	switch (Event.Package.Info.PackageUpdateType)
@@ -882,6 +892,11 @@ void FConcertClientWorkspace::PurgePendingPackages()
 		ConcertSyncClientUtil::PurgePackages(PackagesPendingPurge);
 		PackagesPendingPurge.Reset();
 	}
+}
+
+bool FConcertClientWorkspace::IsAssetModifiedByOtherClients(const FName& AssetName, int* OutOtherClientsWithModifNum, TArray<FConcertClientInfo>* OutOtherClientsWithModifInfo, int OtherClientsWithModifMaxFetchNum) const
+{
+	return LiveTransactionAuthors->IsPackageAuthoredByOtherClients(AssetName, OutOtherClientsWithModifNum, OutOtherClientsWithModifInfo, OtherClientsWithModifMaxFetchNum);
 }
 
 #undef LOCTEXT_NAMESPACE

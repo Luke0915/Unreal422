@@ -25,6 +25,7 @@
 #include "K2Node_Event.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CallArrayFunction.h"
+#include "K2Node_CallParentFunction.h"
 #include "K2Node_ExecutionSequence.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
@@ -516,33 +517,6 @@ void FKismetCompilerUtilities::RemoveObjectRedirectorIfPresent(UObject* Package,
 		Redirector = NULL;
 	}
 }
-
-void FKismetCompilerUtilities::EnsureFreeNameForNewClass(UClass* ClassToConsign, FString& ClassName, UBlueprint* Blueprint)
-{
-	check(Blueprint);
-
-	UObject* OwnerOutermost = Blueprint->GetOutermost();
-
-	// Try to find a class with the name we want to use in the scope
-	UClass* AnyClassWithGoodName = (UClass*)StaticFindObject(UClass::StaticClass(), OwnerOutermost, *ClassName, false);
-	if (AnyClassWithGoodName == ClassToConsign)
-	{
-		// Ignore it if it's the class we're already consigning anyway
-		AnyClassWithGoodName = NULL;
-	}
-
-	if( ClassToConsign )
-	{
-		ConsignToOblivion(ClassToConsign, Blueprint->bIsRegeneratingOnLoad);
-	}
-
-	// Consign the class with the name we want to use
-	if( AnyClassWithGoodName )
-	{
-		ConsignToOblivion(AnyClassWithGoodName, Blueprint->bIsRegeneratingOnLoad);
-	}
-}
-
 
 /** Finds a property by name, starting in the specified scope; Validates property type and returns NULL along with emitting an error if there is a mismatch. */
 UProperty* FKismetCompilerUtilities::FindPropertyInScope(UStruct* Scope, UEdGraphPin* Pin, FCompilerResultsLog& MessageLog, const UEdGraphSchema_K2* Schema, UClass* SelfClass)
@@ -1099,6 +1073,9 @@ UProperty* FKismetCompilerUtilities::CreatePrimitiveProperty(UObject* PropertySc
 /** Creates a property named PropertyName of type PropertyType in the Scope or returns NULL if the type is unknown, but does *not* link that property in */
 UProperty* FKismetCompilerUtilities::CreatePropertyOnScope(UStruct* Scope, const FName& PropertyName, const FEdGraphPinType& Type, UClass* SelfClass, EPropertyFlags PropertyFlags, const UEdGraphSchema_K2* Schema, FCompilerResultsLog& MessageLog)
 {
+	// When creating properties that depend on other properties (e.g. UDelegateProperty/UMulticastDelegateProperty::SignatureFunction)
+	// you may need to update fixup logic in the compilation manager.
+		
 	const EObjectFlags ObjectFlags = RF_Public;
 
 	FName ValidatedPropertyName = PropertyName;
@@ -1176,7 +1153,7 @@ UProperty* FKismetCompilerUtilities::CreatePropertyOnScope(UStruct* Scope, const
 	else if (Type.PinCategory == UEdGraphSchema_K2::PC_MCDelegate)
 	{
 		UFunction* const SignatureFunction = FMemberReference::ResolveSimpleMemberReference<UFunction>(Type.PinSubCategoryMemberReference);
-		UMulticastDelegateProperty* NewPropertyDelegate = NewObject<UMulticastDelegateProperty>(PropertyScope, ValidatedPropertyName, ObjectFlags);
+		UMulticastDelegateProperty* NewPropertyDelegate = NewObject<UMulticastInlineDelegateProperty>(PropertyScope, ValidatedPropertyName, ObjectFlags);
 		NewPropertyDelegate->SignatureFunction = SignatureFunction;
 		NewProperty = NewPropertyDelegate;
 	}
@@ -1556,6 +1533,52 @@ bool FKismetCompilerUtilities::IsMissingMemberPotentiallyLoading(const UBlueprin
 	return bCouldBeCompiledInOnLoad;
 }
 
+bool FKismetCompilerUtilities::IsIntermediateFunctionGraphTrivial(FName FunctionName, const UEdGraph* FunctionGraph)
+{
+	const auto HasFunctionEntry = [](const UEdGraph* InFunctionGraph ) -> bool
+	{
+		return InFunctionGraph->Nodes.FindByPredicate(
+			[](const UEdGraphNode* Node) { return Cast<UK2Node_FunctionEntry>(Node); }
+		) != nullptr;
+	};
+
+	const auto HasCallToParent = [](const UEdGraph* InFunctionGraph) -> bool
+	{
+		return InFunctionGraph->Nodes.FindByPredicate(
+			[](const UEdGraphNode* Node) { return Cast<UK2Node_CallParentFunction>(Node); }
+		) != nullptr;
+	};
+
+	if(FunctionGraph->Nodes.Num() <= 2)
+	{
+		if(const UBlueprint* OwningBP = FBlueprintEditorUtils::FindBlueprintForGraph(FunctionGraph))
+		{
+			if(UFunction* Fn = OwningBP->ParentClass->FindFunctionByName(FunctionName))
+			{
+				// this is an override, we consider this implementation trivial iff it contains
+				// an entry node and a call to the parent or it contains only an entry node
+				// and the parent is native and the FN is a Blueprint Event:
+				if(FunctionGraph->Nodes.Num() == 2)
+				{
+					return HasFunctionEntry(FunctionGraph) && HasCallToParent(FunctionGraph);
+				}
+				else if(Fn->HasAnyFunctionFlags(FUNC_BlueprintEvent))
+				{
+					return FunctionGraph->Nodes.Num() == 1 &&
+						HasFunctionEntry(FunctionGraph);
+				}
+			}
+			else
+			{
+				return FunctionGraph->Nodes.Num() == 1&&
+					HasFunctionEntry(FunctionGraph);
+			}
+		}
+	}
+
+	return false;
+}
+
 //////////////////////////////////////////////////////////////////////////
 // FNodeHandlingFunctor
 
@@ -1576,7 +1599,8 @@ void FNodeHandlingFunctor::ResolveAndRegisterScopedTerm(FKismetFunctionContext& 
 	{
 		UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
 		// Create the term in the list
-		FBPTerminal* Term = new (NetArray) FBPTerminal();
+		FBPTerminal* Term = new FBPTerminal();
+		NetArray.Add(Term);
 		Term->CopyFromPin(Net, Net->PinName);
 		Term->AssociatedVarProperty = BoundProperty;
 		Term->bPassedByReference = true;
@@ -2240,15 +2264,25 @@ FBPTerminal* FKismetFunctionContext::CreateLocalTerminal(ETerminalSpecification 
 	{
 	case ETerminalSpecification::TS_ForcedShared:
 		ensure(IsEventGraph());
-		Result = new (EventGraphLocals)FBPTerminal();
+		Result = new FBPTerminal();
+		EventGraphLocals.Add(Result);
 		break;
 	case ETerminalSpecification::TS_Literal:
-		Result = new (Literals) FBPTerminal();
+		Result = new FBPTerminal();
+		Literals.Add(Result);
 		Result->bIsLiteral = true;
 		break;
 	default:
 		const bool bIsLocal = !IsEventGraph();
-		Result = new (bIsLocal ? Locals : EventGraphLocals) FBPTerminal();
+		Result = new FBPTerminal();
+		if (bIsLocal)
+		{
+			Locals.Add(Result);
+		}
+		else
+		{
+			EventGraphLocals.Add(Result);
+		}
 		Result->SetVarTypeLocal(bIsLocal);
 		break;
 	}
@@ -2272,7 +2306,15 @@ FBPTerminal* FKismetFunctionContext::CreateLocalTerminalFromPinAutoChooseScope(U
 		// Pin's connections are checked, to tell if created terminal is shared, or if it could be a local variable.
 		bSharedTerm = FEventGraphUtils::PinRepresentsSharedTerminal(*Net, MessageLog);
 	}
-	FBPTerminal* Term = new (bSharedTerm ? EventGraphLocals : Locals) FBPTerminal();
+	FBPTerminal* Term = new FBPTerminal();
+	if (bSharedTerm)
+	{
+		EventGraphLocals.Add(Term);
+	}
+	else
+	{
+		Locals.Add(Term);
+	}
 	Term->CopyFromPin(Net, MoveTemp(NewName));
 	return Term;
 }

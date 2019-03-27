@@ -57,10 +57,7 @@
 #include "LauncherPlatformModule.h"
 #include "Misc/ScopedSlowTask.h"
 #include "MaterialShaderQualitySettings.h"
-
-#define LOCTEXT_NAMESPACE "EditorViewport"
 #include "RHIShaderPlatformDefinitions.inl"
-#undef LOCTEXT_NAMESPACE
 
 namespace LevelEditorActionHelpers
 {
@@ -1277,12 +1274,52 @@ TSharedRef< SWidget > FLevelEditorToolBar::MakeLevelEditorToolBar( const TShared
 			);
 
 	}
-	ToolbarBuilder.EndSection();
 
-	ToolbarBuilder.BeginSection(NAME_None);
 	{
 		struct FPreviewModeFunctionality
 		{
+
+			static FText GetPreviewModeText()
+			{
+				UMaterialShaderQualitySettings* MaterialShaderQualitySettings = UMaterialShaderQualitySettings::Get();
+				const FName& PreviewPlatform = MaterialShaderQualitySettings->GetPreviewPlatform();
+
+				EShaderPlatform ShaderPlatform = ShaderFormatToLegacyShaderPlatform(PreviewPlatform);
+				if (ShaderPlatform == SP_NumPlatforms)
+				{
+					ShaderPlatform = GetFeatureLevelShaderPlatform(GEditor->PreviewFeatureLevel);
+				}
+
+				switch (ShaderPlatform)
+				{
+					case SP_VULKAN_ES3_1_ANDROID:
+					{						
+						return LOCTEXT("PreviewModeES31_Vulkan_Text", "Vulkan Preview");
+					}
+				}
+
+				switch (GEditor->PreviewFeatureLevel)
+				{
+					case ERHIFeatureLevel::SM4:
+					{
+						return LOCTEXT("PreviewModeSM4_Text", "SM4 Preview");
+					}
+					case ERHIFeatureLevel::ES2:
+					{
+						return LOCTEXT("PreviewModeES2_Text", "ES2 Preview");
+					}
+					case ERHIFeatureLevel::ES3_1:
+					{
+						return LOCTEXT("PreviewModeES3_1_Text", "ES3.1 Preview");
+					}
+					default:
+					{
+						return LOCTEXT("PreviewModeGeneric", "Preview Mode");
+					}
+				}
+			}
+
+
 			static FText GetPreviewModeTooltip()
 			{
 				UMaterialShaderQualitySettings* MaterialShaderQualitySettings = UMaterialShaderQualitySettings::Get();
@@ -1296,22 +1333,16 @@ TSharedRef< SWidget > FLevelEditorToolBar::MakeLevelEditorToolBar( const TShared
 
 				EShaderPlatform MaxRHIFeatureLevelPlatform = GetFeatureLevelShaderPlatform(GMaxRHIFeatureLevel);
 
-				if (GEditor->PreviewFeatureLevel == GMaxRHIFeatureLevel)
-				{
-                    const FText& RenderingAsPlatformName = GetFriendlyShaderPlatformName(MaxRHIFeatureLevelPlatform);
-                    return FText::Format(LOCTEXT("PreviewModeRenderingAs", "Viewing as {0}."), RenderingAsPlatformName);
-				}
-				else
 				{
                     const FText& RenderingAsPlatformName = GetFriendlyShaderPlatformName(GWorld->FeatureLevel == GMaxRHIFeatureLevel ? MaxRHIFeatureLevelPlatform : PreviewShaderPlatform);
                     const FText& SwitchToPlatformName = GetFriendlyShaderPlatformName(GWorld->FeatureLevel == GMaxRHIFeatureLevel ? PreviewShaderPlatform : MaxRHIFeatureLevelPlatform);
                     if (GWorld->FeatureLevel == GMaxRHIFeatureLevel)
                     {
-                        return FText::Format(LOCTEXT("PreviewModeViewingAsSwitchTo", "Viewing as {0}. Click to preview as {1}."), RenderingAsPlatformName, SwitchToPlatformName);
+                        return FText::Format(LOCTEXT("PreviewModeViewingAsSwitchTo", "Viewing {0}. Click to preview {1}."), RenderingAsPlatformName, SwitchToPlatformName);
                     }
                     else
                     {
-                        return FText::Format(LOCTEXT("PreviewModePreviewingAsSwitchTo", "Previewing as {0}. Click to view as {1}."), RenderingAsPlatformName, SwitchToPlatformName);
+                        return FText::Format(LOCTEXT("PreviewModePreviewingAsSwitchTo", "Previewing {0}. Click to view {1}."), RenderingAsPlatformName, SwitchToPlatformName);
                     }
 				}
 			}
@@ -1340,6 +1371,10 @@ TSharedRef< SWidget > FLevelEditorToolBar::MakeLevelEditorToolBar( const TShared
 					{
 						return FSlateIcon(FEditorStyle::GetStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.iOS.Enabled" : "LevelEditor.PreviewMode.iOS.Disabled");
 					}
+					case SP_VULKAN_PCES3_1:
+					case SP_OPENGL_PCES2:
+					case SP_PCD3D_ES2:
+					case SP_METAL_MACES2:
                 	case SP_OPENGL_ES2_WEBGL:
 					{
 						return FSlateIcon(FEditorStyle::GetStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.HTML5.Enabled" : "LevelEditor.PreviewMode.HTML5.Disabled");
@@ -1347,13 +1382,9 @@ TSharedRef< SWidget > FLevelEditorToolBar::MakeLevelEditorToolBar( const TShared
 				}
 				switch (GEditor->PreviewFeatureLevel)
 				{
-					case ERHIFeatureLevel::SM5:
-					{
-						return FSlateIcon(FEditorStyle::GetStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.SM5.Enabled" : "LevelEditor.PreviewMode.SM5.Disabled");
-					}
 					case ERHIFeatureLevel::SM4:
 					{
-						return FSlateIcon(FEditorStyle::GetStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.SM4.Enabled" : "LevelEditor.PreviewMode.SM4.Enabled");
+						return FSlateIcon(FEditorStyle::GetStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.SM4.Enabled" : "LevelEditor.PreviewMode.SM4.Disabled");
 					}
 					case ERHIFeatureLevel::ES2:
 					{
@@ -1374,21 +1405,9 @@ TSharedRef< SWidget > FLevelEditorToolBar::MakeLevelEditorToolBar( const TShared
 		ToolbarBuilder.AddToolBarButton(
 			FLevelEditorCommands::Get().ToggleFeatureLevelPreview,
 			NAME_None,
-			LOCTEXT("PreviewModeActivate", "Preview Mode"),
+			TAttribute<FText>::Create(&FPreviewModeFunctionality::GetPreviewModeText),
         	TAttribute<FText>::Create(&FPreviewModeFunctionality::GetPreviewModeTooltip),
         	TAttribute<FSlateIcon>::Create(&FPreviewModeFunctionality::GetPreviewModeIcon)
-			);
-
-		FUIAction PreviewModeMenuCanExecute;
-		PreviewModeMenuCanExecute.CanExecuteAction = FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsFeatureLevelPreviewDropdownEnabled);
-
-		ToolbarBuilder.AddComboButton(
-			PreviewModeMenuCanExecute,
-			FOnGetContent::CreateStatic(&FLevelEditorToolBar::GeneratePreviewModeMenu, InCommandList),
-			LOCTEXT("PreviewModeCombo", "Preview Mode"),
-			LOCTEXT("PreviewModeCombo_ToolTip", "Preview Mode settings"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.GameSettings"),
-            true
 			);
 	}
 	ToolbarBuilder.EndSection();
@@ -1444,6 +1463,21 @@ TSharedRef< SWidget > FLevelEditorToolBar::MakeLevelEditorToolBar( const TShared
 				FLevelEditorCommands::Get().RecompileGameCode->GetDescription(),
 				FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Recompile")
 				);
+
+#if WITH_LIVE_CODING
+			ToolbarBuilder.AddComboButton(
+				FUIAction(
+					FExecuteAction(),
+					FCanExecuteAction(),
+					FIsActionChecked(),
+					FIsActionButtonVisible::CreateStatic(FLevelEditorActionCallbacks::CanShowSourceCodeActions)), 
+				FOnGetContent::CreateStatic( &FLevelEditorToolBar::GenerateCompileMenuContent, InCommandList ),
+				LOCTEXT( "CompileCombo_Label", "Compile Options" ),
+				LOCTEXT( "CompileComboToolTip", "Compile options menu" ),
+				FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Recompile"),
+				true
+				);
+#endif
 		}
 	}
 	ToolbarBuilder.EndSection();
@@ -1788,6 +1822,59 @@ static void MakeMaterialQualityLevelMenu( FMenuBuilder& MenuBuilder )
 	MenuBuilder.EndSection();
 }
 
+static void MakeShaderModelPreviewMenu( FMenuBuilder& MenuBuilder )
+{
+#define LOCTEXT_NAMESPACE "LevelToolBarViewMenu"
+
+	MenuBuilder.BeginSection("EditorPreviewMode", LOCTEXT("EditorPreviewModeDevices", "Preview Devices"));
+
+	for (int32 i = GMaxRHIFeatureLevel; i >= 0; --i)
+	{
+		switch (i)
+		{
+			case ERHIFeatureLevel::ES2:
+				MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_AndroidGLES2);
+				MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_DefaultES2);
+				break;
+
+			case ERHIFeatureLevel::ES3_1:
+			{
+				//MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_DefaultES31);
+
+				bool bAndroidBuildForES31 = false;
+				GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bBuildForES31"), bAndroidBuildForES31, GEngineIni);
+				if(bAndroidBuildForES31)
+				{
+					MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_AndroidGLES31);
+				}
+
+				bool bAndroidSupportsVulkan = false;
+				GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bSupportsVulkan"), bAndroidSupportsVulkan, GEngineIni);
+				if(bAndroidSupportsVulkan)
+				{
+					MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_AndroidVulkanES31);
+				}
+
+				bool bIOSSupportsMetal = false;
+				GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetal"), bIOSSupportsMetal, GEngineIni);
+				if(bIOSSupportsMetal)
+				{
+					MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_IOSMetalES31);
+				}
+
+				break;
+			}
+
+			default:
+				MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().FeatureLevelPreview[i]);
+		}
+	}
+
+    MenuBuilder.EndSection();
+
+#undef LOCTEXT_NAMESPACE
+}
+
 static void MakeScalabilityMenu( FMenuBuilder& MenuBuilder )
 {
 	MenuBuilder.AddWidget(SNew(SScalabilitySettings), FText(), true);
@@ -1810,6 +1897,34 @@ static void MakePreviewSettingsMenu( FMenuBuilder& MenuBuilder )
 	MenuBuilder.EndSection();
 #undef LOCTEXT_NAMESPACE
 }
+
+#if WITH_LIVE_CODING
+TSharedRef< SWidget > FLevelEditorToolBar::GenerateCompileMenuContent( TSharedRef<FUICommandList> InCommandList )
+{
+#define LOCTEXT_NAMESPACE "LevelToolBarCompileMenu"
+
+	const bool bShouldCloseWindowAfterMenuSelection = true;
+	FMenuBuilder MenuBuilder( bShouldCloseWindowAfterMenuSelection, InCommandList );
+
+	MenuBuilder.BeginSection("LiveCodingMode", LOCTEXT( "LiveCodingMode", "General" ) );
+	{
+		MenuBuilder.AddMenuEntry( FLevelEditorCommands::Get().LiveCoding_Enable );
+	}
+	MenuBuilder.EndSection();
+
+	MenuBuilder.BeginSection("LiveCodingActions", LOCTEXT( "LiveCodingActions", "Actions" ) );
+	{
+		MenuBuilder.AddMenuEntry( FLevelEditorCommands::Get().LiveCoding_StartSession );
+		MenuBuilder.AddMenuEntry( FLevelEditorCommands::Get().LiveCoding_ShowConsole );
+		MenuBuilder.AddMenuEntry( FLevelEditorCommands::Get().LiveCoding_Settings );
+	}
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+
+#undef LOCTEXT_NAMESPACE
+}
+#endif
 
 TSharedRef< SWidget > FLevelEditorToolBar::GenerateQuickSettingsMenu( TSharedRef<FUICommandList> InCommandList )
 {
@@ -1880,6 +1995,11 @@ TSharedRef< SWidget > FLevelEditorToolBar::GenerateQuickSettingsMenu( TSharedRef
 			LOCTEXT( "MaterialQualityLevelSubMenu", "Material Quality Level" ),
 			LOCTEXT( "MaterialQualityLevelSubMenu_ToolTip", "Sets the value of the CVar \"r.MaterialQualityLevel\" (low=0, high=1, medium=2). This affects materials via the QualitySwitch material expression." ),
 			FNewMenuDelegate::CreateStatic( &MakeMaterialQualityLevelMenu ) );
+
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("FeatureLevelPreviewSubMenu", "Preview Rendering Level"),
+			LOCTEXT("FeatureLevelPreviewSubMenu_ToolTip", "Sets the rendering level used by the main editor"),
+			FNewMenuDelegate::CreateStatic(&MakeShaderModelPreviewMenu));
 	}
 	MenuBuilder.EndSection();
 
@@ -1933,79 +2053,6 @@ TSharedRef< SWidget > FLevelEditorToolBar::GenerateQuickSettingsMenu( TSharedRef
 		MenuBuilder.AddSubMenu( LOCTEXT("PreviewMenu", "Previewing"), LOCTEXT("PreviewMenuTooltip","Game Preview Settings"), FNewMenuDelegate::CreateStatic( &MakePreviewSettingsMenu ) );
 	}
 	MenuBuilder.EndSection();
-
-#undef LOCTEXT_NAMESPACE
-
-	return MenuBuilder.MakeWidget();
-}
-
-
-TSharedRef< SWidget > FLevelEditorToolBar::GeneratePreviewModeMenu( TSharedRef<FUICommandList> InCommandList )
-{
-#define LOCTEXT_NAMESPACE "LevelToolBarViewMenu"
-
-	// Get all menu extenders for this context menu from the level editor module
-	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>( TEXT("LevelEditor") );
-	TArray<FLevelEditorModule::FLevelEditorMenuExtender> MenuExtenderDelegates = LevelEditorModule.GetAllLevelEditorToolbarViewMenuExtenders();
-
-	TArray<TSharedPtr<FExtender>> Extenders;
-	for (int32 i = 0; i < MenuExtenderDelegates.Num(); ++i)
-	{
-		if (MenuExtenderDelegates[i].IsBound())
-		{
-			Extenders.Add(MenuExtenderDelegates[i].Execute(InCommandList));
-		}
-	}
-	TSharedPtr<FExtender> MenuExtender = FExtender::Combine(Extenders);
-
-	const bool bShouldCloseWindowAfterMenuSelection = true;
-	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, InCommandList, MenuExtender);
-
-	MenuBuilder.BeginSection("EditorPreviewMode", LOCTEXT("EditorPreviewModeDevices", "Preview Devices"));
-
-	for (int32 i = GMaxRHIFeatureLevel; i >= 0; --i)
-	{
-		switch (i)
-		{
-			case ERHIFeatureLevel::ES2:
-				MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_AndroidGLES2);
-				MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_DefaultES2);
-				break;
-
-			case ERHIFeatureLevel::ES3_1:
-			{
-				//MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_DefaultES31);
-
-				bool bAndroidBuildForES31 = false;
-				GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bBuildForES31"), bAndroidBuildForES31, GEngineIni);
-				if(bAndroidBuildForES31)
-				{
-					MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_AndroidGLES31);
-				}
-
-				bool bAndroidSupportsVulkan = false;
-				GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bSupportsVulkan"), bAndroidSupportsVulkan, GEngineIni);
-				if(bAndroidSupportsVulkan)
-				{
-					MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_AndroidVulkanES31);
-				}
-
-				bool bIOSSupportsMetal = false;
-				GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetal"), bIOSSupportsMetal, GEngineIni);
-				if(bIOSSupportsMetal)
-				{
-					MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().PreviewPlatformOverride_IOSMetalES31);
-				}
-
-				break;
-			}
-
-			default:
-				MenuBuilder.AddMenuEntry(FLevelEditorCommands::Get().FeatureLevelPreview[i]);
-		}
-	}
-
-    MenuBuilder.EndSection();
 
 #undef LOCTEXT_NAMESPACE
 

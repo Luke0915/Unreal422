@@ -48,10 +48,7 @@ public:
 	};
 
 	/** Constructor */
-	FNetPacketNotify()
-	: AckRecord(64)
-	, WrittenHistoryWordCount(0)
-	{}
+	FNetPacketNotify();
 
 	/** Init notification with expected initial sequence numbers */
 	void Init(SequenceNumberT InitialInSeq, SequenceNumberT InitialOutSeq);
@@ -66,34 +63,22 @@ public:
 	SequenceNumberT CommitAndIncrementOutSeq();
 
 	/** Write NotificationHeader, and update outgoing ack record 
-	 if bRefresh is true we will attempt to refresh a previously written header 
-	if the size remains the same */
-	void WriteHeader(FBitWriter& Writer, bool bRefresh = false);
+		if bRefresh is true we will attempt to refresh a previously written header if the resulting size will be the same as the already written header.
+		returns true if data was written, and false if no data was written which might be the case if we try to rewrite an existing header but the required size differs.
+	*/
+	bool WriteHeader(FBitWriter& Writer, bool bRefresh = false);
 	
 	/** Read header from stream */
 	bool ReadHeader(FNotificationHeader& Data, FBitReader& Reader) const;
 
-	/** Update state of PacketNotification based on received header and invoke packet notifications for received acks.
-		InFunc is a function in the format void)(FNetPacketNotify::SequenceNumberT AckedSequence, bool delivered) to handle packetNotifications.
-
-		Returns the positive delta of the incoming seq number if it is within half the sequence number space
-		Returns 0 if the received sequence number is out of the current window or if the acknowledged seq received by the remote is invalid.
-	*/
-	template<class Functor>
-	SequenceNumberT::DifferenceT Update(const FNotificationHeader& NotificationData, Functor&& InFunc)
-	{		
-		if (NotificationData.Seq > InSeq && NotificationData.AckedSeq >= OutAckSeq)
+	/**
+	 * Gets the delta between the present sequence, and the sequence inside the specified header - if the delta is positive
+	 */
+	SequenceNumberT::DifferenceT GetSequenceDelta(const FNotificationHeader& NotificationData)
+	{
+		if (NotificationData.Seq > InSeq && NotificationData.AckedSeq >= OutAckSeq && OutSeq > NotificationData.AckedSeq)
 		{
-			UE_LOG_PACKET_NOTIFY(TEXT("FNetPacketNotify::Update - Seq %u, InSeq %u"), NotificationData.Seq.Get(), InSeq.Get());
-
-			const SequenceNumberT::DifferenceT InSeqDelta = SequenceNumberT::Diff(NotificationData.Seq, InSeq);
-			
-			ProcessReceivedAcks(NotificationData, InFunc);
-
-			// accept sequence
-			InSeq = NotificationData.Seq;
-
-			return InSeqDelta;
+			return SequenceNumberT::Diff(NotificationData.Seq, InSeq);
 		}
 		else
 		{
@@ -101,6 +86,15 @@ public:
 		}
 	}
 
+	/**
+	 * Update state of PacketNotification based on received header and invoke packet notifications for received acks.
+	 *
+	 * @param NotificationData			The header to update from
+	 * @param InFunc					A function in the format (void)(FNetPacketNotify::SequenceNumberT AckedSequence, bool bDelivered) to handle packet notifications.
+	 * @return							The > 0 delta of the incoming seq if within half the seq number space. 0 if the received seq is outside current window ,or the ack seq received is invalid.
+	*/
+	template<class Functor>
+	SequenceNumberT::DifferenceT Update(const FNotificationHeader& NotificationData, Functor&& InFunc);
 	/** Get the current SequenceHistory */
 	const SequenceHistoryT& GetInSeqHistory() const { return InSeqHistory; }
 
@@ -145,72 +139,78 @@ private:
 	SequenceNumberT OutAckSeq;			// Last sequence number that we know that the remote side have received.
 
 private:
-	SequenceNumberT UpdateInAckSeqAck(SequenceNumberT::DifferenceT AckCount, SequenceNumberT AckedSeq)
-	{
-		check((SIZE_T)AckCount <= AckRecord.Count());
-
-		if (AckCount > 1)
-		{
-			AckRecord.PopNoCheck(AckCount - 1);
-		}
-		
-		FSentAckData AckData = AckRecord.PeekNoCheck();
-		AckRecord.PopNoCheck();
-
-		// verify that we have a matching sequence number
-		if (AckData.OutSeq == AckedSeq)
-		{
-			return AckData.InAckSeq;
-		}
-		else
-		{
-			UE_LOG_PACKET_NOTIFY_WARNING(TEXT("FNetPacketNotify::UpdateInAckSeqAck - Failed to find matching AckRecord for %u, (Found %u)"), AckedSeq.Get(), AckData.OutSeq.Get());
-
-			// Pessimistic view, should never occur
-			return SequenceNumberT(AckedSeq.Get() - MaxSequenceHistoryLength);
-		}
-	}
+	SequenceNumberT UpdateInAckSeqAck(SequenceNumberT::DifferenceT AckCount, SequenceNumberT AckedSeq);
 
 	template<class Functor>
-	void ProcessReceivedAcks(const FNotificationHeader& NotificationData, Functor&& InFunc)
-	{
-		if (NotificationData.AckedSeq > OutAckSeq)
-		{
-			UE_LOG_PACKET_NOTIFY(TEXT("Notification::ProcessReceivedAcks - AckedSeq: %u, OutAckSeq: %u"), NotificationData.AckedSeq.Get(), OutAckSeq.Get());
-
-			SequenceNumberT::DifferenceT AckCount = SequenceNumberT::Diff(NotificationData.AckedSeq, OutAckSeq);
-
-			// Update InAckSeqAck used to track the needed number of bits to transmit our ack history
-			InAckSeqAck = UpdateInAckSeqAck(AckCount, NotificationData.AckedSeq);
-
-			// ExpectedAck = OutAckSeq + 1
-			SequenceNumberT CurrentAck(OutAckSeq);
-			++CurrentAck;
-
-			// Everything not found in the history buffer is treated as lost
-			while (AckCount > (SequenceNumberT::DifferenceT)(SequenceHistoryT::Size))
-			{
-				--AckCount;
-				UE_LOG_PACKET_NOTIFY_WARNING(TEXT("Notification::ProcessReceivedAcks Seq: %u - IsAck: 0 HistoryIndex: N/A"), CurrentAck.Get());
-				InFunc(CurrentAck, false);
-				++CurrentAck;
-			}
-
-			// For sequence numbers contained in the history we lookup the delivery status from the history
-			while (AckCount > 0)
-			{
-				--AckCount;
-				UE_LOG_PACKET_NOTIFY(TEXT("Notification::ProcessReceivedAcks Seq: %u - IsAck: %u HistoryIndex: %u"), CurrentAck.Get(), NotificationData.History.IsDelivered(AckCount) ? 1u : 0u, AckCount);
-				InFunc(CurrentAck, NotificationData.History.IsDelivered(AckCount));
-				++CurrentAck;
-			}
-			OutAckSeq = NotificationData.AckedSeq;
-		}
-	}
-
+	inline void ProcessReceivedAcks(const FNotificationHeader& NotificationData, Functor&& InFunc);
 	void AckSeq(SequenceNumberT AckedSeq, bool IsAck);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FNetPacketNotifyTestUtil;
 #endif
 };
+
+template<class Functor>
+FNetPacketNotify::SequenceNumberT::DifferenceT FNetPacketNotify::Update(const FNotificationHeader& NotificationData, Functor&& InFunc)
+{
+	const SequenceNumberT::DifferenceT InSeqDelta = GetSequenceDelta(NotificationData);
+
+	if (InSeqDelta > 0)
+	{
+		UE_LOG_PACKET_NOTIFY(TEXT("FNetPacketNotify::Update - Seq %u, InSeq %u"), NotificationData.Seq.Get(), InSeq.Get());
+	
+		ProcessReceivedAcks(NotificationData, InFunc);
+
+		// accept sequence
+		InSeq = NotificationData.Seq;
+
+		return InSeqDelta;
+	}
+	else
+	{
+		return 0;
+	}
+}
+
+template<class Functor>
+void FNetPacketNotify::ProcessReceivedAcks(const FNotificationHeader& NotificationData, Functor&& InFunc)
+{
+	if (NotificationData.AckedSeq > OutAckSeq)
+	{
+		UE_LOG_PACKET_NOTIFY(TEXT("Notification::ProcessReceivedAcks - AckedSeq: %u, OutAckSeq: %u"), NotificationData.AckedSeq.Get(), OutAckSeq.Get());
+
+		SequenceNumberT::DifferenceT AckCount = SequenceNumberT::Diff(NotificationData.AckedSeq, OutAckSeq);
+
+		// Update InAckSeqAck used to track the needed number of bits to transmit our ack history
+		InAckSeqAck = UpdateInAckSeqAck(AckCount, NotificationData.AckedSeq);
+
+		// ExpectedAck = OutAckSeq + 1
+		SequenceNumberT CurrentAck(OutAckSeq);
+		++CurrentAck;
+
+		if (AckCount > (SequenceNumberT::DifferenceT)(SequenceHistoryT::Size))
+		{
+			UE_LOG_PACKET_NOTIFY_WARNING(TEXT("Notification::ProcessReceivedAcks - Missed Acks: AckedSeq: %u, OutAckSeq: %u, FirstMissingSeq: %u Count: %u"), NotificationData.AckedSeq.Get(), OutAckSeq.Get(), CurrentAck.Get(), AckCount - (SequenceNumberT::DifferenceT)(SequenceHistoryT::Size));
+		}
+
+		// Everything not found in the history buffer is treated as lost
+		while (AckCount > (SequenceNumberT::DifferenceT)(SequenceHistoryT::Size))
+		{
+			--AckCount;
+			InFunc(CurrentAck, false);
+			++CurrentAck;
+		}
+
+		// For sequence numbers contained in the history we lookup the delivery status from the history
+		while (AckCount > 0)
+		{
+			--AckCount;
+			UE_LOG_PACKET_NOTIFY(TEXT("Notification::ProcessReceivedAcks Seq: %u - IsAck: %u HistoryIndex: %u"), CurrentAck.Get(), NotificationData.History.IsDelivered(AckCount) ? 1u : 0u, AckCount);
+			InFunc(CurrentAck, NotificationData.History.IsDelivered(AckCount));
+			++CurrentAck;
+		}
+		OutAckSeq = NotificationData.AckedSeq;
+	}
+}
+
+

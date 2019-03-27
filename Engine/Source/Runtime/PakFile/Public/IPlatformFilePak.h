@@ -11,6 +11,8 @@
 #include "Templates/UniquePtr.h"
 #include "Math/BigInt.h"
 #include "Misc/AES.h"
+#include "RSA.h"
+#include "Misc/SecureHash.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
 
 class FChunkCacheWorker;
@@ -21,9 +23,10 @@ DECLARE_FLOAT_ACCUMULATOR_STAT_EXTERN(TEXT("Total pak file read time"), STAT_Pak
 
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Num open pak file handles"), STAT_PakFile_NumOpenHandles, STATGROUP_PakFile, PAKFILE_API);
 
-#define PAKHASH_USE_CRC	1
 #define PAK_TRACKER 0
 
+// Define the type of a chunk hash. Currently selectable between SHA1 and CRC32.
+#define PAKHASH_USE_CRC	1
 #if PAKHASH_USE_CRC
 typedef uint32 TPakChunkHash;
 #else
@@ -64,6 +67,10 @@ struct FPakInfo
 		PakFile_Magic = 0x5A6F12E1,
 		/** Size of cached data. */
 		MaxChunkDataSize = 64*1024,
+		/** Length of a compression format name */
+		CompressionMethodNameLen = 32,
+		/** Number of allowed different methods */
+		MaxNumCompressionMethods=4,
 	};
 
 	/** Version numbers. */
@@ -76,6 +83,7 @@ struct FPakInfo
 		PakFile_Version_RelativeChunkOffsets = 5,
 		PakFile_Version_DeleteRecords = 6,
 		PakFile_Version_EncryptionKeyGuid = 7,
+		PakFile_Version_FNameBasedCompressionMethod = 8,
 
 
 		PakFile_Version_Last,
@@ -97,6 +105,8 @@ struct FPakInfo
 	uint8 bEncryptedIndex;
 	/** Encryption key guid. Empty if we should use the embedded key. */
 	FGuid EncryptionKeyGuid;
+	/** Compression methods used in this pak file (FNames, saved as FStrings) */
+	TArray<FName> CompressionMethods;
 
 	/**
 	 * Constructor.
@@ -109,6 +119,8 @@ struct FPakInfo
 		, bEncryptedIndex(0)
 	{
 		FMemory::Memset(IndexHash, 0, sizeof(IndexHash));
+		// we always put in a NAME_None entry as index 0, so that an uncompressed PakEntry will have CompressionMethodIndex of 0 and can early out easily
+		CompressionMethods.Add(NAME_None);
 	}
 
 	/**
@@ -120,6 +132,8 @@ struct FPakInfo
 	{
 		int64 Size = sizeof(Magic) + sizeof(Version) + sizeof(IndexOffset) + sizeof(IndexSize) + sizeof(IndexHash) + sizeof(bEncryptedIndex);
 		if (InVersion >= PakFile_Version_EncryptionKeyGuid) Size += sizeof(EncryptionKeyGuid);
+		if (InVersion >= PakFile_Version_FNameBasedCompressionMethod) Size += CompressionMethodNameLen * MaxNumCompressionMethods;
+
 		return Size;
 	}
 
@@ -149,6 +163,13 @@ struct FPakInfo
 		}
 		Ar << bEncryptedIndex;
 		Ar << Magic;
+		if (Magic != PakFile_Magic)
+		{
+			// handle old versions by failing out now (earlier versions will be attempted)
+			Magic = 0;
+			return;
+		}
+
 		Ar << Version;
 		Ar << IndexOffset;
 		Ar << IndexSize;
@@ -166,6 +187,68 @@ struct FPakInfo
 				EncryptionKeyGuid.Invalidate();
 			}
 		}
+
+		if (Version < PakFile_Version_FNameBasedCompressionMethod)
+		{
+			// for old versions, put in some known names that we may have used
+			CompressionMethods.Add(NAME_Zlib);
+			CompressionMethods.Add(NAME_Gzip);
+			CompressionMethods.Add(TEXT("Oodle"));
+		}
+		else
+		{
+			// we need to serialize a known size, so make a buffer of "strings"
+			const int32 BufferSize = CompressionMethodNameLen * MaxNumCompressionMethods;
+			ANSICHAR Methods[BufferSize];
+			if (Ar.IsLoading())
+			{
+				Ar.Serialize(Methods, BufferSize);
+				for (int Index = 0; Index < MaxNumCompressionMethods; Index++)
+				{
+					ANSICHAR* MethodString = &Methods[Index * CompressionMethodNameLen];
+					if (MethodString[0] != 0)
+					{
+						CompressionMethods.Add(FName(MethodString));
+					}
+				}
+			}
+			else
+			{
+				// we always zero out fully what we write out so that reading in is simple
+				FMemory::Memzero(Methods, BufferSize);
+
+				for (int Index = 1; Index < CompressionMethods.Num(); Index++)
+				{
+					ANSICHAR* MethodString = &Methods[(Index - 1) * CompressionMethodNameLen];
+					FCStringAnsi::Strcpy(MethodString, CompressionMethodNameLen, TCHAR_TO_ANSI(*CompressionMethods[Index].ToString()));
+				}
+				Ar.Serialize(Methods, BufferSize);
+			}
+		}
+	}
+
+	uint8 GetCompressionMethodIndex(FName CompressionMethod)
+	{
+		// look for existing method
+		for (uint8 Index = 0; Index < CompressionMethods.Num(); Index++)
+		{
+			if (CompressionMethods[Index] == CompressionMethod)
+			{
+				return Index;
+			}
+		}
+
+		checkf(CompressionMethod.ToString().Len() < CompressionMethodNameLen, TEXT("Compression method name, %s, is too long for pak file serialization. You can increase CompressionMethodNameLen, but then will have to handle version management."), *CompressionMethod.ToString());
+		// CompressionMethods always has None at Index 0, that we don't serialize, so we can allow for one more in the array
+		checkf(CompressionMethods.Num() <= MaxNumCompressionMethods, TEXT("Too many unique compression methods in one pak file. You can increase MaxNumCompressionMethods, but then will have to handle version management."));
+
+		// add it if it didn't exist
+		return CompressionMethods.Add(CompressionMethod);
+	}
+
+	FName GetCompressionMethod(uint8 Index) const
+	{
+		return CompressionMethods[Index];
 	}
 };
 
@@ -212,14 +295,14 @@ struct FPakEntry
 	int64 Size;
 	/** Uncompressed file size. */
 	int64 UncompressedSize;
-	/** Compression method. */
-	int32 CompressionMethod;
 	/** File SHA1 value. */
 	uint8 Hash[20];
 	/** Array of compression blocks that describe how to decompress this pak entry. */
 	TArray<FPakCompressedBlock> CompressionBlocks;
 	/** Size of a compressed block in the file. */
 	uint32 CompressionBlockSize;
+	/** Index into the compression methods in this pakfile. */
+	uint8 CompressionMethodIndex;
 	/** Pak entry flags. */
 	uint8 Flags;
 	/** Flag is set to true when FileHeader has been checked against PakHeader. It is not serialized. */
@@ -232,8 +315,8 @@ struct FPakEntry
 		: Offset(-1)
 		, Size(0)
 		, UncompressedSize(0)
-		, CompressionMethod(0)
 		, CompressionBlockSize(0)
+		, CompressionMethodIndex(0)
 		, Flags(Flag_None)
 		, Verified(false)
 	{
@@ -247,11 +330,21 @@ struct FPakEntry
 	 */
 	int64 GetSerializedSize(int32 Version) const
 	{
-		int64 SerializedSize = sizeof(Offset) + sizeof(Size) + sizeof(UncompressedSize) + sizeof(CompressionMethod) + sizeof(Hash);
+		int64 SerializedSize = sizeof(Offset) + sizeof(Size) + sizeof(UncompressedSize) + sizeof(Hash);
+
+		if (Version >= FPakInfo::PakFile_Version_FNameBasedCompressionMethod)
+		{
+			SerializedSize += sizeof(CompressionMethodIndex);
+		}
+		else
+		{
+			SerializedSize += sizeof(int32); // Old CompressedMethod var from pre-fname based compression methods
+		}
+
 		if (Version >= FPakInfo::PakFile_Version_CompressionEncryption)
 		{
 			SerializedSize += sizeof(Flags) + sizeof(CompressionBlockSize);
-			if(CompressionMethod != COMPRESS_None)
+			if(CompressionMethodIndex != 0)
 			{
 				SerializedSize += sizeof(FPakCompressedBlock) * CompressionBlocks.Num() + sizeof(int32);
 			}
@@ -273,7 +366,7 @@ struct FPakEntry
 		// serialized with file headers anyway.
 		return Size == B.Size && 
 			UncompressedSize == B.UncompressedSize &&
-			CompressionMethod == B.CompressionMethod &&
+			CompressionMethodIndex == B.CompressionMethodIndex &&
 			Flags == B.Flags &&
 			CompressionBlockSize == B.CompressionBlockSize &&
 			FMemory::Memcmp(Hash, B.Hash, sizeof(Hash)) == 0 &&
@@ -289,7 +382,7 @@ struct FPakEntry
 		// serialized with file headers anyway.
 		return Size != B.Size || 
 			UncompressedSize != B.UncompressedSize ||
-			CompressionMethod != B.CompressionMethod ||
+			CompressionMethodIndex != B.CompressionMethodIndex ||
 			Flags != B.Flags ||
 			CompressionBlockSize != B.CompressionBlockSize ||
 			FMemory::Memcmp(Hash, B.Hash, sizeof(Hash)) != 0 ||
@@ -307,7 +400,35 @@ struct FPakEntry
 		Ar << Offset;
 		Ar << Size;
 		Ar << UncompressedSize;
-		Ar << CompressionMethod;
+		if (Version < FPakInfo::PakFile_Version_FNameBasedCompressionMethod)
+		{
+			int32 LegacyCompressionMethod;
+			Ar << LegacyCompressionMethod;
+			if (LegacyCompressionMethod == COMPRESS_None)
+			{
+				CompressionMethodIndex = 0;
+			}
+			else if (LegacyCompressionMethod & COMPRESS_ZLIB)
+			{
+				CompressionMethodIndex = 1;
+			}
+			else if (LegacyCompressionMethod & COMPRESS_GZIP)
+			{
+				CompressionMethodIndex = 2;
+			}
+			else if (LegacyCompressionMethod & COMPRESS_Custom)
+			{
+				CompressionMethodIndex = 3;
+			}
+			else
+			{
+				UE_LOG(LogPakFile, Fatal, TEXT("Found an unknown compression type in pak file, will need to be supported for legacy files"));
+			}
+		}
+		else
+		{
+			Ar << CompressionMethodIndex;
+		}
 		if (Version <= FPakInfo::PakFile_Version_Initial)
 		{
 			FDateTime Timestamp;
@@ -316,7 +437,7 @@ struct FPakEntry
 		Ar.Serialize(Hash, sizeof(Hash));
 		if (Version >= FPakInfo::PakFile_Version_CompressionEncryption)
 		{
-			if(CompressionMethod != COMPRESS_None)
+			if(CompressionMethodIndex != 0)
 			{
 				Ar << CompressionBlocks;
 			}
@@ -411,6 +532,10 @@ class PAKFILE_API FPakFile : FNoncopyable
 	bool bFilenamesRemoved;
 	/** ID for the chunk this pakfile is part of. INDEX_NONE if this isn't a pak chunk (derived from filename) */
 	int32 ChunkID;
+
+	class IMappedFileHandle* MappedFileHandle;
+	FCriticalSection MappedFileHandleCriticalSection;
+
 
 	static inline int32 CDECL CompareFilenameHashes(const void* Left, const void* Right)
 	{
@@ -833,7 +958,7 @@ private:
 		SourcePtr += sizeof(uint32);
 
 		// Filter out the CompressionMethod.
-		OutEntry->CompressionMethod = (Value >> 23) & 0x3f;
+		OutEntry->CompressionMethodIndex = (Value >> 23) & 0x3f;
 
 		// Test for 32-bit safe values. Grab it, or memcpy the 64-bit value
 		// to avoid alignment exceptions on platforms requiring 64-bit alignment
@@ -866,7 +991,7 @@ private:
 		}
 
 		// Fill in the Size.
-		if (OutEntry->CompressionMethod != COMPRESS_None)
+		if (OutEntry->CompressionMethodIndex != 0)
 		{
 			// Size is only present if compression is applied.
 			bool bIsSize32BitSafe = (Value & (1 << 29)) != 0;
@@ -975,6 +1100,11 @@ public:
 	}
 };
 
+/**
+ * Typedef for a function that returns an archive to use for accessing an underlying pak file
+ */
+typedef TFunction<FArchive*()> TAcquirePakReaderFunction;
+
 template< typename EncryptionPolicy = FPakNoEncryption >
 class PAKFILE_API FPakReaderPolicy
 {
@@ -984,14 +1114,14 @@ public:
 	/** Pak file entry for this file. */
 	FPakEntry			PakEntry;
 	/** Pak file archive to read the data from. */
-	FArchive*			PakReader;
+	TAcquirePakReaderFunction AcquirePakReader;
 	/** Offset to the file in pak (including the file header). */
 	int64				OffsetToFile;
 
-	FPakReaderPolicy(const FPakFile& InPakFile,const FPakEntry& InPakEntry,FArchive* InPakReader)
+	FPakReaderPolicy(const FPakFile& InPakFile,const FPakEntry& InPakEntry, TAcquirePakReaderFunction& InAcquirePakReader)
 		: PakFile(InPakFile)
 		, PakEntry(InPakEntry)
-		, PakReader(InPakReader)
+		, AcquirePakReader(InAcquirePakReader)
 	{
 		OffsetToFile = PakEntry.Offset + PakEntry.GetSerializedSize(PakFile.GetInfo().Version);
 	}
@@ -1007,6 +1137,7 @@ public:
 		const constexpr int64 Alignment = (int64)EncryptionPolicy::Alignment;
 		const constexpr int64 AlignmentMask = ~(Alignment - 1);
 		uint8 TempBuffer[Alignment];
+		FArchive* PakReader = AcquirePakReader();
 		if (EncryptionPolicy::AlignReadRequest(DesiredPosition) != DesiredPosition)
 		{
 			int64 Start = DesiredPosition & AlignmentMask;
@@ -1061,12 +1192,27 @@ public:
 	 *
 	 * @param InFilename Filename
 	 * @param InPakEntry Entry in the pak file.
+	 * @param InAcquirePakReaderFunction Function that returns the archive to use for serialization. The result of this should not be cached, but reacquired on each serialization operation
+	 */
+	FPakFileHandle(const FPakFile& InPakFile, const FPakEntry& InPakEntry, TAcquirePakReaderFunction& InAcquirePakReaderFunction, bool bIsSharedReader)
+		: bSharedReader(bIsSharedReader)
+		, ReadPos(0)
+		, Reader(InPakFile, InPakEntry, InAcquirePakReaderFunction)
+	{
+		INC_DWORD_STAT(STAT_PakFile_NumOpenHandles);
+	}
+
+	/**
+	 * Constructs pak file handle to read from pak.
+	 *
+	 * @param InFilename Filename
+	 * @param InPakEntry Entry in the pak file.
 	 * @param InPakFile Pak file.
 	 */
 	FPakFileHandle(const FPakFile& InPakFile, const FPakEntry& InPakEntry, FArchive* InPakReader, bool bIsSharedReader)
 		: bSharedReader(bIsSharedReader)
 		, ReadPos(0)
-		, Reader(InPakFile, InPakEntry, InPakReader)
+		, Reader(InPakFile, InPakEntry, [InPakReader]() { return InPakReader; })
 	{
 		INC_DWORD_STAT(STAT_PakFile_NumOpenHandles);
 	}
@@ -1078,7 +1224,7 @@ public:
 	{
 		if (!bSharedReader)
 		{
-			delete Reader.PakReader;
+			delete Reader.AcquirePakReader();
 		}
 
 		DEC_DWORD_STAT(STAT_PakFile_NumOpenHandles);
@@ -1110,8 +1256,9 @@ public:
 		if (!Reader.PakEntry.Verified)
 		{
 			FPakEntry FileHeader;
-			Reader.PakReader->Seek(Reader.PakEntry.Offset);
-			FileHeader.Serialize(*Reader.PakReader, Reader.PakFile.GetInfo().Version);
+			FArchive* PakReader = Reader.AcquirePakReader();
+			PakReader->Seek(Reader.PakEntry.Offset);
+			FileHeader.Serialize(*PakReader, Reader.PakFile.GetInfo().Version);
 			if (FPakEntry::VerifyPakEntriesMatch(Reader.PakEntry, FileHeader))
 			{
 				Reader.PakEntry.Verified = true;
@@ -1282,14 +1429,14 @@ class PAKFILE_API FPakPlatformFile : public IPlatformFile
 	 * @param Directory Directory to (recursively) look for pak files in
 	 * @param OutPakFiles List of pak files
 	 */
-	static void FindPakFilesInDirectory(IPlatformFile* LowLevelFile, const TCHAR* Directory, TArray<FString>& OutPakFiles);
+	static void FindPakFilesInDirectory(IPlatformFile* LowLevelFile, const TCHAR* Directory, const FString& WildCard, TArray<FString>& OutPakFiles);
 
 	/**
 	 * Finds all pak files in the known pak folders
 	 *
 	 * @param OutPakFiles List of all found pak files
 	 */
-	static void FindAllPakFiles(IPlatformFile* LowLevelFile, const TArray<FString>& PakFolders, TArray<FString>& OutPakFiles);
+	static void FindAllPakFiles(IPlatformFile* LowLevelFile, const TArray<FString>& PakFolders, const FString& WildCard, TArray<FString>& OutPakFiles);
 
 	/**
 	 * When security is enabled, determine if this filename can be looked for in the lower level file system
@@ -1322,6 +1469,11 @@ public:
 	{
 		return TEXT("PakFile");
 	}
+
+	/**
+	 * Get the wild card pattern used to identify paks to load on startup
+	 */
+	static const TCHAR* GetMountStartupPaksWildCard();
 
 	/**
 	* Determine location information for a given chunk ID. Will be DoesNotExist if the pak file wasn't detected, NotAvailable if it exists but hasn't been mounted due to a missing encryption key, or LocalFast if it exists and has been mounted
@@ -1362,9 +1514,9 @@ public:
 	static void GetPakEncryptionKey(FAES::FAESKey& OutKey, const FGuid& InEncryptionKeyGuid);
 
 	/**
-	* Helper function for accessing pak signing keys
+	* Helper function for accessing pak the signing public key
 	*/
-	static void GetPakSigningKeys(FEncryptionKey& OutKey);
+	static TSharedPtr<FRSA::FKey, ESPMode::ThreadSafe> GetPakSigningKey();
 
 	/**
 	 * Constructor.
@@ -1408,7 +1560,8 @@ public:
 
 	bool Unmount(const TCHAR* InPakFilename);
 
-	int32 MountAllPakFiles(const TArray<FString>& PakFilesToMount);
+	int32 MountAllPakFiles(const TArray<FString>& PakFolders);
+	int32 MountAllPakFiles(const TArray<FString>& PakFolders, const FString& WildCard);
 
 
 	/**
@@ -1495,7 +1648,7 @@ public:
 		FPakEntry FileEntry;
 		if (FindFileInPakFiles(Filename, nullptr, &FileEntry))
 		{
-			return FileEntry.CompressionMethod != COMPRESS_None ? FileEntry.UncompressedSize : FileEntry.Size;
+			return FileEntry.CompressionMethodIndex != 0 ? FileEntry.UncompressedSize : FileEntry.Size;
 		}
 		// First look for the file in the user dir.
 		int64 Result = INDEX_NONE;
@@ -1741,7 +1894,7 @@ public:
 				PakFile->GetTimestamp(),
 				PakFile->GetTimestamp(),
 				PakFile->GetTimestamp(),
-				(FileEntry.CompressionMethod != COMPRESS_None) ? FileEntry.UncompressedSize : FileEntry.Size, 
+				(FileEntry.CompressionMethodIndex != 0) ? FileEntry.UncompressedSize : FileEntry.Size,
 				false,	// IsDirectory
 				true	// IsReadOnly
 				);
@@ -1962,7 +2115,7 @@ public:
 						FPakEntry FileEntry;
 						if (FindFileInPakFiles(*Filename, nullptr, &FileEntry))
 						{
-							FileSize = (FileEntry.CompressionMethod != COMPRESS_None) ? FileEntry.UncompressedSize : FileEntry.Size;
+							FileSize = (FileEntry.CompressionMethodIndex != 0) ? FileEntry.UncompressedSize : FileEntry.Size;
 						}
 					}
 
@@ -2102,6 +2255,7 @@ public:
 	virtual IAsyncReadFileHandle* OpenAsyncRead(const TCHAR* Filename) override;
 	virtual void SetAsyncMinimumPriority(EAsyncIOPriorityAndFlags Priority) override;
 
+	virtual IMappedFileHandle* OpenMapped(const TCHAR* Filename) override;
 	/**
 	 * Converts a filename to a path inside pak file.
 	 *
@@ -2175,4 +2329,105 @@ public:
 #endif
 };
 
+/**
+ * Structure which describes the content of the pak .sig files
+ */
+struct FPakSignatureFile
+{
+	// Magic number that tells us we're dealing with the new format sig files
+	static const uint32 Magic = 0x73832DAA;
 
+	enum class EVersion
+	{
+		Legacy,
+		First,
+
+		Last,
+		Latest = Last - 1
+	};
+
+	// Sig file version. Set to Legacy if the sig file is of an old version
+	EVersion Version = EVersion::Latest;
+
+	// RSA encrypted hash
+	TArray<uint8> EncryptedHash;
+
+	// SHA1 hash of the chunk CRC data. Only valid after calling DecryptSignatureAndValidate
+	FSHAHash DecryptedHash;
+
+	// CRCs of each contiguous 64kb block of the pak file
+	TArray<TPakChunkHash> ChunkHashes;
+	
+	/**
+	 * Initialize and hash the CRC list then use the provided private key to encrypt the hash
+	 */
+	void SetChunkHashesAndSign(const TArray<TPakChunkHash>& InChunkHashes, const FRSA::TKeyPtr InKey)
+	{
+		ChunkHashes = InChunkHashes;
+		DecryptedHash = ComputeCurrentMasterHash();
+		FRSA::Encrypt(FRSA::EKeyType::Private, DecryptedHash.Hash, ARRAY_COUNT(FSHAHash::Hash), EncryptedHash, InKey);
+	}
+
+	/**
+	 * Serialize/deserialize this object to/from an FArchive
+	 */
+	void Serialize(FArchive& Ar)
+	{
+		int64 StartPos = Ar.Tell();
+		uint32 FileMagic = Magic;
+		Ar << FileMagic;
+
+		if (Ar.IsLoading() && FileMagic != Magic)
+		{
+			// Old format with no versioning! Go back to where we were and mark our version as legacy
+			Ar.Seek(StartPos);
+			Version = EVersion::Legacy;
+			TEncryptionInt LegacyEncryptedCRC;
+			Ar << LegacyEncryptedCRC;
+			Ar << ChunkHashes;
+			// Note that we don't do any actual signature checking here because this is old data that won't have been
+			// encrypted with the new larger keys.
+			return;
+		}
+
+		Ar << Version;
+		Ar << EncryptedHash;
+		Ar << ChunkHashes;
+	}
+
+	/**
+	 * Decrypt the chunk CRCs hash and validate that it matches the current one
+	 */
+	bool DecryptSignatureAndValidate(const FString& InFilename)
+	{
+		TSharedPtr<FRSA::FKey, ESPMode::ThreadSafe> PublicKey = FPakPlatformFile::GetPakSigningKey();
+		return DecryptSignatureAndValidate(PublicKey, InFilename);
+	}
+
+	/**
+	 * Decrypt the chunk CRCs hash and validate that it matches the current one
+	 */
+	bool DecryptSignatureAndValidate(FRSA::TKeyPtr InKey, const FString& InFilename)
+	{
+		FRSA::Decrypt(FRSA::EKeyType::Public, EncryptedHash, DecryptedHash.Hash, ARRAY_COUNT(FSHAHash::Hash), InKey);
+
+		FSHAHash CurrentHash = ComputeCurrentMasterHash();
+		if (DecryptedHash != CurrentHash)
+		{
+			FPakPlatformFile::GetPakMasterSignatureTableCheckFailureHandler().Broadcast(InFilename);
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Helper function for computing the SHA1 hash of the current chunk CRC array
+	 */
+	FSHAHash ComputeCurrentMasterHash() const
+	{
+		FSHAHash CurrentHash;
+		FSHA1::HashBuffer(ChunkHashes.GetData(), ChunkHashes.Num() * sizeof(TPakChunkHash), CurrentHash.Hash);
+		return CurrentHash;
+	}
+};

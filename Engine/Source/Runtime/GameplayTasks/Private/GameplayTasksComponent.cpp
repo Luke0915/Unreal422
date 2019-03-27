@@ -16,7 +16,7 @@ namespace
 {
 	FORCEINLINE const TCHAR* GetGameplayTaskEventName(EGameplayTaskEvent Event)
 	{
-		/*static const UEnum* GameplayTaskEventEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EGameplayTaskEvent"));
+		/*static const UEnum* GameplayTaskEventEnum = StaticEnum<EGameplayTaskEvent>();
 		return GameplayTaskEventEnum->GetDisplayNameTextByValue(static_cast<int64>(Event)).ToString();*/
 
 		return Event == EGameplayTaskEvent::Add ? TEXT("Add") : TEXT("Remove");
@@ -150,6 +150,8 @@ void UGameplayTasksComponent::OnTaskEnded(UGameplayTask& Task)
 void UGameplayTasksComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProperty >& OutLifetimeProps) const
 {
 	// Intentionally not calling super: We do not want to replicate bActive which controls ticking. We sometimes need to tick on client predictively.
+	DISABLE_ALL_CLASS_REPLICATED_PROPERTIES(Super, EFieldIteratorFlags::IncludeSuper);
+
 	DOREPLIFETIME_CONDITION(UGameplayTasksComponent, SimulatedTasks, COND_SkipOwner);
 }
 
@@ -574,7 +576,7 @@ FString UGameplayTasksComponent::GetTasksPriorityQueueDescription() const
 
 FString UGameplayTasksComponent::GetTaskStateName(EGameplayTaskState Value)
 {
-	static const UEnum* Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EGameplayTaskState"));
+	static const UEnum* Enum = StaticEnum<EGameplayTaskState>();
 	check(Enum);
 	return Enum->GetNameStringByValue(int64(Value));
 }

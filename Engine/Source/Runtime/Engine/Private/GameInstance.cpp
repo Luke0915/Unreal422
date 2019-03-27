@@ -555,12 +555,48 @@ bool UGameInstance::HandleOpenCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorl
 	return Engine->HandleOpenCommand(Cmd, Ar, InWorld);
 }
 
+bool UGameInstance::HandleDisconnectCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld)
+{
+	check(WorldContext && WorldContext->World() == InWorld);
+
+	UEngine* const Engine = GetEngine();
+	return Engine->HandleDisconnectCommand(Cmd, Ar, InWorld);
+}
+
+bool UGameInstance::HandleReconnectCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld)
+{
+	check(WorldContext && WorldContext->World() == InWorld);
+
+	UEngine* const Engine = GetEngine();
+	return Engine->HandleReconnectCommand(Cmd, Ar, InWorld);
+}
+
+bool UGameInstance::HandleTravelCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld)
+{
+	check(WorldContext && WorldContext->World() == InWorld);
+
+	UEngine* const Engine = GetEngine();
+	return Engine->HandleTravelCommand(Cmd, Ar, InWorld);
+}
+
 bool UGameInstance::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 {
 	// @todo a bunch of stuff in UEngine probably belongs here as well
 	if (FParse::Command(&Cmd, TEXT("OPEN")))
 	{
 		return HandleOpenCommand(Cmd, Ar, InWorld);
+	}
+	else if (FParse::Command(&Cmd, TEXT("DISCONNECT")))
+	{
+		return HandleDisconnectCommand(Cmd, Ar, InWorld);
+	}
+	else if (FParse::Command(&Cmd, TEXT("RECONNECT")))
+	{
+		return HandleReconnectCommand(Cmd, Ar, InWorld);
+	}
+	else if (FParse::Command(&Cmd, TEXT("TRAVEL")))
+	{
+		return HandleTravelCommand(Cmd, Ar, InWorld);
 	}
 
 	return false;
@@ -571,7 +607,7 @@ ULocalPlayer* UGameInstance::CreateInitialPlayer(FString& OutError)
 	return CreateLocalPlayer( 0, OutError, false );
 }
 
-ULocalPlayer* UGameInstance::CreateLocalPlayer(int32 ControllerId, FString& OutError, bool bSpawnActor)
+ULocalPlayer* UGameInstance::CreateLocalPlayer(int32 ControllerId, FString& OutError, bool bSpawnPlayerController)
 {
 	check(GetEngine()->LocalPlayerClass != NULL);
 
@@ -605,15 +641,25 @@ ULocalPlayer* UGameInstance::CreateLocalPlayer(int32 ControllerId, FString& OutE
 
 		NewPlayer = NewObject<ULocalPlayer>(GetEngine(), GetEngine()->LocalPlayerClass);
 		InsertIndex = AddLocalPlayer(NewPlayer, ControllerId);
-		if (bSpawnActor && InsertIndex != INDEX_NONE && GetWorld() != NULL)
+		UWorld* CurrentWorld = GetWorld();
+		if (bSpawnPlayerController && InsertIndex != INDEX_NONE && CurrentWorld != nullptr)
 		{
-			if (GetWorld()->GetNetMode() != NM_Client)
+			if (CurrentWorld->GetNetMode() != NM_Client)
 			{
 				// server; spawn a new PlayerController immediately
-				if (!NewPlayer->SpawnPlayActor("", OutError, GetWorld()))
+				if (!NewPlayer->SpawnPlayActor("", OutError, CurrentWorld))
 				{
 					RemoveLocalPlayer(NewPlayer);
-					NewPlayer = NULL;
+					NewPlayer = nullptr;
+				}
+			}
+			else if (CurrentWorld->IsPlayingReplay())
+			{
+				// demo playback; ask the replay driver to spawn a splitscreen client
+				if (!CurrentWorld->DemoNetDriver->SpawnSplitscreenViewer(NewPlayer, CurrentWorld))
+				{
+					RemoveLocalPlayer(NewPlayer);
+					NewPlayer = nullptr;
 				}
 			}
 			else
@@ -663,15 +709,29 @@ int32 UGameInstance::AddLocalPlayer(ULocalPlayer* NewLocalPlayer, int32 Controll
 bool UGameInstance::RemoveLocalPlayer(ULocalPlayer* ExistingPlayer)
 {
 	// FIXME: Notify server we want to leave the game if this is an online game
-	if (ExistingPlayer->PlayerController != NULL)
+	if (ExistingPlayer->PlayerController != nullptr)
 	{
+		bool bShouldRemovePlayer = (ExistingPlayer->PlayerController->Role == ROLE_Authority);
+
 		// FIXME: Do this all inside PlayerRemoved?
 		ExistingPlayer->PlayerController->CleanupGameViewport();
 
-		// Destroy the player's actors.
-		if ( ExistingPlayer->PlayerController->Role == ROLE_Authority )
+		UWorld* CurrentWorld = GetWorld();
+		if (CurrentWorld && CurrentWorld->DemoNetDriver && CurrentWorld->IsPlayingReplay())
 		{
-			ExistingPlayer->PlayerController->Destroy();
+			if (!CurrentWorld->DemoNetDriver->RemoveSplitscreenViewer(ExistingPlayer->PlayerController))
+			{
+				UE_LOG(LogPlayerManagement, Warning, TEXT("UGameInstance::RemovePlayer: Did not remove player %s with ControllerId %i as it was unable to be removed from the demo"), 
+					*ExistingPlayer->GetName(), ExistingPlayer->GetControllerId());
+			}
+			bShouldRemovePlayer = true;
+		}
+
+		// Destroy the player's actors.
+		if (bShouldRemovePlayer)
+		{
+			// This is fine to forceremove as we have to be in a special case for demos or the authority
+			ExistingPlayer->PlayerController->Destroy(true);
 		}
 	}
 
@@ -684,7 +744,7 @@ bool UGameInstance::RemoveLocalPlayer(ULocalPlayer* ExistingPlayer)
 		LocalPlayers.RemoveAt(OldIndex);
 
 		// Notify the viewport so the viewport can do the fixups, resize, etc
-		if (GetGameViewportClient() != NULL)
+		if (GetGameViewportClient() != nullptr)
 		{
 			GetGameViewportClient()->NotifyPlayerRemoved(OldIndex, ExistingPlayer);
 		}
@@ -692,7 +752,7 @@ bool UGameInstance::RemoveLocalPlayer(ULocalPlayer* ExistingPlayer)
 
 	// Disassociate this viewport client from the player.
 	// Do this after notifications, as some of them require the ViewportClient.
-	ExistingPlayer->ViewportClient = NULL;
+	ExistingPlayer->ViewportClient = nullptr;
 
 	UE_LOG(LogPlayerManagement, Log, TEXT("UGameInstance::RemovePlayer: Removed player %s with ControllerId %i at index %i (%i remaining players)"), *ExistingPlayer->GetName(), ExistingPlayer->GetControllerId(), OldIndex, LocalPlayers.Num());
 
@@ -882,6 +942,8 @@ const TArray<class ULocalPlayer*>& UGameInstance::GetLocalPlayers() const
 
 void UGameInstance::StartRecordingReplay(const FString& Name, const FString& FriendlyName, const TArray<FString>& AdditionalOptions)
 {
+	LLM_SCOPE(ELLMTag::Networking);
+
 	if ( FParse::Param( FCommandLine::Get(),TEXT( "NOREPLAYS" ) ) )
 	{
 		UE_LOG( LogDemo, Warning, TEXT( "UGameInstance::StartRecordingReplay: Rejected due to -noreplays option" ) );
@@ -921,8 +983,6 @@ void UGameInstance::StartRecordingReplay(const FString& Name, const FString& Fri
 	{
 		CurrentWorld->DestroyDemoNetDriver();
 		bDestroyedDemoNetDriver = true; 
-
-		const FName NAME_DemoNetDriver(TEXT("DemoNetDriver"));
 
 		if (!GEngine->CreateNamedNetDriver(CurrentWorld, NAME_DemoNetDriver, NAME_DemoNetDriver))
 		{
@@ -992,6 +1052,8 @@ void UGameInstance::StopRecordingReplay()
 
 bool UGameInstance::PlayReplay(const FString& Name, UWorld* WorldOverride, const TArray<FString>& AdditionalOptions)
 {
+	LLM_SCOPE(ELLMTag::Networking);
+
 	UWorld* CurrentWorld = WorldOverride != nullptr ? WorldOverride : GetWorld();
 
 	if ( CurrentWorld == nullptr )
@@ -1011,8 +1073,6 @@ bool UGameInstance::PlayReplay(const FString& Name, UWorld* WorldOverride, const
 	{
 		DemoURL.AddOption(*Option);
 	}
-
-	const FName NAME_DemoNetDriver( TEXT( "DemoNetDriver" ) );
 
 	if ( !GEngine->CreateNamedNetDriver( CurrentWorld, NAME_DemoNetDriver, NAME_DemoNetDriver ) )
 	{

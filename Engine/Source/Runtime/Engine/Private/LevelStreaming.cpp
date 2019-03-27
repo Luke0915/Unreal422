@@ -291,7 +291,7 @@ void ULevelStreaming::PostLoad()
 			// Convert the FName reference to a TSoftObjectPtr, then broadcast that we loaded a reference
 			// so this reference is gathered by the cooker without having to resave the package.
 			SetWorldAssetByPackageName(PackageName_DEPRECATED);
-			WorldAsset.GetUniqueID().PostLoadPath();
+			WorldAsset.GetUniqueID().PostLoadPath(GetLinker());
 		}
 		else
 		{
@@ -844,6 +844,38 @@ bool ULevelStreaming::RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoad
     if (PendingLevelVisOrInvis && PendingLevelVisOrInvis == LoadedLevel)
     {
 		UE_LOG(LogLevelStreaming, Verbose, TEXT("Delaying load of new level %s, because %s still processing visibility request."), *DesiredPackageName.ToString(), *CachedLoadedLevelPackageName.ToString());
+		return false;
+	}
+
+	auto ValidateUniqueLevel = [this, PersistentWorld]()
+	{
+		for (ULevelStreaming* OtherLevel : PersistentWorld->GetStreamingLevels())
+		{
+			if (OtherLevel == nullptr || OtherLevel == this)
+			{
+				continue;
+			}
+
+			const ECurrentState OtherState = OtherLevel->GetCurrentState();
+			if (OtherState == ECurrentState::FailedToLoad || OtherState == ECurrentState::Removed || (OtherState == ECurrentState::Unloaded && (OtherLevel->TargetState == ETargetState::Unloaded || OtherLevel->TargetState == ETargetState::UnloadedAndRemoved)))
+			{
+				// If the other level isn't loaded or in the process of being loaded we don't need to consider it
+				continue;
+			}
+
+			if (OtherLevel->WorldAsset == WorldAsset)
+			{
+				UE_LOG(LogLevelStreaming, Warning, TEXT("Streaming Level '%s' uses same destination for level ('%s') as '%s'. Level cannot be loaded again and this StreamingLevel will be flagged as failed to load."), *GetPathName(), *WorldAsset.GetLongPackageName(), *OtherLevel->GetPathName());
+				return false;
+			}
+		}
+
+		return true;
+	};
+
+	if (!ValidateUniqueLevel())
+	{
+		CurrentState = ECurrentState::FailedToLoad;
 		return false;
 	}
 
@@ -1607,7 +1639,7 @@ void ULevelStreamingDynamic::PostLoad()
 	// Initialize startup state of the streaming level
 	if ( GetWorld()->IsGameWorld() )
 	{
-		bShouldBeLoaded = bInitiallyLoaded;
+		SetShouldBeLoaded(bInitiallyLoaded);
 		SetShouldBeVisible(bInitiallyVisible);
 	}
 }

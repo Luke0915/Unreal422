@@ -95,6 +95,16 @@ FMovieSceneCaptureSettings::FMovieSceneCaptureSettings()
 	bAllowTurning = false;
 	bShowPlayer = false;
 	bShowHUD = false;
+	bUsePathTracer = false;
+	PathTracerSamplePerPixel = 16;
+
+#if PLATFORM_MAC
+	MovieExtension = TEXT(".mov");
+#elif PLATFORM_UNIX
+	MovieExtension = TEXT(".unsupp");
+#else
+	MovieExtension = TEXT(".avi");
+#endif
 }
 
 UMovieSceneCapture::UMovieSceneCapture(const FObjectInitializer& Initializer)
@@ -284,6 +294,17 @@ void UMovieSceneCapture::Initialize(TSharedPtr<FSceneViewport> InSceneViewport, 
 			Settings.bCinematicMode = bOverrideCinematicMode;
 		}
 
+		bool bOverridePathTracer;
+		if (FParse::Bool(FCommandLine::Get(), TEXT("-PathTracer="), bOverridePathTracer))
+		{
+			Settings.bUsePathTracer = bOverridePathTracer;
+		}
+
+		uint16 OverridePathTracerSamplePerPixel;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-PathTracerSamplePerPixel="), OverridePathTracerSamplePerPixel))
+		{
+			Settings.PathTracerSamplePerPixel = OverridePathTracerSamplePerPixel;
+		}
 
 		bool bProtocolOverride = false;
 
@@ -362,6 +383,11 @@ void UMovieSceneCapture::Initialize(TSharedPtr<FSceneViewport> InSceneViewport, 
 				UE_LOG(LogMovieSceneCapture, Error, TEXT("Unrecognized capture frame rate: %s."), *FrameRateOverrideString);
 			}
 		}
+	}
+
+	if (!IsRayTracingEnabled())
+	{
+		Settings.bUsePathTracer = false;
 	}
 
 	bFinalizeWhenReady = false;
@@ -506,8 +532,9 @@ void UMovieSceneCapture::CaptureThisFrame(float DeltaSeconds)
 		}
 		UE_LOG(LogMovieSceneCapture, Verbose, TEXT("Captured frame: %d"), CachedMetrics.Frame);
 		++CachedMetrics.Frame;
-		}
+	}
 }
+
 void UMovieSceneCapture::Tick(float DeltaSeconds)
 {
 	if (ImageCaptureProtocol)

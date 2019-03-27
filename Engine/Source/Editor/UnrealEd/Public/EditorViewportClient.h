@@ -278,6 +278,16 @@ public:
 	FEditorViewportClient& operator=(const FEditorViewportClient&) = delete;
 
 	/**
+	 * Retrieves the FPreviewScene used by this instance of FEditorViewportClient.
+	 *
+	 * @return		The internal FPreviewScene pointer.
+	 */
+	FPreviewScene* GetPreviewScene()
+	{
+		return PreviewScene;
+	}
+
+	/**
 	 * Toggles whether or not the viewport updates in realtime and returns the updated state.
 	 *
 	 * @return		The current state of the realtime flag.
@@ -916,7 +926,13 @@ public:
 	 */
 	void MoveViewportCamera( const FVector& InDrag, const FRotator& InRot, bool bDollyCamera = false );
 
-	
+	/** 
+	 * Get the custom pivot point around which the camera should orbit for this viewport
+	 * @param	OutPivot	The custom pivot point specified by the viewport
+	 * @return	true if a custom pivot point was specified, false otherwise.
+	 */
+	virtual bool GetPivotForOrbit(FVector& OutPivot) const;
+
 	// Utility functions to return the modifier key states
 	bool IsAltPressed() const;
 	bool IsCtrlPressed() const;
@@ -961,7 +977,11 @@ public:
 	
 	EAxisList::Type GetCurrentWidgetAxis() const;
 
+	/** Overrides current cursor. */
 	void SetRequiredCursorOverride( bool WantOverride, EMouseCursor::Type RequiredCursor = EMouseCursor::Default ); 
+
+	/** Overrides current widget mode */
+	void SetWidgetModeOverride(FWidget::EWidgetMode InWidgetMode);
 
 	/** Get the camera speed for this viewport */
 	float GetCameraSpeed() const;
@@ -1106,7 +1126,22 @@ public:
 	 * @return	true if the supplied buffer visualization mode is checked
 	 */
 	bool IsBufferVisualizationModeSelected( FName InName ) const;
-	
+
+	/**
+	 * Changes the ray tracing debug visualization mode for this viewport
+	 *
+	 * @param InName	The ID of the required ray tracing debug visualization mode
+	 */
+	void ChangeRayTracingDebugVisualizationMode(FName InName);
+
+	/**
+	 * Checks if a ray tracing debug visualization mode is selected
+	 *
+	 * @param InName	The ID of the required ray tracing debug visualization mode
+	 * @return	true if the supplied ray tracing debug visualization mode is checked
+	 */
+	bool IsRayTracingDebugVisualizationModeSelected(FName InName) const;
+
 	/** @return True if PreviewResolutionFraction is supported. */
 	bool SupportsPreviewResolutionFraction() const;
 
@@ -1392,6 +1427,8 @@ public:
 	FExposureSettings		ExposureSettings;
 
 	FName CurrentBufferVisualizationMode;
+
+	FName CurrentRayTracingDebugVisualizationMode;
 
 	/** The number of frames since this viewport was last drawn.  Only applies to linked orthographic movement. */
 	int32 FramesSinceLastDraw;

@@ -701,9 +701,16 @@ public:
 	/** Array of physical interactions for the frame. This is a temporary solution for a more permanent force system and should not be used directly*/
 	TArray<FPendingRadialForces> PendingRadialForces;
 
-	/** Set the anim instance class. Clears and re-initializes the anim instance with the new class and sets animation mode to 'AnimationBlueprint' */
-	UFUNCTION(BlueprintCallable, Category="Components|SkeletalMesh", meta=(Keywords = "AnimBlueprint", DisplayName = "Set Anim Instance Class"))
+	UE_DEPRECATED(4.23, "This function is deprecated. Please use SetAnimClass instead. ")
 	virtual void K2_SetAnimInstanceClass(class UClass* NewClass);
+
+	/** Set the anim instance class. Clears and re-initializes the anim instance with the new class and sets animation mode to 'AnimationBlueprint' */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh", meta = (Keywords = "AnimBlueprint", DisplayName = "Set Anim Instance Class"))
+	virtual void SetAnimClass(class UClass* NewClass);
+
+	/** Get the anim instance class via getter callable by sequencer.  */
+	UFUNCTION(BlueprintInternalUseOnly)
+	class UClass*  GetAnimClass();
 
 	/** Set the anim instance class. Clears and re-initializes the anim instance with the new class and sets animation mode to 'AnimationBlueprint' */
 	void SetAnimInstanceClass(class UClass* NewClass);
@@ -1297,7 +1304,6 @@ public:
 public:
 	//~ Begin UObject Interface.
 	virtual void Serialize(FArchive& Ar) override;
-	virtual void NotifyObjectReferenceEliminated() const override;
 	virtual void PostLoad() override;
 #if WITH_EDITOR
 	DECLARE_MULTICAST_DELEGATE(FOnSkeletalMeshPropertyChangedMulticaster)
@@ -1855,6 +1861,7 @@ public:
 
 public:
 	bool IsAnimBlueprintInstanced() const;
+	void ClearAnimScriptInstance();
 
 protected:
 	bool NeedToSpawnAnimScriptInstance() const;
@@ -1874,7 +1881,7 @@ private:
 	void EndPhysicsTickComponent(FSkeletalMeshComponentEndPhysicsTickFunction& ThisTickFunction);
 
 	/** Evaluate Anim System **/
-	void EvaluateAnimation(const USkeletalMesh* InSkeletalMesh, UAnimInstance* InAnimInstance, TArray<FTransform>& OutBoneSpaceTransforms, FVector& OutRootBoneTranslation, FBlendedHeapCurve& OutCurve, FCompactPose& OutPose) const;
+	void EvaluateAnimation(const USkeletalMesh* InSkeletalMesh, UAnimInstance* InAnimInstance, FVector& OutRootBoneTranslation, FBlendedHeapCurve& OutCurve, FCompactPose& OutPose) const;
 
 	/** Queues up tasks for parallel update/evaluation, as well as the chained game thread completion task */
 	void DispatchParallelEvaluationTasks(FActorComponentTickFunction* TickFunction);
@@ -1897,7 +1904,6 @@ private:
 
 	bool DoAnyPhysicsBodiesHaveWeight() const;
 
-	void ClearAnimScriptInstance();
 	virtual void RefreshMorphTargets() override;
 
 	void GetWindForCloth_GameThread(FVector& WindVector, float& WindAdaption) const;

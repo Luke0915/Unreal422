@@ -232,7 +232,7 @@ void FParticleSystemWorldManager::AddReferencedObjects(FReferenceCollector& Coll
 	if (World)
 	{
 		//UE_LOG(LogParticles, Warning, TEXT("| AddReferencedObjects - %d - 0x%p - %s |"), ManagedPSCs.Num(), World, *World->GetFullName());
-		Collector.AddReferencedObject(World);
+		// World doesn't need to be added to the reference list. It will be handle via OnWorldInit & OnWorldCleanup & OnPreWorldFinishDestroy
 
 		for (int32 PSCIndex = 0; PSCIndex < ManagedPSCs.Num(); ++PSCIndex)
 		{
@@ -457,6 +457,7 @@ FORCEINLINE void FParticleSystemWorldManager::FlushAsyncTicks(const FGraphEventR
 {
 	if (AsyncTickBatch.Num() > 0)
 	{
+		LLM_SCOPE(ELLMTag::Particles);
 		FGraphEventRef AsyncTask = TGraphTask<FParticleManagerAsyncTask>::CreateTask(nullptr, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(this, AsyncTickBatch);
 
 #if PSC_MAN_TG_WAIT_FOR_ASYNC
@@ -647,18 +648,8 @@ void FParticleSystemWorldManager::Tick(ETickingGroup TickGroup, float DeltaTime,
 	bool bAllowTickConcurrent = !FXConsoleVariables::bFreezeParticleSimulation && FXConsoleVariables::bAllowAsyncTick && FApp::ShouldUseThreadingForPerformance() && GDistributionType != 0;
 	if (bAllowTickConcurrent)
 	{
-		//Have the final tick group wait for completion until all our async work is complete.
-		//This is required for safety as afaik there is no other mechanism that would prevent our async tasks running past the GT portion of the frame and overlapping with the EOF updates.
-		//If this is an incorrect assumption then this can be discarded.
-		if (TickFunctions.Last().IsCompletionHandleValid())
-		{
-			ProcessTickList<true>(DeltaTime, TickType, TickGroup, TickLists_Concurrent, TickFunctions.Last().GetCompletionHandle());
-		}
-		else
-		{
-			UE_LOG(LogParticles, Warning, TEXT("PSC Manager final tick function did not have a valid completion handle. Waiting on this tick group."));
-			ProcessTickList<true>(DeltaTime, TickType, TickGroup, TickLists_Concurrent, MyCompletionGraphEvent);
-		}
+		//TODO: Currently waiting on this tick group but we should be able to allow these tasks to run over the whole frame if we can implement some synchronization so they don't overrun the EOF updates.
+		ProcessTickList<true>(DeltaTime, TickType, TickGroup, TickLists_Concurrent, MyCompletionGraphEvent);
 	}
 	else
 	{

@@ -44,7 +44,9 @@ void UImage::ReleaseSlateResources(bool bReleaseChildren)
 
 TSharedRef<SWidget> UImage::RebuildWidget()
 {
-	MyImage = SNew(SImage);
+	MyImage = SNew(SImage)
+			.FlipForRightToLeftFlowDirection(bFlipForRightToLeftFlowDirection);
+
 	return MyImage.ToSharedRef();
 }
 
@@ -122,6 +124,20 @@ void UImage::SetBrushTintColor(FSlateColor TintColor)
 	if(Brush.TintColor != TintColor)
 	{
 		Brush.TintColor = TintColor;
+
+		if (MyImage.IsValid())
+		{
+			MyImage->SetImage(&Brush);
+			MyImage->Invalidate(EInvalidateWidget::PaintAndVolatility);
+		}
+	}
+}
+
+void UImage::SetBrushResourceObject(UObject* ResourceObject)
+{
+	if (Brush.GetResourceObject() != ResourceObject)
+	{
+		Brush.SetResourceObject(ResourceObject);
 
 		if (MyImage.IsValid())
 		{

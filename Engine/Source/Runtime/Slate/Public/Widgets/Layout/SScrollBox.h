@@ -174,6 +174,8 @@ public:
 
 	void ScrollToEnd();
 
+	void EndInertialScrolling();
+
 	/** 
 	 * Attempt to scroll a widget into view, will safely handle non-descendant widgets 
 	 *
@@ -186,12 +188,16 @@ public:
 	/** Get the current orientation of the scrollbox. */
 	EOrientation GetOrientation();
 
+	void SetConsumeMouseWheel(EConsumeMouseWheel NewConsumeMouseWheel);
+
 	/** Sets the current orientation of the scrollbox and updates the layout */
 	void SetOrientation(EOrientation InOrientation);
 
 	void SetScrollBarVisibility(EVisibility InVisibility);
 
 	void SetScrollBarAlwaysVisible(bool InAlwaysVisible);
+	
+	void SetScrollBarTrackAlwaysVisible(bool InAlwaysVisible);
 
 	void SetScrollBarThickness(FVector2D InThickness);
 
@@ -280,8 +286,6 @@ private:
 	bool CanUseInertialScroll(float ScrollAmount) const;
 
 	void BeginInertialScrolling();
-
-	void EndInertialScrolling();
 
 	TSharedPtr<SWidget> GetKeyboardFocusableWidget(TSharedPtr<SWidget> InWidget);
 

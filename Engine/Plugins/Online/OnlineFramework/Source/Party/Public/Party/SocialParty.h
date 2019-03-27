@@ -6,11 +6,12 @@
 #include "Party/PartyDataReplicator.h"
 
 #include "PartyBeaconState.h"
+#include "SpectatorBeaconState.h"
+#include "SpectatorBeaconClient.h"
 #include "Interfaces/OnlinePartyInterface.h"
 #include "Interfaces/OnlineChatInterface.h"
 #include "Containers/Queue.h"
 #include "Engine/EngineBaseTypes.h"
-
 #include "SocialParty.generated.h"
 
 class APartyBeaconClient;
@@ -125,6 +126,7 @@ public:
 	const FOnlinePartyId& GetPartyId() const;
 
 	EPartyState GetOssPartyState() const;
+	EPartyState GetOssPartyPreviousState() const;
 
 	bool IsCurrentlyCrossplaying() const;
 	void StayWithPartyOnExit(bool bInStayWithParty);
@@ -166,7 +168,7 @@ public:
 	DECLARE_EVENT_OneParam(USocialParty, FOnPartyConfigurationChanged, const FPartyConfiguration&);
 	FOnPartyConfigurationChanged& OnPartyConfigurationChanged() const { return OnPartyConfigurationChangedEvent; }
 
-	DECLARE_EVENT_OneParam(USocialParty, FOnPartyStateChanged, EPartyState);
+	DECLARE_EVENT_TwoParams(USocialParty, FOnPartyStateChanged, EPartyState, EPartyState);
 	FOnPartyStateChanged& OnPartyStateChanged() const { return OnPartyStateChangedEvent; }
 
 	DECLARE_EVENT_OneParam(USocialParty, FOnPartyFunctionalityDegradedChanged, bool /*bFunctionalityDegraded*/);
@@ -177,6 +179,9 @@ public:
 
 	DECLARE_EVENT_TwoParams(USocialParty, FOnPartyJIPApproved, const FOnlinePartyId&, bool /* Success*/);
 	FOnPartyJIPApproved& OnPartyJIPApproved() const { return OnPartyJIPApprovedEvent; }
+
+	DECLARE_EVENT_TwoParams(USocialParty, FOnPartyMemberConnectionStatusChanged, UPartyMember&, EMemberConnectionStatus);
+	FOnPartyMemberConnectionStatusChanged& OnPartyMemberConnectionStatusChanged() const { return OnPartyMemberConnectionStatusChangedEvent; }
 
 	const FPartyPrivacySettings& GetPrivacySettings() const;
 
@@ -213,6 +218,7 @@ protected:
 	virtual FPartyPrivacySettings GetDesiredPrivacySettings() const;
 	virtual void OnLocalPlayerIsLeaderChanged(bool bIsLeader);
 	virtual void HandlePrivacySettingsChanged(const FPartyPrivacySettings& NewPrivacySettings);
+	virtual void OnMemberCreatedInternal(UPartyMember& NewMember);
 	virtual void OnLeftPartyInternal(EMemberExitedReason Reason);
 
 	virtual void OnInviteSentInternal(ESocialSubsystem SubsystemType, const USocialUser& InvitedUser, bool bWasSuccessful);
@@ -229,6 +235,7 @@ protected:
 	/** Override in child classes to specify the type of UPartyMember to create */
 	virtual TSubclassOf<UPartyMember> GetDesiredMemberClass(bool bLocalPlayer) const;
 
+	bool ApplyCrossplayRestriction(FPartyJoinApproval& JoinApproval, const FUserPlatform& Platform, const FOnlinePartyData& JoinData) const;
 	FName GetGameSessionName() const;
 	bool IsInRestrictedGameSession() const;
 
@@ -242,12 +249,25 @@ protected:
 
 	APartyBeaconClient* GetReservationBeaconClient() const { return ReservationBeaconClient; }
 
+	/**
+	* Create a spectator beacon and connect to the server to get approval for new spectators
+	*/
+	void ConnectToSpectatorBeacon();
+	void CleanupSpectatorBeacon();
+	ASpectatorBeaconClient* CreateSpectatorBeaconClient();
+
+	ASpectatorBeaconClient* GetSpectatorBeaconClient() const { return SpectatorBeaconClient; }
+
 	/** Child classes MUST call EstablishRepDataInstance() on this using their member rep data struct instance */
 	FPartyDataReplicator PartyDataReplicator;
 
 	/** Reservation beacon class for getting server approval for new party members while in a game */
 	UPROPERTY()
 	TSubclassOf<APartyBeaconClient> ReservationBeaconClientClass;
+
+	/** Spectator beacon class for getting server approval for new spectators while in a game */
+	UPROPERTY()
+		TSubclassOf<ASpectatorBeaconClient> SpectatorBeaconClientClass;
 
 private:
 	UPartyMember* GetOrCreatePartyMember(const FUniqueNetId& MemberId);
@@ -267,7 +287,7 @@ private:
 	UPartyMember* GetMemberInternal(const FUniqueNetIdRepl& MemberId) const;
 
 private:	// Handlers
-	void HandlePartyStateChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EPartyState PartyState);
+	void HandlePartyStateChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EPartyState PartyState, EPartyState PreviousPartyState);
 	void HandlePartyConfigChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const TSharedRef<FPartyConfiguration>& PartyConfig);
 	void HandleUpdatePartyConfigComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EUpdateConfigCompletionResult Result);
 	void HandlePartyDataReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const TSharedRef<FOnlinePartyData>& PartyData);
@@ -325,16 +345,27 @@ private:
 	 * Some network error handlers may be called after we cleanup our beacon connection.
 	 */
 	FName LastReservationBeaconClientNetDriverName;
-
+	
 	/** Reservation beacon client instance while getting approval for new party members*/
 	UPROPERTY()
 	APartyBeaconClient* ReservationBeaconClient = nullptr;
+	
+	/**
+	* Last known spectator beacon client net driver name
+	* Intended to be used to detect network errors related to our current or last spectator beacon client's net driver.
+	* Some network error handlers may be called after we cleanup our beacon connection.
+	*/
+	FName LastSpectatorBeaconClientNetDriverName;
+	
+	/** Spectator beacon client instance while getting approval for spectator*/
+	UPROPERTY()
+	ASpectatorBeaconClient* SpectatorBeaconClient = nullptr;
 
 	/**
 	 * True when we have limited functionality due to lacking an xmpp connection.
 	 * Don't set directly, use the private setter to trigger events appropriately.
 	 */
-	bool bIsMissingXmppConnection = false;
+	TOptional<bool> bIsMissingXmppConnection;
 	bool bIsMissingPlatformSession = false;
 
 	bool bIsLeavingParty = false;
@@ -345,6 +376,7 @@ private:
 	mutable FOnPartyMemberCreated OnPartyMemberCreatedEvent;
 	mutable FOnPartyConfigurationChanged OnPartyConfigurationChangedEvent;
 	mutable FOnPartyStateChanged OnPartyStateChangedEvent;
+	mutable FOnPartyMemberConnectionStatusChanged OnPartyMemberConnectionStatusChangedEvent;
 	mutable FOnPartyFunctionalityDegradedChanged OnPartyFunctionalityDegradedChangedEvent;
 	mutable FOnInviteSent OnInviteSentEvent;
 	mutable FOnPartyJIPApproved OnPartyJIPApprovedEvent;

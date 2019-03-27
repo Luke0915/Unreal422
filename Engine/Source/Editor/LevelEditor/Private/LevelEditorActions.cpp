@@ -90,6 +90,11 @@
 #include "ActorGroupingUtils.h"
 #include "LevelUtils.h"
 #include "ISceneOutliner.h"
+#include "ISettingsModule.h"
+
+#if WITH_LIVE_CODING
+#include "ILiveCodingModule.h"
+#endif
 
 DEFINE_LOG_CATEGORY_STATIC(LevelEditorActions, Log, All);
 
@@ -365,7 +370,7 @@ bool FLevelEditorActionCallbacks::ToggleFavorite_CanExecute()
 		const int32 NumFavorites = MRUFavorites.GetNumFavorites();
 		// Disable the favorites button if the map isn't associated to a file yet (new map, never before saved, etc.)
 		const FString PackageName = GetWorld()->GetOutermost()->GetName();
-		return (NumFavorites <= FLevelEditorCommands::Get().OpenFavoriteFileCommands.Num() || MRUFavorites.ContainsFavoritesItem(PackageName));
+		return (NumFavorites < FLevelEditorCommands::Get().OpenFavoriteFileCommands.Num() || MRUFavorites.ContainsFavoritesItem(PackageName));
 	}
 	return false;
 }
@@ -574,26 +579,29 @@ void FLevelEditorActionCallbacks::ToggleFeatureLevelPreview()
 
 bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewEnabled()
 {
-	if (GEditor->PlayWorld || GUnrealEd->bIsSimulatingInEditor)
+	if (GEditor->PlayWorld || GUnrealEd->bIsSimulatingInEditor || GUnrealEd->IsLightingBuildCurrentlyRunning())
 	{
 		return false;
+	}
+	if (GEditor->PreviewFeatureLevel == ERHIFeatureLevel::SM5)
+	{
+		return true;
 	}
 	return GEditor->IsFeatureLevelPreviewEnabled();
 }
 
 bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewActive()
 {
-	return GEditor->IsFeatureLevelPreviewEnabled() && GEditor->IsFeatureLevelPreviewActive();
-}
-
-bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewDropdownEnabled()
-{
-	if (GEditor->PlayWorld || GUnrealEd->bIsSimulatingInEditor)
+	if (GEditor->PreviewFeatureLevel == ERHIFeatureLevel::SM5)
 	{
 		return false;
 	}
+	return GEditor->IsFeatureLevelPreviewEnabled() && GEditor->IsFeatureLevelPreviewActive();
+}
 
-	return true;
+bool FLevelEditorActionCallbacks::IsPreviewModeButtonVisible()
+{
+	return GEditor->PreviewFeatureLevel != ERHIFeatureLevel::SM5;
 }
 
 void FLevelEditorActionCallbacks::SetPreviewPlatform(FName MaterialQualityPlatform, ERHIFeatureLevel::Type PreviewFeatureLevel)
@@ -1023,6 +1031,23 @@ bool FLevelEditorActionCallbacks::CanShowSourceCodeActions()
 
 void FLevelEditorActionCallbacks::RecompileGameCode_Clicked()
 {
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr && LiveCoding->IsEnabledByDefault())
+	{
+		LiveCoding->EnableForSession(true);
+		if (LiveCoding->IsEnabledForSession())
+		{
+			LiveCoding->Compile();
+		}
+		else
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoLiveCodingCompileAfterHotReload", "Live Coding cannot be enabled after hot-reload has been used. Please restart the editor."));
+		}
+		return;
+	}
+#endif
+
 	// Don't allow a recompile while already compiling!
 	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>(HotReloadModule);
 	if( !HotReloadSupport.IsCurrentlyCompiling() )
@@ -1034,6 +1059,14 @@ void FLevelEditorActionCallbacks::RecompileGameCode_Clicked()
 
 bool FLevelEditorActionCallbacks::Recompile_CanExecute()
 {
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr && LiveCoding->IsEnabledByDefault())
+	{
+		return !LiveCoding->IsCompiling();
+	}
+#endif
+
 	// We can't recompile while in PIE
 	if (GEditor->bIsPlayWorldQueued || GEditor->PlayWorld)
 	{
@@ -1045,6 +1078,68 @@ bool FLevelEditorActionCallbacks::Recompile_CanExecute()
 	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>(HotReloadModule);
 	return !HotReloadSupport.IsCurrentlyCompiling() && !(FApp::GetEngineIsPromotedBuild() && FEngineBuildSettings::IsPerforceBuild());
 }
+
+#if WITH_LIVE_CODING
+void FLevelEditorActionCallbacks::LiveCoding_ToggleEnabled()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr)
+	{
+		LiveCoding->EnableByDefault(!LiveCoding->IsEnabledByDefault());
+
+		if (LiveCoding->IsEnabledByDefault() && !LiveCoding->IsEnabledForSession())
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoEnableLiveCodingAfterHotReload", "Live Coding cannot be enabled after hot-reload has been used. Please restart the editor."));
+		}
+	}
+}
+
+bool FLevelEditorActionCallbacks::LiveCoding_IsEnabled( )
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	return LiveCoding != nullptr && LiveCoding->IsEnabledByDefault();
+}
+
+void FLevelEditorActionCallbacks::LiveCoding_StartSession_Clicked()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr)
+	{
+		LiveCoding->EnableForSession(true);
+
+		if (!LiveCoding->IsEnabledForSession())
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoStartedLiveCodingAfterHotReload", "Live Coding cannot be started after hot-reload has been used. Please restart the editor."));
+		}
+	}
+}
+
+bool FLevelEditorActionCallbacks::LiveCoding_CanStartSession()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	return LiveCoding != nullptr && LiveCoding->IsEnabledByDefault() && !LiveCoding->HasStarted();
+}
+
+void FLevelEditorActionCallbacks::LiveCoding_ShowConsole_Clicked()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding!= nullptr)
+	{
+		LiveCoding->ShowConsole();
+	}
+}
+
+bool FLevelEditorActionCallbacks::LiveCoding_CanShowConsole()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	return LiveCoding!= nullptr && LiveCoding->IsEnabledForSession();
+}
+
+void FLevelEditorActionCallbacks::LiveCoding_Settings_Clicked()
+{
+	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Editor", "General", "Live Coding");
+}
+#endif
 
 void FLevelEditorActionCallbacks::ConnectToSourceControl_Clicked()
 {
@@ -3044,7 +3139,7 @@ void FLevelEditorCommands::RegisterCommands()
 			.DefaultChord( FInputChord() );
 		OpenRecentFileCommands.Add( OpenRecentFile );
 	}
-	for (int32 CurFavoriteIndex = 0; CurFavoriteIndex < FLevelEditorCommands::MaxRecentFiles; ++CurFavoriteIndex)
+	for (int32 CurFavoriteIndex = 0; CurFavoriteIndex < FLevelEditorCommands::MaxFavoriteFiles; ++CurFavoriteIndex)
 	{
 		// NOTE: The actual label and tool-tip will be overridden at runtime when the command is bound to a menu item, however
 		// we still need to set one here so that the key bindings UI can function properly
@@ -3091,6 +3186,13 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( MapCheck, "Open Map Check", "Checks map for errors", EUserInterfaceActionType::Button, FInputChord() );
 
 	UI_COMMAND( RecompileGameCode, "Recompile Game Code", "Recompiles and reloads C++ code for game systems on the fly", EUserInterfaceActionType::Button, FInputChord( EKeys::P, EModifierKey::Alt | EModifierKey::Control | EModifierKey::Shift ) );
+
+#if WITH_LIVE_CODING
+	UI_COMMAND( LiveCoding_Enable, "Enable Live Coding (Experimental)", "Hot-patches C++ function changes into the current process. Currently does not allow class layout changes.", EUserInterfaceActionType::ToggleButton, FInputChord() );
+	UI_COMMAND( LiveCoding_StartSession, "Start Session", "Starts a live coding session.", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( LiveCoding_ShowConsole, "Show Console", "Displays the live coding console window.", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( LiveCoding_Settings, "Settings...", "Open the live coding settings", EUserInterfaceActionType::Button, FInputChord() );
+#endif
 
 	UI_COMMAND( EditAsset, "Edit Asset", "Edits the asset associated with the selected actor", EUserInterfaceActionType::Button, FInputChord( EKeys::E, EModifierKey::Control ) );
 	UI_COMMAND( EditAssetNoConfirmMultiple, "Edit Asset", "Edits the asset associated with the selected actor", EUserInterfaceActionType::Button, FInputChord( EKeys::E, EModifierKey::Control | EModifierKey::Shift ) );
@@ -3310,13 +3412,13 @@ void FLevelEditorCommands::RegisterCommands()
 
 	UI_COMMAND(ToggleFeatureLevelPreview, "Preview Platform", "Preview Platform", EUserInterfaceActionType::ToggleButton, FInputChord());
 
-	UI_COMMAND(PreviewPlatformOverride_AndroidGLES2, "Preview as Android ES2", "Mobile preview using Android's quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(PreviewPlatformOverride_DefaultES2, "Preview as HTML5", "HTML5 preview.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_AndroidGLES2, "Android ES2", "Mobile preview using Android's quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_DefaultES2, "HTML5", "HTML5 preview.", EUserInterfaceActionType::RadioButton, FInputChord());
 
 	UI_COMMAND(PreviewPlatformOverride_DefaultES31, "Default High-End Mobile", "Use default mobile settings (no quality overrides).", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(PreviewPlatformOverride_AndroidGLES31, "Preview as Android ES31", "Mobile preview using Android ES3.1 quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(PreviewPlatformOverride_AndroidVulkanES31, "Preview as Android Vulkan", "Mobile preview using Android Vulkan quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(PreviewPlatformOverride_IOSMetalES31, "Preview as iOS", "Mobile preview using iOS material quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_AndroidGLES31, "Android ES 3.1", "Mobile preview using Android ES3.1 quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_AndroidVulkanES31, "Android Vulkan", "Mobile preview using Android Vulkan quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_IOSMetalES31, "iOS", "Mobile preview using iOS material quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
 
 
 	UI_COMMAND( ConnectToSourceControl, "Connect to Source Control...", "Opens a dialog to connect to source control.", EUserInterfaceActionType::Button, FInputChord());
@@ -3332,8 +3434,8 @@ void FLevelEditorCommands::RegisterCommands()
 	{
 		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_ES2", "Mobile / HTML5"),
 		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_ES31", "High-End Mobile"),
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_SM4", "Preview as SM4"),
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_SM5", "No Preview Device. (View as SM5)"),
+		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_SM4", "Shader Model 4"),
+		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_SM5", "Shader Model 5"),
 	};
 
 	static const FText FeatureLevelToolTips[ERHIFeatureLevel::Num] = 

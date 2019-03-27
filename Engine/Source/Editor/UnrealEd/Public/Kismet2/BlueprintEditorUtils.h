@@ -183,7 +183,7 @@ public:
 	/** 
 	 * Helper function to patch the new CDO into the linker where the old one existed 
 	 */
-	static void PatchNewCDOIntoLinker(UObject* CDO, FLinkerLoad* Linker, int32 ExportIndex, TArray<UObject*>& ObjLoaded);
+	static void PatchNewCDOIntoLinker(UObject* CDO, FLinkerLoad* Linker, int32 ExportIndex, FUObjectSerializeContext* InLoadContext);
 
 	/** 
 	 * Procedure used to remove old function implementations and child properties from data only blueprints.
@@ -201,7 +201,7 @@ public:
 	/**
 	 * Regenerates the class at class load time, and refreshes the blueprint
 	 */
-	static UClass* RegenerateBlueprintClass(UBlueprint* Blueprint, UClass* ClassToRegenerate, UObject* PreviousCDO, TArray<UObject*>& ObjLoaded);
+	static UClass* RegenerateBlueprintClass(UBlueprint* Blueprint, UClass* ClassToRegenerate, UObject* PreviousCDO);
 	
 	/**
 	 * Links external dependencies
@@ -350,7 +350,7 @@ public:
 				// We need to mark the function entry as editable so that we can
 				// set metadata on it if it is a blutility:
 				K2Schema->MarkFunctionEntryAsEditable(Graph, true);
-				if( IsBlutility( Blueprint ))
+				if( IsEditorUtilityBlueprint( Blueprint ))
 				{
 					if( FKismetUserDeclaredFunctionMetadata* MetaData = GetGraphFunctionMetaData( Graph ))
 					{
@@ -524,7 +524,7 @@ public:
 	static bool IsBlueprintConst(const UBlueprint* Blueprint);
 
 	/** Returns whether or not the blueprint is a blutility */
-	static bool IsBlutility(const UBlueprint* Blueprint);
+	static bool IsEditorUtilityBlueprint(const UBlueprint* Blueprint);
 
 	/**
 	 * Whether or not this is an actor-based blueprint, and supports features like the uber-graph, components, etc

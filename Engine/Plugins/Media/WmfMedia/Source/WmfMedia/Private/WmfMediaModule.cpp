@@ -4,6 +4,9 @@
 
 #include "IMediaCaptureSupport.h"
 #include "Modules/ModuleManager.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/Paths.h"
+#include "ShaderCore.h"
 
 #include "IWmfMediaModule.h"
 
@@ -65,6 +68,11 @@ public:
 public:
 
 	//~ IWmfMediaModule interface
+
+	virtual bool IsInitialized() const override
+	{
+		return Initialized;
+	}
 
 	virtual TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CreatePlayer(IMediaEventSink& EventSink) override
 	{

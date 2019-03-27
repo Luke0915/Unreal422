@@ -13,6 +13,7 @@
 #include "Misc/FeedbackContext.h"
 #include "Misc/OutputDeviceConsole.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/EnumClassFlags.h"
 #include "UObject/ErrorException.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectAllocator.h"
@@ -40,6 +41,7 @@
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/GarbageCollection.h"
+#include "UObject/UObjectThreadContext.h"
 
 // This flag enables some expensive class tree validation that is meant to catch mutations of 
 // the class tree outside of SetSuperStruct. It has been disabled because loading blueprints 
@@ -585,16 +587,19 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 	{
 		// Preload everything before we calculate size, as the preload may end up recursively linking things
 		UStruct* InheritanceSuper = GetInheritanceSuper();
-		if (InheritanceSuper)
+		if (Ar.IsLoading())
 		{
-			Ar.Preload(InheritanceSuper);			
-		}
-
-		for (UField* Field = Children; Field; Field = Field->Next)
-		{
-			if (!GEventDrivenLoaderEnabled || !Cast<UFunction>(Field))
+			if (InheritanceSuper)
 			{
-				Ar.Preload(Field);
+				Ar.Preload(InheritanceSuper);
+			}
+
+			for (UField* Field = Children; Field; Field = Field->Next)
+			{
+				if (!GEventDrivenLoaderEnabled || !Cast<UFunction>(Field))
+				{
+					Ar.Preload(Field);
+				}
 			}
 		}
 
@@ -3069,6 +3074,13 @@ UObject* UClass::CreateDefaultObject()
 				check(ClassDefaultObject);
 				// Blueprint CDOs have their properties always initialized.
 				const bool bShouldInitializeProperties = !HasAnyClassFlags(CLASS_Native | CLASS_Intrinsic);
+				// Register the offsets of any sparse delegates this class introduces with the sparse delegate storage
+				for (TFieldIterator<UMulticastSparseDelegateProperty> SparseDelegateIt(this, EFieldIteratorFlags::ExcludeSuper, EFieldIteratorFlags::ExcludeDeprecated); SparseDelegateIt; ++SparseDelegateIt)
+				{
+					const FSparseDelegate& SparseDelegate = SparseDelegateIt->GetPropertyValue_InContainer(ClassDefaultObject);
+					USparseDelegateFunction* SparseDelegateFunction = CastChecked<USparseDelegateFunction>(SparseDelegateIt->SignatureFunction);
+					FSparseDelegateStorage::RegisterDelegateOffset(ClassDefaultObject, SparseDelegateFunction->DelegateName, (size_t)&SparseDelegate - (size_t)ClassDefaultObject);
+				}
 				(*ClassConstructor)(FObjectInitializer(ClassDefaultObject, ParentDefaultObject, false, bShouldInitializeProperties));
 				if (bDoNotify)
 				{
@@ -3383,6 +3395,14 @@ void UClass::Link(FArchive& Ar, bool bRelinkExistingProperties)
 	Super::Link(Ar, bRelinkExistingProperties);
 }
 
+#if (UE_BUILD_SHIPPING)
+static int32 GValidateReplicatedProperties = 0;
+#else 
+static int32 GValidateReplicatedProperties = 1;
+#endif
+
+static FAutoConsoleVariable CVarValidateReplicatedPropertyRegistration(TEXT("net.ValidateReplicatedPropertyRegistration"), GValidateReplicatedProperties, TEXT("Warns if replicated properties were not registered in GetLifetimeReplicatedProps."));
+
 void UClass::SetUpRuntimeReplicationData()
 {
 	if (!HasAnyClassFlags(CLASS_ReplicationDataIsSetUp) && PropertyLink != NULL)
@@ -3466,6 +3486,69 @@ void UClass::SetUpRuntimeReplicationData()
 		Sort(NetFields.GetData(), NetFields.Num(), FCompareUFieldNames());
 
 		ClassFlags |= CLASS_ReplicationDataIsSetUp;
+
+		if (GValidateReplicatedProperties != 0)
+		{
+			ValidateRuntimeReplicationData();
+		}
+	}
+}
+
+void UClass::ValidateRuntimeReplicationData()
+{
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Class ValidateRuntimeReplicationData"), STAT_Class_ValidateRuntimeReplicationData, STATGROUP_Game);
+
+	if (HasAnyClassFlags(CLASS_CompiledFromBlueprint))
+	{
+		// Blueprint classes don't always generate a GetLifetimeReplicatedProps function. 
+		// Assume the Blueprint compiler was ok to do this.
+		return;
+	}
+
+	if (HasAnyClassFlags(CLASS_ReplicationDataIsSetUp) == false)
+	{
+		UE_LOG(LogClass, Warning, TEXT("ValidateRuntimeReplicationData for class %s called before ReplicationData was setup."), *GetName());
+		return;
+	}
+
+	// Let's compare the CDO's registered lifetime properties with the Class's net properties
+	TArray<FLifetimeProperty> LifetimeProps;
+	LifetimeProps.Reserve(ClassReps.Num());
+
+	const UObject* Object = GetDefaultObject();
+	Object->GetLifetimeReplicatedProps(LifetimeProps);
+
+	if (LifetimeProps.Num() == ClassReps.Num())
+	{
+		// All replicated properties were registered for this class
+		return;
+	}
+
+	// Find which properties where not registered by the user code
+	for (int32 RepIndex = 0; RepIndex < ClassReps.Num(); ++RepIndex)
+	{
+		const UProperty* RepProp = ClassReps[RepIndex].Property;
+
+		const FLifetimeProperty* LifetimeProp = LifetimeProps.FindByPredicate([&RepIndex](const FLifetimeProperty& Var) { return Var.RepIndex == RepIndex; });
+
+		if (LifetimeProp == nullptr)
+		{
+			// Check if this unregistered property type uses a custom delta serializer
+			if (const UStructProperty* StructProperty = Cast<UStructProperty>(RepProp))
+			{
+				const UScriptStruct* Struct = StructProperty->Struct;
+
+				if (EnumHasAnyFlags(Struct->StructFlags, STRUCT_NetDeltaSerializeNative))
+				{
+					UE_LOG(LogClass, Warning, TEXT("Property %s::%s (SourceClass: %s) with custom net delta serializer was not registered in GetLifetimeReplicatedProps. This property will replicate but you should still register it."),
+						*GetName(), *RepProp->GetName(), *RepProp->GetOwnerClass()->GetName());
+					continue;
+				}
+			}
+
+			UE_LOG(LogClass, Warning, TEXT("Property %s::%s (SourceClass: %s) was not registered in GetLifetimeReplicatedProps. This property will not be replicated."),
+				*GetName(), *RepProp->GetName(), *RepProp->GetOwnerClass()->GetName());
+		}
 	}
 }
 
@@ -3872,10 +3955,6 @@ void UClass::PurgeClass(bool bRecompilingOnLoad)
 	}
 #endif
 
-#if USE_UBER_GRAPH_PERSISTENT_FRAME
-	UberGraphFramePointerProperty = NULL;
-#endif//USE_UBER_GRAPH_PERSISTENT_FRAME
-
 	ClassDefaultObject = NULL;
 
 	Interfaces.Empty();
@@ -3934,7 +4013,7 @@ bool UClass::HasProperty(UProperty* InProperty) const
 {
 	if ( UClass* PropertiesClass = dynamic_cast<UClass*>(InProperty->GetOuter()) )
 	{
-		return PropertiesClass->FindNearestCommonBaseClass(this) != nullptr;
+		return IsChildOf(PropertiesClass);
 	}
 
 	return false;
@@ -3956,9 +4035,6 @@ UClass::UClass(const FObjectInitializer& ObjectInitializer)
 ,	ClassCastFlags(CASTCLASS_None)
 ,	ClassWithin( UObject::StaticClass() )
 ,	ClassGeneratedBy(nullptr)
-#if USE_UBER_GRAPH_PERSISTENT_FRAME
-,	UberGraphFramePointerProperty(nullptr)
-#endif // USE_UBER_GRAPH_PERSISTENT_FRAME
 ,	ClassDefaultObject(nullptr)
 {
 	// If you add properties here, please update the other constructors and PurgeClass()
@@ -3977,9 +4053,6 @@ UClass::UClass(const FObjectInitializer& ObjectInitializer, UClass* InBaseClass)
 ,	ClassCastFlags(CASTCLASS_None)
 ,	ClassWithin(UObject::StaticClass())
 ,	ClassGeneratedBy(nullptr)
-#if USE_UBER_GRAPH_PERSISTENT_FRAME
-,	UberGraphFramePointerProperty(nullptr)
-#endif // USE_UBER_GRAPH_PERSISTENT_FRAME
 ,	ClassDefaultObject(nullptr)
 {
 	// If you add properties here, please update the other constructors and PurgeClass()
@@ -4242,6 +4315,12 @@ void UClass::CreateLinkAndAddChildFunctionsToMap(const FClassFunctionLinkInfo* F
 	}
 }
 
+void UClass::ClearFunctionMapsCaches()
+{
+	FRWScopeLock ScopeLock(SuperFuncMapLock, FRWScopeLockType::SLT_Write);
+	SuperFuncMap.Empty();
+}
+
 UFunction* UClass::FindFunctionByName(FName InName, EIncludeSuperFlag::Type IncludeSuper) const
 {
 	UFunction* Result = FuncMap.FindRef(InName);
@@ -4287,6 +4366,7 @@ UFunction* UClass::FindFunctionByName(FName InName, EIncludeSuperFlag::Type Incl
 
 void UClass::AssembleReferenceTokenStreams()
 {
+	SCOPED_BOOT_TIMING("AssembleReferenceTokenStreams (can be optimized)");
 	// Iterate over all class objects and force the default objects to be created. Additionally also
 	// assembles the token reference stream at this point. This is required for class objects that are
 	// not taken into account for garbage collection but have instances that are.
@@ -4301,7 +4381,7 @@ void UClass::AssembleReferenceTokenStreams()
 				Class->GetDefaultObject(); // Force the default object to be constructed if it isn't already
 			}
 			// Assemble reference token stream for garbage collection/ RTGC.
-			if (!Class->HasAnyClassFlags(CLASS_TokenStreamAssembled))
+			if (!Class->HasAnyFlags(RF_ClassDefaultObject) && !Class->HasAnyClassFlags(CLASS_TokenStreamAssembled))
 			{
 				Class->AssembleReferenceTokenStream();
 			}
@@ -5075,6 +5155,31 @@ UDelegateFunction::UDelegateFunction(UFunction* InSuperFunction, EFunctionFlags 
 }
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UDelegateFunction, UFunction,
+	{
+	}
+);
+
+USparseDelegateFunction::USparseDelegateFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags, SIZE_T ParamsSize)
+	: UDelegateFunction(ObjectInitializer, InSuperFunction, InFunctionFlags, ParamsSize)
+{
+
+}
+
+USparseDelegateFunction::USparseDelegateFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags, SIZE_T ParamsSize)
+	: UDelegateFunction(InSuperFunction, InFunctionFlags, ParamsSize)
+{
+
+}
+
+void USparseDelegateFunction::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	Ar << OwningClassName;
+	Ar << DelegateName;
+}
+
+IMPLEMENT_CORE_INTRINSIC_CLASS(USparseDelegateFunction, UDelegateFunction,
 	{
 	}
 );

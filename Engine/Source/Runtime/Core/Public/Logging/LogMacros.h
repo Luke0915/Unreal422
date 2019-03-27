@@ -175,7 +175,7 @@ private:
 	#define UE_LOG_ACTIVE(CategoryName, Verbosity) (::UE4Asserts_Private::IsLogActive<(int32)ELogVerbosity::Verbosity>(CategoryName))
 
 	#define UE_GET_LOG_VERBOSITY(CategoryName) \
-		CategoryName.GetVerbosity();
+		CategoryName.GetVerbosity()
 
 	#define UE_SET_LOG_VERBOSITY(CategoryName, Verbosity) \
 		CategoryName.SetVerbosity(ELogVerbosity::Verbosity);
@@ -371,9 +371,11 @@ namespace UE4Asserts_Private
 #define logOrEnsureNanError(_FormatString_, ...) \
 	if (!GEnsureOnNANDiagnostic)\
 	{\
-		if (UE4Asserts_Private::TrueOnFirstCallOnly([]{}))\
+		static bool OnceOnly = false;\
+		if (!OnceOnly)\
 		{\
 			UE4Asserts_Private::InternalLogNANDiagnosticMessage(_FormatString_, ##__VA_ARGS__); \
+			OnceOnly = true;\
 		}\
 	}\
 	else\

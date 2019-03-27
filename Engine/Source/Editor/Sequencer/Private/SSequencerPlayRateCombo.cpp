@@ -260,7 +260,7 @@ void SSequencerPlayRateCombo::PopulateClockSourceMenu(FMenuBuilder& MenuBuilder)
 	TSharedPtr<FSequencer> Sequencer    = WeakSequencer.Pin();
 	UMovieSceneSequence*   RootSequence = Sequencer.IsValid() ? Sequencer->GetRootMovieSceneSequence() : nullptr;
 
-	const UEnum* ClockSourceEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EUpdateClockSource"), true);
+	const UEnum* ClockSourceEnum = StaticEnum<EUpdateClockSource>();
 
 	check(ClockSourceEnum);
 
@@ -359,6 +359,9 @@ void SSequencerPlayRateCombo::SetDisplayRate(FFrameRate InFrameRate)
 			}
 		}
 	}
+
+	// Snap the local time to the new display rate
+	Sequencer->SetLocalTime(Sequencer->GetLocalTime().Time, ESnapTimeMode::STM_Interval);
 }
 
 FFrameRate SSequencerPlayRateCombo::GetDisplayRate() const

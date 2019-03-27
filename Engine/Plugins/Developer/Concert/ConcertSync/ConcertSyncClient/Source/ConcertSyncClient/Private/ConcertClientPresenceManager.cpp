@@ -20,6 +20,7 @@
 #include "ConcertClientVRPresenceActor.h"
 #include "ConcertTransactionLedger.h"
 #include "Scratchpad/ConcertScratchpad.h"
+#include "GameFramework/PlayerController.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -33,10 +34,17 @@
 #include "SLevelViewport.h"
 #include "ConcertAssetContainer.h"
 #include "IVREditorModule.h"
+#include "VREditorMode.h"
 #include "Framework/Application/SlateApplication.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "ConcertPresenceManager"
+
+namespace ConcertClientPresenceManagerUtil
+{
+	// Update frequency 15 Hz
+	const double LocationUpdateFrequencySeconds = 0.0667;
+}
 
 #if	WITH_EDITOR
 
@@ -50,12 +58,9 @@ bool ShowPresenceInPIE(const bool InIsPIE)
 
 }
 
-static TAutoConsoleVariable<int32> CVarEnablePresence(TEXT("concert.EnablePresence"), 1, TEXT("Enable Concert presence"));
+static TAutoConsoleVariable<int32> CVarEnablePresence(TEXT("concert.EnablePresence"), 1, TEXT("Enable Concert Presence"));
 
 const TCHAR* FConcertClientPresenceManager::AssetContainerPath = TEXT("/ConcertSyncClient/ConcertAssets");
-
-// Update frequency 15 Hz
-const double FConcertClientPresenceManager::LocationUpdateFrequencySeconds = 0.0667;
 
 FConcertClientPresenceManager::FConcertClientPresenceManager(TSharedRef<IConcertClientSession> InSession)
 	: OnSessionClientChangedHandle()
@@ -65,13 +70,14 @@ FConcertClientPresenceManager::FConcertClientPresenceManager(TSharedRef<IConcert
 	, CurrentAvatarMode(nullptr)
 	, AssetContainer(nullptr)
 	, bIsPresenceEnabled(true)
+	, VRDeviceType(NAME_None)
 	, CurrentAvatarActorClass(nullptr)
 	, DesktopAvatarActorClass(nullptr)
 	, VRAvatarActorClass(nullptr)
 {
 	// Setup the asset container.
-	AssetContainer = &LoadAssetContainer();
-	check(AssetContainer);
+	AssetContainer = LoadObject<UConcertAssetContainer>(nullptr, FConcertClientPresenceManager::AssetContainerPath);
+	checkf(AssetContainer, TEXT("Failed to load UConcertAssetContainer (%s). See log for reason."), FConcertClientPresenceManager::AssetContainerPath);
 
 	// @todo - Need to handle the situation where the avatar class might change during a session.
 	// This makes the assumption that avatar class will not change during a session 
@@ -86,7 +92,7 @@ FConcertClientPresenceManager::FConcertClientPresenceManager(TSharedRef<IConcert
 	CurrentAvatarActorClass = DesktopAvatarActorClass;
 
 	PreviousEndFrameTime = FPlatformTime::Seconds();
-	SecondsSinceLastLocationUpdate = LocationUpdateFrequencySeconds;
+	SecondsSinceLastLocationUpdate = ConcertClientPresenceManagerUtil::LocationUpdateFrequencySeconds;
 
 	Register();
 }
@@ -95,6 +101,14 @@ FConcertClientPresenceManager::~FConcertClientPresenceManager()
 {
 	Unregister();
 	ClearAllPresenceState();
+}
+
+void FConcertClientPresenceManager::AddReferencedObjects(FReferenceCollector& Collector)
+{
+	Collector.AddReferencedObject(AssetContainer);
+	Collector.AddReferencedObject(CurrentAvatarActorClass);
+	Collector.AddReferencedObject(DesktopAvatarActorClass);
+	Collector.AddReferencedObject(VRAvatarActorClass);
 }
 
 const UConcertAssetContainer& FConcertClientPresenceManager::GetAssetContainer() const
@@ -228,7 +242,7 @@ void FConcertClientPresenceManager::OnEndFrame()
 	double DeltaTime = CurrentTime - PreviousEndFrameTime;
 	SecondsSinceLastLocationUpdate += DeltaTime;
 
-	if (SecondsSinceLastLocationUpdate >= LocationUpdateFrequencySeconds)
+	if (SecondsSinceLastLocationUpdate >= ConcertClientPresenceManagerUtil::LocationUpdateFrequencySeconds)
 	{
 		if (!CurrentAvatarMode)
 		{
@@ -292,7 +306,7 @@ void FConcertClientPresenceManager::SynchronizePresenceState()
 			Session->FindSessionClient(RemoteEndpointId, ClientSessionInfo);
 			if (!PresenceState.PresenceActor.IsValid())
 			{
-				PresenceState.PresenceActor = CreatePresenceActor(ClientSessionInfo.ClientInfo, PresenceState.bInVR);
+				PresenceState.PresenceActor = CreatePresenceActor(ClientSessionInfo.ClientInfo, PresenceState.VRDevice);
 			}
 
 			if (PresenceState.PresenceActor.IsValid())
@@ -351,9 +365,9 @@ bool FConcertClientPresenceManager::ShouldProcessPresenceEvent(const FConcertSes
 	return true;
 }
 
-AConcertClientPresenceActor* FConcertClientPresenceManager::CreatePresenceActor(const FConcertClientInfo& InClientInfo, bool bClientInVR)
+AConcertClientPresenceActor* FConcertClientPresenceManager::CreatePresenceActor(const FConcertClientInfo& InClientInfo, FName VRDevice)
 {
-	AConcertClientPresenceActor* PresenceActor = SpawnPresenceActor(InClientInfo, bClientInVR);
+	AConcertClientPresenceActor* PresenceActor = SpawnPresenceActor(InClientInfo, VRDevice);
 
 	if (PresenceActor)
 	{
@@ -364,7 +378,7 @@ AConcertClientPresenceActor* FConcertClientPresenceManager::CreatePresenceActor(
 	return PresenceActor;
 }
 
-AConcertClientPresenceActor* FConcertClientPresenceManager::SpawnPresenceActor(const FConcertClientInfo& InClientInfo, bool bClientInVR)
+AConcertClientPresenceActor* FConcertClientPresenceManager::SpawnPresenceActor(const FConcertClientInfo& InClientInfo, FName VRDevice)
 {
 	check(AssetContainer);
 
@@ -377,7 +391,7 @@ AConcertClientPresenceActor* FConcertClientPresenceManager::SpawnPresenceActor(c
 
 	// @todo this is potentially slow and hitchy as clients connect.  It might be better to preload all the presence actor types
 	UClass* PresenceActorClass = nullptr;	
-	if (bClientInVR)
+	if (!VRDevice.IsNone())
 	{
 		PresenceActorClass = LoadObject<UClass>(nullptr, *InClientInfo.VRAvatarActorClass);
 	}
@@ -388,7 +402,7 @@ AConcertClientPresenceActor* FConcertClientPresenceManager::SpawnPresenceActor(c
 
 	if (!PresenceActorClass)
 	{
-		UE_LOG(LogConcert, Warning, TEXT("Failed to load presence actor class '%s'. Presence will not be displayed"), bClientInVR ? *InClientInfo.VRAvatarActorClass : *InClientInfo.DesktopAvatarActorClass);
+		UE_LOG(LogConcert, Warning, TEXT("Failed to load presence actor class '%s'. Presence will not be displayed"), !VRDevice.IsNone() ? *InClientInfo.VRAvatarActorClass : *InClientInfo.DesktopAvatarActorClass);
 		return nullptr;
 	}
 
@@ -400,6 +414,7 @@ AConcertClientPresenceActor* FConcertClientPresenceManager::SpawnPresenceActor(c
 		ActorSpawnParameters.Name = MakeUniqueObjectName(World, PresenceActorClass, PresenceActorClass->GetFName()); // @todo how should spawned actors be named?
 		ActorSpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		ActorSpawnParameters.ObjectFlags = EObjectFlags::RF_DuplicateTransient;
+		ActorSpawnParameters.bDeferConstruction = true;
 
 		PresenceActor = World->SpawnActor<AConcertClientPresenceActor>(PresenceActorClass, ActorSpawnParameters);
 
@@ -412,12 +427,16 @@ AConcertClientPresenceActor* FConcertClientPresenceManager::SpawnPresenceActor(c
 
 	if (!PresenceActor)
 	{
-		UE_LOG(LogConcert, Warning, TEXT("Failed to spawn presence actor of class '%s'. Presence will not be displayed"), bClientInVR ? *InClientInfo.VRAvatarActorClass : *InClientInfo.DesktopAvatarActorClass);
+		UE_LOG(LogConcert, Warning, TEXT("Failed to spawn presence actor of class '%s'. Presence will not be displayed"), !VRDevice.IsNone() ? *InClientInfo.VRAvatarActorClass : *InClientInfo.DesktopAvatarActorClass);
 		return nullptr;
 	}
 
 	// Setup the asset container.
-	PresenceActor->InitPresence(*AssetContainer);
+	PresenceActor->InitPresence(*AssetContainer, VRDevice);
+	{
+		FEditorScriptExecutionGuard UCSGuard;
+		PresenceActor->FinishSpawning(FTransform(), true);
+	}
 
 	return PresenceActor;
 }
@@ -501,24 +520,25 @@ void FConcertClientPresenceManager::OnSessionClientChanged(IConcertClientSession
 
 void FConcertClientPresenceManager::OnVREditingModeEnter()
 {
-	bInVR = true;
+	UVREditorMode* VRMode = IVREditorModule::Get().GetVRMode();
+	VRDeviceType = VRMode ? VRMode->GetHMDDeviceType() : FName();
 	UpdatePresenceMode();
 }
 
 void FConcertClientPresenceManager::OnVREditingModeExit()
 {
-	bInVR = false;
+	VRDeviceType = FName();
 	UpdatePresenceMode();
 }
 
 void FConcertClientPresenceManager::UpdatePresenceMode()
 {
-	if ((bInVR && CurrentAvatarActorClass != VRAvatarActorClass) ||
-		(!bInVR && CurrentAvatarActorClass != DesktopAvatarActorClass))
+	if ((!VRDeviceType.IsNone() && CurrentAvatarActorClass != VRAvatarActorClass) ||
+		(VRDeviceType.IsNone() && CurrentAvatarActorClass != DesktopAvatarActorClass))
 	{
 		// Mode will get recreated on next call to OnEndFrame
 		CurrentAvatarMode.Reset();
-		CurrentAvatarActorClass = bInVR ? VRAvatarActorClass : DesktopAvatarActorClass;
+		CurrentAvatarActorClass = !VRDeviceType.IsNone() ? VRAvatarActorClass : DesktopAvatarActorClass;
 		SendPresenceInVREvent();
 	}
 }
@@ -526,7 +546,7 @@ void FConcertClientPresenceManager::UpdatePresenceMode()
 void FConcertClientPresenceManager::SendPresenceInVREvent(const FGuid* InEndpointId)
 {
 	FConcertClientPresenceInVREvent Event;
-	Event.bInVR = bInVR;
+	Event.VRDevice = VRDeviceType;
 
 	if (InEndpointId)
 	{
@@ -540,33 +560,18 @@ void FConcertClientPresenceManager::SendPresenceInVREvent(const FGuid* InEndpoin
 
 void FConcertClientPresenceManager::HandleConcertClientPresenceInVREvent(const FConcertSessionContext& InSessionContext, const FConcertClientPresenceInVREvent& InEvent)
 {
-	UpdatePresenceAvatar(InSessionContext.SourceEndpointId, InEvent.bInVR);
+	UpdatePresenceAvatar(InSessionContext.SourceEndpointId, InEvent.VRDevice);
 }
 
-void FConcertClientPresenceManager::UpdatePresenceAvatar(const FGuid& InEndpointId, bool bIsInVR)
+void FConcertClientPresenceManager::UpdatePresenceAvatar(const FGuid& InEndpointId, FName VRDevice)
 {
 	FConcertClientPresenceState& PresenceState = EnsurePresenceState(InEndpointId);
-	PresenceState.bInVR = bIsInVR;
+	PresenceState.VRDevice = VRDevice;
 
 	if (PresenceState.PresenceActor.IsValid())
 	{
 		// Presence actor will be recreated on next call to OnEndFrame
 		ClearPresenceActor(InEndpointId);
-	}
-}
-
-UConcertAssetContainer& FConcertClientPresenceManager::LoadAssetContainer()
-{
-	UConcertAssetContainer* AssetContainer = LoadObject<UConcertAssetContainer>(nullptr, FConcertClientPresenceManager::AssetContainerPath);
-	checkf(AssetContainer, TEXT("Failed to load UConcertAssetContainer (%s). See log for reason."), FConcertClientPresenceManager::AssetContainerPath);
-	return *AssetContainer;
-}
-
-void FConcertClientPresenceManager::AddReferencedObjects(FReferenceCollector& Collector)
-{
-	if (AssetContainer)
-	{
-		Collector.AddReferencedObject(AssetContainer);
 	}
 }
 
@@ -699,9 +704,19 @@ bool FConcertClientPresenceManager::IsJumpToPresenceEnabled(FGuid InEndpointId) 
 		return false;
 	}
 
-	// Can only jump to clients that exist and have cached state
+	// Can only jump to clients that exist, have cached state and both clients are in the same level.
 	const TSharedPtr<FConcertClientPresenceDataUpdateEvent> CachedPresenceState = GetCachedPresenceState(InEndpointId);
-	return (CachedPresenceState.IsValid());
+	if (CachedPresenceState.IsValid())
+	{
+		// The client should be in the same world to enable teleporting.
+		return GetWorld()->GetPathName() == CachedPresenceState->WorldPath.ToString();
+	}
+	return false;
+}
+
+double FConcertClientPresenceManager::GetLocationUpdateFrequency()
+{
+	return ConcertClientPresenceManagerUtil::LocationUpdateFrequencySeconds;
 }
 
 void FConcertClientPresenceManager::InitiateJumpToPresence(FGuid InEndpointId)
@@ -709,20 +724,38 @@ void FConcertClientPresenceManager::InitiateJumpToPresence(FGuid InEndpointId)
 	OnJumpToPresenceClicked(InEndpointId);
 }
 
-
 FReply FConcertClientPresenceManager::OnJumpToPresenceClicked(FGuid InEndpointId)
 {
-	FLevelEditorViewportClient* PerspectiveViewport = GetPerspectiveViewport();
-	check(PerspectiveViewport);
-
-	const TSharedPtr<FConcertClientPresenceDataUpdateEvent> CachedPresenceState = GetCachedPresenceState(InEndpointId);
-	if (CachedPresenceState.IsValid())
+	const TSharedPtr<FConcertClientPresenceDataUpdateEvent> OtherClientState = GetCachedPresenceState(InEndpointId);
+	if (OtherClientState.IsValid())
 	{
-		PerspectiveViewport->SetViewLocation(CachedPresenceState->Position);
-		FRotator CachedPresenceStateRotation( CachedPresenceState->Orientation.Rotator() );
-		CachedPresenceStateRotation.Pitch = 0.0f;
-		CachedPresenceStateRotation.Roll = 0.0f;
-		PerspectiveViewport->SetViewRotation(CachedPresenceStateRotation);
+		FRotator OtherClientRotation(OtherClientState->Orientation.Rotator());
+
+		// Disregard pitch and roll when teleporting to a VR presence.
+		if (!VRDeviceType.IsNone())
+		{
+			OtherClientRotation.Pitch = 0.0f;
+			OtherClientRotation.Roll = 0.0f;
+		}
+
+		if (IsInPIE())
+		{
+			check(GEditor->PlayWorld);
+
+			// In 'play in editor', we need to change the 'player' location/orientation.
+			if (APlayerController* PC = GEditor->PlayWorld->GetFirstPlayerController())
+			{
+				PC->ClientSetLocation(OtherClientState->Position, OtherClientRotation);
+			}
+		}
+		else
+		{
+			FLevelEditorViewportClient* PerspectiveViewport = GetPerspectiveViewport();
+			check(PerspectiveViewport);
+
+			PerspectiveViewport->SetViewLocation(OtherClientState->Position);
+			PerspectiveViewport->SetViewRotation(OtherClientRotation);
+		}
 	}
 
 	return FReply::Handled();
@@ -760,6 +793,34 @@ FReply FConcertClientPresenceManager::OnShowHidePresenceClicked(FGuid InEndpoint
 	TogglePresenceVisibility(InEndpointId, bPropagateToAll);
 
 	return FReply::Handled();
+}
+
+FString FConcertClientPresenceManager::GetClientWorldPath(FGuid InEndpointId) const
+{
+	// Is it the local client endpoint?
+	if (InEndpointId == Session->GetSessionClientEndpointId())
+	{
+		return GetWorld()->GetPathName();
+	}
+
+	// Is it the endpoint of another remote client?
+	const TSharedPtr<FConcertClientPresenceDataUpdateEvent> CachedPresenceState = GetCachedPresenceState(InEndpointId);
+	if (CachedPresenceState.IsValid())
+	{
+		return CachedPresenceState->WorldPath.ToString();
+	}
+
+	return FString();
+}
+
+#else
+
+namespace FConcertClientPresenceManager
+{
+	double GetLocationUpdateFrequency()
+	{
+		return ConcertClientPresenceManagerUtil::LocationUpdateFrequencySeconds;
+	}
 }
 
 #endif // WITH_EDITOR

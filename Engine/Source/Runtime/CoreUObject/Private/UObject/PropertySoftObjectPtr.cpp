@@ -5,6 +5,7 @@
 #include "UObject/SoftObjectPtr.h"
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/UnrealType.h"
+#include "UObject/LinkerLoad.h"
 
 /*-----------------------------------------------------------------------------
 	USoftObjectProperty.
@@ -69,6 +70,14 @@ void USoftObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* V
 	}
 }
 
+bool USoftObjectProperty::NetSerializeItem(FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8>* MetaData) const
+{
+	// Serialize directly, will use FBitWriter/Reader
+	Ar << *(FSoftObjectPtr*)Data;
+
+	return true;
+}
+
 void USoftObjectProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
 	FSoftObjectPtr& SoftObjectPtr = *(FSoftObjectPtr*)PropertyValue;
@@ -101,7 +110,7 @@ const TCHAR* USoftObjectProperty::ImportText_Internal( const TCHAR* InBuffer, vo
 
 	FSoftObjectPath SoftObjectPath;
 
-	if (SoftObjectPath.ImportTextItem(InBuffer, PortFlags, Parent, ErrorText))
+	if (SoftObjectPath.ImportTextItem(InBuffer, PortFlags, Parent, ErrorText, GetLinker()))
 	{
 		SoftObjectPtr = SoftObjectPath;
 		return InBuffer;

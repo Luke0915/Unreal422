@@ -40,6 +40,28 @@
 		_Pragma("clang diagnostic pop")
 #endif // DISABLE_DEPRECATION
 
+#ifndef PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS
+	#define PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic ignored \"-Woverloaded-virtual\"")
+#endif // PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS
+
+#ifndef PRAGMA_ENABLE_OVERLOADED_VIRTUAL_WARNINGS
+	#define PRAGMA_ENABLE_OVERLOADED_VIRTUAL_WARNINGS \
+		_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_OVERLOADED_VIRTUAL_WARNINGS
+
+#ifndef PRAGMA_DISABLE_MISSING_BRACES_WARNINGS
+	#define PRAGMA_DISABLE_MISSING_BRACES_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic ignored \"-Wmissing-braces\"")
+#endif // PRAGMA_DISABLE_MISSING_BRACES_WARNINGS
+
+#ifndef PRAGMA_ENABLE_MISSING_BRACES_WARNINGS
+	#define PRAGMA_ENABLE_MISSING_BRACES_WARNINGS \
+		_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_MISSING_BRACES_WARNINGS
+
 #ifndef PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
 	#define PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS \
 		_Pragma("clang diagnostic push") \
@@ -83,6 +105,17 @@
 	#define PRAGMA_ENABLE_REORDER_WARNINGS \
 		_Pragma("clang diagnostic pop")
 #endif // PRAGMA_ENABLE_REORDER_WARNINGS
+
+#ifndef PRAGMA_DISABLE_MACRO_REDEFINED_WARNINGS
+	#define PRAGMA_DISABLE_MACRO_REDEFINED_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic ignored \"-Wmacro-redefined\"")
+#endif // PRAGMA_DISABLE_MACRO_REDEFINED_WARNINGS
+
+#ifndef PRAGMA_ENABLE_MACRO_REDEFINED_WARNINGS
+	#define PRAGMA_ENABLE_MACRO_REDEFINED_WARNINGS \
+		_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_MACRO_REDEFINED_WARNINGS
 
 #ifndef PRAGMA_POP
 	#define PRAGMA_POP \

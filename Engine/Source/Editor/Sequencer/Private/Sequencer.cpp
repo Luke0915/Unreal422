@@ -112,6 +112,7 @@
 #include "Compilation/MovieSceneCompiler.h"
 #include "SequencerKeyActor.h"
 #include "MovieSceneCopyableBinding.h"
+#include "MovieSceneCopyableTrack.h"
 #include "ISequencerChannelInterface.h"
 #include "SequencerKeyCollection.h"
 #include "CurveEditor.h"
@@ -611,7 +612,7 @@ void FSequencer::Tick(float InDeltaTime)
 		if (IsAutoScrollEnabled() && GetPlaybackStatus() == EMovieScenePlayerStatus::Playing)
 		{
 			const float ThresholdPercentage = 0.15f;
-			UpdateAutoScroll(GetGlobalTime().Time / GetFocusedTickResolution(), ThresholdPercentage);
+			UpdateAutoScroll(GetLocalTime().Time / GetFocusedTickResolution(), ThresholdPercentage);
 		}
 	}
 	else
@@ -1810,9 +1811,10 @@ TRange<FFrameNumber> FSequencer::GetSelectionRange() const
 void FSequencer::SetSelectionRange(TRange<FFrameNumber> Range)
 {
 	const FScopedTransaction Transaction(LOCTEXT("SetSelectionRange_Transaction", "Set Selection Range"));
-	UMovieScene* FocussedMovieScene = GetFocusedMovieSceneSequence()->GetMovieScene();
+	UMovieScene* FocusedMovieScene = GetFocusedMovieSceneSequence()->GetMovieScene();
 
-	FocussedMovieScene->SetSelectionRange(Range);
+	FocusedMovieScene->Modify();
+	FocusedMovieScene->SetSelectionRange(Range);
 }
 
 
@@ -2297,6 +2299,9 @@ void FSequencer::SetLocalTimeDirectly(FFrameTime NewTime)
 
 void FSequencer::SetGlobalTime(FFrameTime NewTime)
 {
+	// Clear focus before setting time in case there's a key editor value selected that gets committed to a newly selected key on UserMovedFocus
+	FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
+
 	NewTime = ConvertFrameTime(NewTime, GetRootTickResolution(), PlayPosition.GetInputRate());
 	if (PlayPosition.GetEvaluationType() == EMovieSceneEvaluationType::FrameLocked)
 	{
@@ -4821,7 +4826,7 @@ void FSequencer::SaveCurrentMovieSceneAs()
 }
 
 
-TArray<FGuid> FSequencer::AddActors(const TArray<TWeakObjectPtr<AActor> >& InActors)
+TArray<FGuid> FSequencer::AddActors(const TArray<TWeakObjectPtr<AActor> >& InActors, bool bSelectActors)
 {
 	TArray<FGuid> PossessableGuids;
 
@@ -4887,22 +4892,25 @@ TArray<FGuid> FSequencer::AddActors(const TArray<TWeakObjectPtr<AActor> >& InAct
 			}
 		}
 
-		// Clear our editor selection so we can make the selection our added actors.
-		// This has to be done after we know if the actor is going to be added to a
-		// folder, otherwise it causes the folder we wanted to pick to be deselected.
-		USelection* SelectedActors = GEditor->GetSelectedActors();
-		SelectedActors->BeginBatchSelectOperation();
-		SelectedActors->Modify();
-		GEditor->SelectNone(false, true);
-		for (TWeakObjectPtr<AActor> WeakActor : InActors)
+		if (bSelectActors)
 		{
-			if (AActor* Actor = WeakActor.Get())
+			// Clear our editor selection so we can make the selection our added actors.
+			// This has to be done after we know if the actor is going to be added to a
+			// folder, otherwise it causes the folder we wanted to pick to be deselected.
+			USelection* SelectedActors = GEditor->GetSelectedActors();
+			SelectedActors->BeginBatchSelectOperation();
+			SelectedActors->Modify();
+			GEditor->SelectNone(false, true);
+			for (TWeakObjectPtr<AActor> WeakActor : InActors)
 			{
-				GEditor->SelectActor(Actor, true, false);
+				if (AActor* Actor = WeakActor.Get())
+				{
+					GEditor->SelectActor(Actor, true, false);
+				}
 			}
+			SelectedActors->EndBatchSelectOperation();
+			GEditor->NoteSelectionChange();
 		}
-		SelectedActors->EndBatchSelectOperation();
-		GEditor->NoteSelectionChange();
 
 		// Add the possessables as children of the first selected folder
 		if (SelectedParentFolders.Num() > 0)
@@ -4914,12 +4922,15 @@ TArray<FGuid> FSequencer::AddActors(const TArray<TWeakObjectPtr<AActor> >& InAct
 		}
 
 		// Now add them all to the selection set to be selected after a tree rebuild.
-		for(const FGuid& Possessable : PossessableGuids)
+		if (bSelectActors)
 		{
-			FString PossessablePath = NewNodePath += Possessable.ToString();
-			
-			// Object Bindings use their FGuid as their unique key.
-			SequencerWidget->AddAdditionalPathToSelectionSet(PossessablePath);
+			for (const FGuid& Possessable : PossessableGuids)
+			{
+				FString PossessablePath = NewNodePath += Possessable.ToString();
+
+				// Object Bindings use their FGuid as their unique key.
+				SequencerWidget->AddAdditionalPathToSelectionSet(PossessablePath);
+			}
 		}
 
 		RefreshTree();
@@ -6182,7 +6193,7 @@ void FSequencer::ImportObjectBindingsFromText(const FString& TextToImport, /*out
 }
 
 
-void FSequencer::CopySelectedObjects(TArray<TSharedPtr<FSequencerObjectBindingNode>>& ObjectNodes)
+void FSequencer::CopySelectedObjects(TArray<TSharedPtr<FSequencerObjectBindingNode>>& ObjectNodes, FString& ExportedText)
 {
 	// Gather guids for the object nodes and any child object nodes
 	TSet<FGuid> GuidsToCopy;
@@ -6246,23 +6257,41 @@ void FSequencer::CopySelectedObjects(TArray<TSharedPtr<FSequencerObjectBindingNo
 		}
 	}
 
-	FString ExportedText;
 	ExportObjectBindingsToText(CopyableBindings, /*out*/ ExportedText);
-	FPlatformApplicationMisc::ClipboardCopy(*ExportedText);
 }
 
 
-void FSequencer::CopySelectedTracks(TArray<TSharedPtr<FSequencerTrackNode>>& TrackNodes)
+void FSequencer::CopySelectedTracks(TArray<TSharedPtr<FSequencerTrackNode>>& TrackNodes, FString& ExportedText)
 {
-	TArray<UObject*> TracksToCopy;
+	UMovieScene* MovieScene = GetFocusedMovieSceneSequence()->GetMovieScene();
+
+	TArray<UObject*> CopyableTracks;
 	for (TSharedPtr<FSequencerTrackNode> TrackNode : TrackNodes)
 	{
-		TracksToCopy.Add(TrackNode->GetTrack());
+		bool bIsParentSelected = false;
+		TSharedPtr<FSequencerDisplayNode> ParentNode = TrackNode->GetParent();
+		while (ParentNode.IsValid())
+		{
+			if (Selection.GetSelectedOutlinerNodes().Contains(ParentNode.ToSharedRef()))
+			{
+				bIsParentSelected = true;
+				break;
+			}
+			ParentNode = ParentNode->GetParent();
+		}
+
+		if (!bIsParentSelected)
+		{
+			UMovieSceneCopyableTrack *CopyableTrack = NewObject<UMovieSceneCopyableTrack>(GetTransientPackage(), UMovieSceneCopyableTrack::StaticClass(), NAME_None, RF_Transient);
+			CopyableTracks.Add(CopyableTrack);
+
+			UMovieSceneTrack* DuplicatedTrack = Cast<UMovieSceneTrack>(StaticDuplicateObject(TrackNode->GetTrack(), CopyableTrack));
+			CopyableTrack->Track = DuplicatedTrack;
+			CopyableTrack->bIsAMasterTrack = MovieScene->IsAMasterTrack(*TrackNode->GetTrack());
+		}
 	}
 
-	FString ExportedText;
-	FSequencer::ExportObjectsToText(TracksToCopy, /*out*/ ExportedText);
-	FPlatformApplicationMisc::ClipboardCopy(*ExportedText);
+	ExportObjectsToText(CopyableTracks, /*out*/ ExportedText);
 }
 
 
@@ -6300,21 +6329,24 @@ void FSequencer::DoPaste()
 	FString TextToImport;
 	FPlatformApplicationMisc::ClipboardPaste(TextToImport);
 
-	if (PasteObjectBindings(TextToImport))
+	TArray<FNotificationInfo> PasteErrors;
+	bool bAnythingPasted = false;
+	bAnythingPasted |= PasteObjectBindings(TextToImport, PasteErrors);
+	bAnythingPasted |= PasteTracks(TextToImport, PasteErrors);
+	
+	if (!bAnythingPasted)
 	{
-		return;
+		bAnythingPasted |= PasteSections(TextToImport, PasteErrors);
 	}
-	else if (PasteTracks(TextToImport))
+
+	for (auto NotificationInfo : PasteErrors)
 	{
-		return;
-	}
-	else if (PasteSections(TextToImport))
-	{
-		return;
+		NotificationInfo.bUseLargeFont = false;
+		FSlateNotificationManager::Get().AddNotification(NotificationInfo);
 	}
 }
 
-bool FSequencer::PasteObjectBindings(const FString& TextToImport)
+bool FSequencer::PasteObjectBindings(const FString& TextToImport, TArray<FNotificationInfo>& PasteErrors)
 {
 	TArray<UMovieSceneCopyableBinding*> ImportedBindings;
 	ImportObjectBindingsFromText(TextToImport, ImportedBindings);
@@ -6324,6 +6356,10 @@ bool FSequencer::PasteObjectBindings(const FString& TextToImport)
 		return false;
 	}
 	
+	TArray<UMovieSceneFolder*> SelectedParentFolders;
+	FString NewNodePath;
+	CalculateSelectedFolderAndPath(SelectedParentFolders, NewNodePath);
+
 	FScopedTransaction Transaction(FGenericCommands::Get().Paste->GetDescription());
 	
 	UMovieSceneSequence* OwnerSequence = GetFocusedMovieSceneSequence();
@@ -6410,9 +6446,9 @@ bool FSequencer::PasteObjectBindings(const FString& TextToImport)
 	}
 
 	// Fix possessable actor bindings
-	for (auto PossessableGuid : PossessableGuids)
+	for (int32 PossessableGuidIndex = 0; PossessableGuidIndex < PossessableGuids.Num(); ++PossessableGuidIndex)
 	{
-		FMovieScenePossessable* Possessable = MovieScene->FindPossessable(PossessableGuid);
+		FMovieScenePossessable* Possessable = MovieScene->FindPossessable(PossessableGuids[PossessableGuidIndex]);
 		UWorld* PlaybackContext = Cast<UWorld>(GetPlaybackContext());
 		if (Possessable && PlaybackContext)
 		{
@@ -6425,10 +6461,32 @@ bool FSequencer::PasteObjectBindings(const FString& TextToImport)
 
 					if (!ExistingGuid.IsValid())
 					{
-						DoAssignActor(&Actor, 1, Possessable->GetGuid());
+						FGuid NewGuid = DoAssignActor(&Actor, 1, Possessable->GetGuid());
+
+						// If assigning produces a new guid, update the possesable guids and the bindings pasted data
+						if (NewGuid.IsValid())
+						{
+							for (auto BindingPasted : BindingsPasted)
+							{
+								if (BindingPasted.GetObjectGuid() == PossessableGuids[PossessableGuidIndex])
+								{
+									BindingPasted.SetObjectGuid(NewGuid);
+								}
+							}
+
+							PossessableGuids[PossessableGuidIndex] = NewGuid;
+						}
 					}
 				}
 			}
+		}
+	}
+
+	if (SelectedParentFolders.Num() > 0)
+	{
+		for (auto PossessableGuid : PossessableGuids)
+		{
+			SelectedParentFolders[0]->AddChildObjectBinding(PossessableGuid);
 		}
 	}
 
@@ -6468,9 +6526,9 @@ bool FSequencer::PasteObjectBindings(const FString& TextToImport)
 	return true;
 }
 
-bool FSequencer::PasteTracks(const FString& TextToImport)
+bool FSequencer::PasteTracks(const FString& TextToImport, TArray<FNotificationInfo>& PasteErrors)
 {
-	TArray<UMovieSceneTrack*> ImportedTracks;
+	TArray<UMovieSceneCopyableTrack*> ImportedTracks;
 	FSequencer::ImportTracksFromText(TextToImport, ImportedTracks);
 
 	if (ImportedTracks.Num() == 0)
@@ -6478,6 +6536,10 @@ bool FSequencer::PasteTracks(const FString& TextToImport)
 		return false;
 	}
 	
+	TArray<UMovieSceneFolder*> SelectedParentFolders;
+	FString NewNodePath;
+	CalculateSelectedFolderAndPath(SelectedParentFolders, NewNodePath);
+
 	FScopedTransaction Transaction(FGenericCommands::Get().Paste->GetDescription());
 
 	UMovieSceneSequence* OwnerSequence = GetFocusedMovieSceneSequence();
@@ -6500,62 +6562,120 @@ bool FSequencer::PasteTracks(const FString& TextToImport)
 		}
 	}
 
+	int32 NumMasterTracks = 0;
+	int32 NumTracks = 0;
+
+	for (UMovieSceneCopyableTrack* CopyableTrack : ImportedTracks)
+	{
+		if (CopyableTrack->bIsAMasterTrack)
+		{
+			++NumMasterTracks;
+		}
+		else
+		{
+			++NumTracks;
+		}
+	}
+
+	int32 NumMasterTracksPasted = 0;
+	int32 NumTracksPasted = 0;
 	if (ObjectNodes.Num())
 	{
 		for (TSharedPtr<FSequencerObjectBindingNode> ObjectNode : ObjectNodes)
 		{
 			FGuid ObjectGuid = ObjectNode->GetObjectBinding();
 
-			TArray<UMovieSceneTrack*> NewTracks;
+			TArray<UMovieSceneCopyableTrack*> NewTracks;
 			FSequencer::ImportTracksFromText(TextToImport, NewTracks);
 
-			for (UMovieSceneTrack* NewTrack : NewTracks)
+			for (UMovieSceneCopyableTrack* CopyableTrack : NewTracks)
 			{
-				if (!GetFocusedMovieSceneSequence()->GetMovieScene()->AddGivenTrack(NewTrack, ObjectGuid))
+				if (!CopyableTrack->bIsAMasterTrack)
 				{
-					FNotificationInfo Info(LOCTEXT("TrackAlreadyBound", "Can't Paste: Binding doesn't exist"));
-					Info.FadeInDuration = 0.1f;
-					Info.FadeOutDuration = 0.5f;
-					Info.ExpireDuration = 2.5f;
-					auto NotificationItem = FSlateNotificationManager::Get().AddNotification(Info);
+					UMovieSceneTrack* NewTrack = CopyableTrack->Track;
+					NewTrack->ClearFlags(RF_Transient);
+					TArray<UObject*> Subobjects;
+					GetObjectsWithOuter(NewTrack, Subobjects);
+					for (UObject* Subobject : Subobjects)
+					{
+						Subobject->ClearFlags(RF_Transient);
+					}
 
-					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
-					NotificationItem->ExpireAndFadeout();
-
-					continue;
-				}
-				else
-				{
-					NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
+					if (!GetFocusedMovieSceneSequence()->GetMovieScene()->AddGivenTrack(NewTrack, ObjectGuid))
+					{
+						continue;
+					}
+					else
+					{
+						++NumTracksPasted;
+					}
 				}
 			}
 		}
-
-		return true;
 	}
 
 	// Add as master track or set camera cut track
-	for (UMovieSceneTrack* NewTrack : ImportedTracks)
+	for (UMovieSceneCopyableTrack* CopyableTrack : ImportedTracks)
 	{
-		if (NewTrack->IsA(UMovieSceneCameraCutTrack::StaticClass()))
+		if (CopyableTrack->bIsAMasterTrack)
 		{
-			GetFocusedMovieSceneSequence()->GetMovieScene()->SetCameraCutTrack(NewTrack);
-			NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
-		}
-		else
-		{
-			if (GetFocusedMovieSceneSequence()->GetMovieScene()->AddGivenMasterTrack(NewTrack))
+			UMovieSceneTrack* NewTrack = CopyableTrack->Track;
+			NewTrack->ClearFlags(RF_Transient);
+			TArray<UObject*> Subobjects;
+			GetObjectsWithOuter(NewTrack, Subobjects);
+			for (UObject* Subobject : Subobjects)
 			{
-				NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
+				Subobject->ClearFlags(RF_Transient);
+			}
+
+			if (NewTrack->IsA(UMovieSceneCameraCutTrack::StaticClass()))
+			{
+				GetFocusedMovieSceneSequence()->GetMovieScene()->SetCameraCutTrack(NewTrack);
+				if (SelectedParentFolders.Num() > 0)
+				{
+					SelectedParentFolders[0]->AddChildMasterTrack(NewTrack);
+				}
+
+				++NumMasterTracksPasted;
+			}
+			else
+			{
+				if (GetFocusedMovieSceneSequence()->GetMovieScene()->AddGivenMasterTrack(NewTrack))
+				{
+					if (SelectedParentFolders.Num() > 0)
+					{
+						SelectedParentFolders[0]->AddChildMasterTrack(NewTrack);
+					}
+
+				}
+
+				++NumMasterTracksPasted;
 			}
 		}
+	}
+
+	if (NumMasterTracksPasted < NumMasterTracks)
+	{
+		FNotificationInfo Info(LOCTEXT("PasteTracks_NoMasterTracks", "Can't paste track. Master track could not be pasted"));
+		PasteErrors.Add(Info);
+	}
+
+	if (NumTracksPasted < NumTracks)
+	{
+		FNotificationInfo Info(LOCTEXT("PasteSections_NoSelectedObjects", "Can't paste track. No selected objects to paste tracks onto"));
+		PasteErrors.Add(Info);
+	}
+
+	if ((NumMasterTracksPasted + NumTracksPasted) > 0)
+	{
+		NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
 	}
 
 	return true;
 }
 
 
-bool FSequencer::PasteSections(const FString& TextToImport)
+bool FSequencer::PasteSections(const FString& TextToImport, TArray<FNotificationInfo>& PasteErrors)
 {
 	TArray<UMovieSceneSection*> ImportedSections;
 	FSequencer::ImportSectionsFromText(TextToImport, ImportedSections);
@@ -6569,9 +6689,8 @@ bool FSequencer::PasteSections(const FString& TextToImport)
 
 	if (SelectedNodes.Num() == 0)
 	{
-		FNotificationInfo Info(LOCTEXT("PasteSections_NoSelectedTracks", "No selected tracks to paste sections onto"));
-		Info.bUseLargeFont = false;
-		FSlateNotificationManager::Get().AddNotification(Info);
+		FNotificationInfo Info(LOCTEXT("PasteSections_NoSelectedTracks", "Can't paste section. No selected tracks to paste sections onto"));
+		PasteErrors.Add(Info);
 		return false;
 	}
 
@@ -6655,9 +6774,8 @@ bool FSequencer::PasteSections(const FString& TextToImport)
 	{
 		Transaction.Cancel();
 
-		FNotificationInfo Info(LOCTEXT("PasteSections_NothingPasted", "Nothing pasted. No matching section types found."));
-		Info.bUseLargeFont = false;
-		FSlateNotificationManager::Get().AddNotification(Info);
+		FNotificationInfo Info(LOCTEXT("PasteSections_NothingPasted", "Can't paste section. No matching section types found."));
+		PasteErrors.Add(Info);
 		return false;
 	}
 
@@ -6683,7 +6801,7 @@ public:
 	// FCustomizableTextObjectFactory implementation
 	virtual bool CanCreateClass(UClass* InObjectClass, bool& bOmitSubObjs) const override
 	{
-		if (InObjectClass->IsChildOf(UMovieSceneTrack::StaticClass()))
+		if (InObjectClass->IsChildOf(UMovieSceneCopyableTrack::StaticClass()))
 		{
 			return true;
 		}
@@ -6695,11 +6813,11 @@ public:
 	{
 		check(NewObject);
 
-		NewTracks.Add(Cast<UMovieSceneTrack>(NewObject));
+		NewTracks.Add(Cast<UMovieSceneCopyableTrack>(NewObject));
 	}
 
 public:
-	TArray<UMovieSceneTrack*> NewTracks;
+	TArray<UMovieSceneCopyableTrack*> NewTracks;
 };
 
 
@@ -6757,7 +6875,7 @@ bool FSequencer::CanPaste(const FString& TextToImport)
 	return false;
 }
 
-void FSequencer::ImportTracksFromText(const FString& TextToImport, /*out*/ TArray<UMovieSceneTrack*>& ImportedTracks)
+void FSequencer::ImportTracksFromText(const FString& TextToImport, /*out*/ TArray<UMovieSceneCopyableTrack*>& ImportedTracks)
 {
 	UPackage* TempPackage = NewObject<UPackage>(nullptr, TEXT("/Engine/Sequencer/Editor/Transient"), RF_Transient);
 	TempPackage->AddToRoot();
@@ -8018,7 +8136,6 @@ void FSequencer::SetMarkedFrame(FFrameNumber FrameNumber, bool bSetMark)
 			{
 				int32 MarkedFrameIndex = FocusedMovieScene->FindMarkedFrameByFrameNumber(FrameNumber);
 				if (MarkedFrameIndex != INDEX_NONE)
-				FocusedMovieScene->RemoveMarkedFrame(MarkedFrameIndex);
 				{
 					FocusedMovieScene->RemoveMarkedFrame(MarkedFrameIndex);
 				}
@@ -8125,14 +8242,24 @@ void FSequencer::CopySelection()
 			GClipboardStack.Push(NullClipboard);
 		}
 
+		FString ObjectsExportedText;
+		FString TracksExportedText;
+
 		if (ObjectsToCopy.Num())
 		{
-			CopySelectedObjects(ObjectsToCopy);
+			CopySelectedObjects(ObjectsToCopy, ObjectsExportedText);
 		}
-		else
+
+		if (TracksToCopy.Num())
 		{
-			CopySelectedTracks(TracksToCopy);
+			CopySelectedTracks(TracksToCopy, TracksExportedText);
 		}
+
+		FString ExportedText;
+		ExportedText += ObjectsExportedText;
+		ExportedText += TracksExportedText;
+
+		FPlatformApplicationMisc::ClipboardCopy(*ExportedText);
 	}
 }
 
@@ -8802,7 +8929,13 @@ void FSequencer::ExportFBXInternal(const FString& ExportFilename, TArray<FGuid>&
 			Exporter->SetTrasformBaking(false);
 			Exporter->SetKeepHierarchy(true);
 
-			const bool bSelectedOnly = Bindings.Num() != 0;
+			const bool bSelectedOnly = (Selection.GetSelectedTracks().Num() + Bindings.Num()) != 0;
+
+			// Make sure external selection is up to date since export could happen on tracks that have been right clicked but not have their underlying bound objects selected yet since that happens on mouse up.
+			if (bSelectedOnly)
+			{
+				SynchronizeExternalSelectionWithSequencerSelection();
+			}
 
 			UnFbx::FFbxExporter::FLevelSequenceNodeNameAdapter NodeNameAdapter(MovieScene, this, GetFocusedTemplateID());
 

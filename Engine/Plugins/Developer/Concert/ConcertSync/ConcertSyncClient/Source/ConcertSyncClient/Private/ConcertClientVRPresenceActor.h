@@ -11,7 +11,7 @@
 /**
   * A ConcertClientVRPresenceActor is a child of AConcertClientPresenceActor that is used to represent users in VR 
   */
-UCLASS(Transient, NotPlaceable, Blueprintable)
+UCLASS(Abstract, Transient, NotPlaceable, Blueprintable)
 class AConcertClientVRPresenceActor : public AConcertClientPresenceActor
 {
 	GENERATED_UCLASS_BODY()
@@ -19,7 +19,7 @@ class AConcertClientVRPresenceActor : public AConcertClientPresenceActor
 public:
 	virtual void HandleEvent(const FStructOnScope& InEvent) override;
 
-	virtual void InitPresence(const class UConcertAssetContainer& InAssetContainer) override;
+	virtual void InitPresence(const class UConcertAssetContainer& InAssetContainer, FName DeviceType) override;
 
 	virtual void SetPresenceColor(const FLinearColor& InColor) override;
 

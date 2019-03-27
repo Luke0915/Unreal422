@@ -1133,6 +1133,10 @@ void FMeshMergeUtilities::CreateProxyMesh(const TArray<UStaticMeshComponent*>& I
 	if (ComponentsToMerge.Num() == 0)
 	{
 		UE_LOG(LogMeshMerging, Log, TEXT("No static mesh specified to generate a proxy mesh for"));
+		
+		TArray<UObject*> OutAssetsToSync;
+		InProxyCreatedDelegate.ExecuteIfBound(InGuid, OutAssetsToSync);
+
 		return;
 	}
 
@@ -1456,35 +1460,11 @@ void FMeshMergeUtilities::CreateProxyMesh(const TArray<UStaticMeshComponent*>& I
 				RemapPolygonGroup.Add(PolygonGroupID, FPolygonGroupID(RemapID));
 				MaxRemapID = FMath::Max(MaxRemapID, RemapID);
 			}
-
-			int32 PolygonGroupRemapCount = FMath::Max(MaxRemapID, RemapPolygonGroup.Num());
-			TSparseArray<int32> PolygonGroupRemap;
-			PolygonGroupRemap.Reserve(PolygonGroupRemapCount);
-			for (int32 Index = 0; Index < PolygonGroupRemapCount; ++Index)
-			{
-				PolygonGroupRemap.AddUninitialized();
-			}
-			//Set the polygon state
-			for (auto Kvp : RemapPolygonGroup)
-			{
-				PolygonGroupRemap[Kvp.Key.GetValue()] = Kvp.Value.GetValue();
-				FMeshPolygonGroup& PolygonGroup = RawMesh.GetPolygonGroup(Kvp.Key);
-				for (FPolygonID PolygonID : PolygonGroup.Polygons)
-				{
-					FMeshPolygon& Polygon = RawMesh.GetPolygon(PolygonID);
-					Polygon.PolygonGroupID = Kvp.Value;
-				}
-			}
-
-			//Remap the polygon groups
-			for (auto Kvp : RemapPolygonGroup)
-			{
-				RawMesh.PolygonGroups().Remap(PolygonGroupRemap);
-			}
+			FMeshDescriptionOperations::RemapPolygonGroups(RawMesh, RemapPolygonGroup);
 		}
 	};
 
-	// Landscape culling
+	// Landscape culling.  NB these are temporary copies of the culling data and should be deleted after use.
 	TArray<FMeshDescription*> CullingRawMeshes;
 	if (InMeshProxySettings.bUseLandscapeCulling)
 	{
@@ -1587,7 +1567,14 @@ void FMeshMergeUtilities::CreateProxyMesh(const TArray<UStaticMeshComponent*>& I
 
 		Processor->Tick(0); // make sure caller gets merging results
 	}
+
+	// Clean up the CullingRawMeshes
+	for (FMeshDescription* RawMesh : CullingRawMeshes)
+	{
+		delete RawMesh;
+	}
 }
+
 
 bool FMeshMergeUtilities::IsValidBaseMaterial(const UMaterialInterface* InBaseMaterial, bool bShowToaster) const
 {
@@ -2675,7 +2662,8 @@ void FMeshMergeUtilities::CreateMergedRawMeshes(FMeshMergeDataTracker& InDataTra
 
 									// Note that at this point UniqueIndex is NOT a material index, but a unique section index!
 								}
-								else
+								
+								if(UniqueIndex == INDEX_NONE)
 								{
 									UniqueIndex = SourcePolygonGroupID.GetValue();
 								}
@@ -2697,6 +2685,21 @@ void FMeshMergeUtilities::CreateMergedRawMeshes(FMeshMergeDataTracker& InDataTra
 					AppendSettings.MergedAssetPivot = InMergedAssetPivot;
 					FMeshDescriptionOperations::AppendMeshDescription(*RawMeshPtr, MergedMesh, AppendSettings);
 				}
+			}
+
+			//Cleanup the empty material to avoid empty section later
+			TArray<FPolygonGroupID> PolygonGroupToRemove;
+			for (FPolygonGroupID PolygonGroupID : MergedMesh.PolygonGroups().GetElementIDs())
+			{
+				if (MergedMesh.GetPolygonGroupPolygons(PolygonGroupID).Num() < 1)
+				{
+					PolygonGroupToRemove.Add(PolygonGroupID);
+					
+				}
+			}
+			for (FPolygonGroupID PolygonGroupID : PolygonGroupToRemove)
+			{
+				MergedMesh.DeletePolygonGroup(PolygonGroupID);
 			}
 		}
 	}
@@ -2763,7 +2766,8 @@ void FMeshMergeUtilities::CreateMergedRawMeshes(FMeshMergeDataTracker& InDataTra
 
 								// Note that at this point UniqueIndex is NOT a material index, but a unique section index!
 							}
-							else
+							
+							if(UniqueIndex == INDEX_NONE)
 							{
 								UniqueIndex = SourcePolygonGroupID.GetValue();
 							}
@@ -3077,25 +3081,25 @@ UMaterialInterface* FMeshMergeUtilities::CreateProxyMaterial(const FString &InBa
 	FString MaterialPackageName;
 	if (InBasePackageName.IsEmpty())
 	{
-		MaterialAssetName = TEXT("M_MERGED_") + FPackageName::GetShortName(MergedAssetPackageName);
-		MaterialPackageName = FPackageName::GetLongPackagePath(MergedAssetPackageName) + TEXT("/") + MaterialAssetName;
+		MaterialAssetName = FPackageName::GetShortName(MergedAssetPackageName);
+		MaterialPackageName = FPackageName::GetLongPackagePath(MergedAssetPackageName) + TEXT("/");
 	}
 	else
 	{
-		MaterialAssetName = TEXT("M_") + FPackageName::GetShortName(InBasePackageName);
-		MaterialPackageName = FPackageName::GetLongPackagePath(InBasePackageName) + TEXT("/") + MaterialAssetName;
+		MaterialAssetName = FPackageName::GetShortName(InBasePackageName);
+		MaterialPackageName = FPackageName::GetLongPackagePath(InBasePackageName) + TEXT("/");
 	}
 
 	UPackage* MaterialPackage = InOuter;
 	if (MaterialPackage == nullptr)
 	{
-		MaterialPackage = CreatePackage(nullptr, *MaterialPackageName);
+		MaterialPackage = CreatePackage(nullptr, *(MaterialPackageName + MaterialAssetName));
 		check(MaterialPackage);
 		MaterialPackage->FullyLoad();
 		MaterialPackage->Modify();
 	}
 
-	UMaterialInstanceConstant* MergedMaterial = ProxyMaterialUtilities::CreateProxyMaterialInstance(MaterialPackage, InSettings.MaterialSettings, InBaseMaterial, OutMaterial, MaterialAssetName, MaterialPackageName, OutAssetsToSync);
+	UMaterialInstanceConstant* MergedMaterial = ProxyMaterialUtilities::CreateProxyMaterialInstance(MaterialPackage, InSettings.MaterialSettings, InBaseMaterial, OutMaterial, MaterialPackageName, MaterialAssetName, OutAssetsToSync);
 	// Set material static lighting usage flag if project has static lighting enabled
 	static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
 	const bool bAllowStaticLighting = (!AllowStaticLightingVar || AllowStaticLightingVar->GetValueOnGameThread() != 0);

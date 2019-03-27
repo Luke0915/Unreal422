@@ -5,10 +5,12 @@
 #include "CoreTypes.h"
 #include "CoreFwd.h"
 #include "HAL/PlatformCrt.h"
+#include "Misc/CompressionFlags.h"
 
 class Error;
 class GenericApplication;
 class IPlatformChunkInstall;
+class IPlatformInstallBundleManager;
 class IPlatformCompression;
 struct FGenericCrashContext;
 struct FGenericMemoryWarningContext;
@@ -16,6 +18,12 @@ struct FChunkTagID;
 
 template <typename FuncType>
 class TFunction;
+
+#if UE_BUILD_SHIPPING
+#define UE_DEBUG_BREAK() ((void)0)
+#else
+#define UE_DEBUG_BREAK() ((void)(FPlatformMisc::IsDebuggerPresent() && ([] () { UE_DEBUG_BREAK_IMPL(); } (), 1)))
+#endif
 
 namespace EBuildConfigurations
 {
@@ -841,6 +849,13 @@ public:
 	static IPlatformChunkInstall* GetPlatformChunkInstall();
 
 	/**
+	 * Returns the platform specific Install Bundle Manager
+	 *
+	 * @return	Returns the platform specific Install Bundle Manager implementation
+	 */
+	static IPlatformInstallBundleManager* GetPlatformInstallBundleManager();
+
+	/**
 	 * Returns the platform specific compression interface
 	 *
 	 * @return Returns the platform specific compression interface
@@ -1257,7 +1272,15 @@ public:
 	static bool RequestDeviceCheckToken(TFunction<void(const TArray<uint8>&)> QuerySucceededFunc, TFunction<void(const FString&, const FString&)> QueryFailedFunc);
 
 	static TArray<FChunkTagID> GetOnDemandChunkTagIDs();
-	
+
+	/*
+	 * Loads a text file relative to the package root on platforms that distribute apps in package formats.
+	 * For other platforms, the path is relative to the root directory.
+	*/
+	static FString LoadTextFileFromPlatformPackage(const FString& RelativePath);
+
+	static void ParseChunkIdPakchunkIndexMapping(TArray<FString> ChunkIndexRedirects, TMap<int32, int32>& OutMapping);
+
 #if !UE_BUILD_SHIPPING
 	/** 
 	 * Returns any platform specific warning messages we want printed on screen

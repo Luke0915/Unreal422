@@ -205,11 +205,16 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 
 
 	// Create the per-material polygons sets.
-	int32 SectionCount = SourceModel.NumNonClothingSections();
+	int32 SectionCount = SourceModel.Sections.Num();
+	int32 ClothSectionVertexRemoveOffset = 0;
 	for (int32 SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
 	{
 		const FSkelMeshSection& Section = SourceModel.Sections[SectionIndex];
-
+		if (Section.HasClothingData())
+		{
+			ClothSectionVertexRemoveOffset += Section.GetNumVertices();
+			continue;
+		}
 		int32 MatIndex = Section.MaterialIndex;
 
 		// Static meshes contain one triangle list per element.
@@ -221,7 +226,9 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 			Mesh->BeginPolygon(MatIndex);
 			for (int32 PointIndex = 0; PointIndex < 3; PointIndex++)
 			{
-				Mesh->AddPolygon(SourceModel.IndexBuffer[Section.BaseIndex + ((TriangleIndex * 3) + PointIndex)]);
+				int32 VertexPositionIndex = SourceModel.IndexBuffer[Section.BaseIndex + ((TriangleIndex * 3) + PointIndex)] - ClothSectionVertexRemoveOffset;
+				check(VertexPositionIndex >= 0);
+				Mesh->AddPolygon(VertexPositionIndex);
 			}
 			Mesh->EndPolygon();
 		}
@@ -335,6 +342,10 @@ void FFbxExporter::BindMeshToSkeleton(const USkeletalMesh* SkelMesh, FbxNode* Me
 		for(int32 SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
 		{
 			const FSkelMeshSection& Section = SourceModel.Sections[SectionIndex];
+			if (Section.HasClothingData())
+			{
+				continue;
+			}
 
 			for(int32 SoftIndex = 0; SoftIndex < Section.SoftVertices.Num(); ++SoftIndex)
 			{
@@ -530,11 +541,22 @@ void ExportObjectMetadataToBones(const UObject* ObjectToExport, const TArray<Fbx
 				FbxNode** Node = NameToNode.Find(NodeName);
 				if (Node)
 				{
-					FbxProperty Property = FbxProperty::Create(*Node, FbxStringDT, TCHAR_TO_UTF8(*TagAsString));
-					FbxString ValueString(TCHAR_TO_UTF8(*MetadataIt.Value));
+					if (MetadataIt.Value == TEXT("true") || MetadataIt.Value == TEXT("false"))
+					{
+						FbxProperty Property = FbxProperty::Create(*Node, FbxBoolDT, TCHAR_TO_UTF8(*TagAsString));
+						FbxBool ValueBool = MetadataIt.Value == TEXT("true") ? true : false;
 
-					Property.Set(ValueString);
-					Property.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+						Property.Set(ValueBool);
+						Property.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+					}
+					else
+					{
+						FbxProperty Property = FbxProperty::Create(*Node, FbxStringDT, TCHAR_TO_UTF8(*TagAsString));
+						FbxString ValueString(TCHAR_TO_UTF8(*MetadataIt.Value));
+
+						Property.Set(ValueString);
+						Property.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+					}
 				}
 			}
 		}
@@ -548,7 +570,7 @@ FbxNode* FFbxExporter::ExportSkeletalMeshToFbx(const USkeletalMesh* SkeletalMesh
 {
 	if(AnimSeq)
 	{
-		return ExportAnimSequence(AnimSeq, SkeletalMesh, true, MeshName, ActorRootNode);
+		return ExportAnimSequence(AnimSeq, SkeletalMesh, GetExportOptions()->bExportPreviewMesh, MeshName, ActorRootNode);
 
 	}
 	else

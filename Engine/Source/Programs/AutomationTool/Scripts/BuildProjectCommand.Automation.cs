@@ -54,6 +54,7 @@ public partial class Project : CommandUtils
 			);
 	}
 
+
 	public static void Build(BuildCommand Command, ProjectParams Params, int WorkingCL = -1, ProjectBuildTargets TargetMask = ProjectBuildTargets.All)
 	{
 		Params.ValidateAndLog();
@@ -123,7 +124,10 @@ public partial class Project : CommandUtils
 
 		if (string.IsNullOrEmpty(Params.UbtArgs) == false)
 		{
-			AdditionalArgs += " " + Params.UbtArgs;
+			string Arg = Params.UbtArgs;
+			Arg = Arg.TrimStart(new char[] { '\"' });
+			Arg = Arg.TrimEnd(new char[] { '\"' });
+			AdditionalArgs += " " + Arg;
 		}
 
 		if (Params.MapFile)
@@ -134,6 +138,11 @@ public partial class Project : CommandUtils
 		if (Params.Deploy || Params.Package)
 		{
 			AdditionalArgs += " -skipdeploy"; // skip deploy step in UBT if we going to do it later anyway
+		}
+
+		if (Params.Distribution)
+		{
+			AdditionalArgs += " -distribution";
 		}
 
 		// Config overrides (-ini)

@@ -426,6 +426,7 @@ void AActor::FActorTransactionAnnotation::Serialize(FArchive& Ar)
 	enum class EVersion : uint8
 	{
 		InitialVersion = 0,
+		WithInstanceCache,
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1
@@ -440,17 +441,21 @@ void AActor::FActorTransactionAnnotation::Serialize(FArchive& Ar)
 		return;
 	}
 
+	// InitialVersion
 	Ar << Actor;
+	Ar << bRootComponentDataCached;
+	if (bRootComponentDataCached)
+	{
+		Ar << RootComponentData;
+	}
+	// WithInstanceCache
 	if (Ar.IsLoading())
 	{
 		ComponentInstanceData = FComponentInstanceDataCache(Actor.Get());
 	}
-
-	Ar << bRootComponentDataCached;
-
-	if (bRootComponentDataCached)
+	if (Version >= EVersion::WithInstanceCache)
 	{
-		Ar << RootComponentData;
+		ComponentInstanceData.Serialize(Ar);
 	}
 }
 
@@ -980,7 +985,7 @@ EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)
 	bool bSuccess = CheckDefaultSubobjects();
 	if (!bSuccess)
 	{
-		FText ErrorMsg = FText::Format(LOCTEXT("IsDataValid_Failed_CheckForErrors", "{0} failed CheckDefaultSubobjectsInternal()"), FText::FromString(GetName()));
+		FText ErrorMsg = FText::Format(LOCTEXT("IsDataValid_Failed_CheckDefaultSubobjectsInternal", "{0} failed CheckDefaultSubobjectsInternal()"), FText::FromString(GetName()));
 		ValidationErrors.Add(ErrorMsg);
 	}
 

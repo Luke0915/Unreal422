@@ -101,7 +101,7 @@ public:
 	DECLARE_DELEGATE_OneParam(FPakEncryptionKeyDelegate, uint8[32]);
 
 	// Callback for gathering pak signing keys, if they exist
-	DECLARE_DELEGATE_TwoParams(FPakSigningKeysDelegate, uint8[64], uint8[64]);
+	DECLARE_DELEGATE_TwoParams(FPakSigningKeysDelegate, TArray<uint8>&, TArray<uint8>&);
 
 	// Callback for handling the Controller connection / disconnection
 	// first param is true for a connection, false for a disconnection.
@@ -330,6 +330,11 @@ public:
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FAudioMuteDelegate, bool, int);
 	static FAudioMuteDelegate AudioMuteDelegate;
 	
+	// [iOS only] Called when the audio device changes
+	// For instance, when the headphones are plugged in or removed
+	DECLARE_MULTICAST_DELEGATE_OneParam(FAudioRouteChangedDelegate, bool);
+	static FAudioRouteChangedDelegate AudioRouteChangedDelegate;
+
 	// Generally, events triggering UserMusicInterruptDelegate or AudioMuteDelegate happen only
 	// when a change occurs. When a system comes online needing the current audio state but the
 	// event has already been broadcast, calling ApplicationRequestAudioState will force the

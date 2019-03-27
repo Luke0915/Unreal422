@@ -237,6 +237,12 @@ void FBodyInstanceCustomization::CustomizeChildren( TSharedRef<class IPropertyHa
 		}
 	}
 	
+	TSharedPtr<IPropertyHandle> SimulatePhysicsPropertyHandle = BodyInstanceHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBodyInstance, bSimulatePhysics));
+	if (SimulatePhysicsPropertyHandle.IsValid())
+	{
+		FSimpleDelegate OnSimulatePhysicsChangedDelegate = FSimpleDelegate::CreateSP(this, &FBodyInstanceCustomization::OnSimulatePhysicsChanged);
+		SimulatePhysicsPropertyHandle->SetOnPropertyValueChanged(OnSimulatePhysicsChangedDelegate);
+	}
 
 	AddCollisionCategory(StructPropertyHandle, StructBuilder, StructCustomizationUtils);
 }
@@ -247,7 +253,7 @@ int32 FBodyInstanceCustomization::InitializeObjectTypeComboList()
 	ObjectTypeComboList.Empty();
 	ObjectTypeValues.Empty();
 
-	UEnum * Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("ECollisionChannel"), true);
+	UEnum * Enum = StaticEnum<ECollisionChannel>();
 	const FString KeyName = TEXT("DisplayName");
 	const FString QueryType = TEXT("TraceQuery");
 
@@ -335,7 +341,7 @@ TSharedPtr<FString> FBodyInstanceCustomization::GetProfileString(FName ProfileNa
 void FBodyInstanceCustomization::UpdateValidCollisionChannels()
 {
 	// find the enum
-	UEnum * Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("ECollisionChannel"), true);
+	UEnum * Enum = StaticEnum<ECollisionChannel>();
 	// we need this Enum
 	check (Enum);
 	const FString KeyName = TEXT("DisplayName");
@@ -783,6 +789,10 @@ TSharedRef<SWidget> FBodyInstanceCustomization::MakeCollisionProfileComboWidget(
 		.Font(IDetailLayoutBuilder::GetDetailFont());
 }
 
+void FBodyInstanceCustomization::OnSimulatePhysicsChanged()
+{
+	UpdateCollisionProfile();
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // NOTE! I have a lot of ensure to make sure it's set correctly
@@ -1560,7 +1570,7 @@ void FBodyInstanceCustomizationHelper::AddMassInKg(IDetailCategoryBuilder& Physi
 			.Padding(0.f, 0.f, 10.f, 0.f)
 			[
 				SNew(SNumericEntryBox<float>)
-				.IsEnabled(&FBodyInstanceCustomizationHelper::IsBodyMassEnabled)
+				.IsEnabled(this, &FBodyInstanceCustomizationHelper::IsBodyMassEnabled)
 				.Font(IDetailLayoutBuilder::GetDetailFont())
 				.Value(this, &FBodyInstanceCustomizationHelper::OnGetBodyMass)
 				.OnValueCommitted(this, &FBodyInstanceCustomizationHelper::OnSetBodyMass)

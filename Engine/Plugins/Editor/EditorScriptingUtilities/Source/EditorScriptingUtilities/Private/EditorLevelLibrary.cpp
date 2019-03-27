@@ -29,6 +29,8 @@
 #include "MeshMergeModule.h"
 #include "ScopedTransaction.h"
 #include "UnrealEdGlobals.h"
+#include "LevelEditor.h"
+#include "ILevelViewport.h"
 
 #define LOCTEXT_NAMESPACE "EditorLevelLibrary"
 
@@ -57,6 +59,21 @@ namespace InternalEditorLevelLibrary
 	UWorld* GetEditorWorld()
 	{
 		return GEditor ? GEditor->GetEditorWorldContext(false).World() : nullptr;
+	}
+
+	UWorld* GetGameWorld()
+	{
+		if (GEditor)
+		{
+			if (FWorldContext* WorldContext = GEditor->GetPIEWorldContext())
+			{
+				return WorldContext->World();
+			}
+
+			return nullptr;
+		}
+
+		return GWorld;
 	}
 
 	template<class T>
@@ -181,9 +198,93 @@ void UEditorLevelLibrary::SetSelectedLevelActors(const TArray<class AActor*>& Ac
 	{
 		GEditor->SelectNone(true, true, false);
 	}
-
-	return;
 }
+
+void UEditorLevelLibrary::PilotLevelActor(AActor* ActorToPilot)
+{
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+
+	TSharedPtr<ILevelViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
+	if (ActiveLevelViewport.IsValid())
+	{
+		FLevelEditorViewportClient& LevelViewportClient = ActiveLevelViewport->GetLevelViewportClient();
+
+		LevelViewportClient.SetActorLock(ActorToPilot);
+		if (LevelViewportClient.IsPerspective() && LevelViewportClient.GetActiveActorLock().IsValid())
+		{
+			LevelViewportClient.MoveCameraToLockedActor();
+		}
+	}
+}
+
+void UEditorLevelLibrary::EjectPilotLevelActor()
+{
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+
+	TSharedPtr<ILevelViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
+	if (ActiveLevelViewport.IsValid())
+	{
+		FLevelEditorViewportClient& LevelViewportClient = ActiveLevelViewport->GetLevelViewportClient();
+
+		if (AActor* LockedActor = LevelViewportClient.GetActiveActorLock().Get())
+		{
+			//// Check to see if the locked actor was previously overriding the camera settings
+			//if (CanGetCameraInformationFromActor(LockedActor))
+			//{
+			//	// Reset the settings
+			//	LevelViewportClient.ViewFOV = LevelViewportClient.FOVAngle;
+			//}
+
+			LevelViewportClient.SetActorLock(nullptr);
+
+			// remove roll and pitch from camera when unbinding from actors
+			GEditor->RemovePerspectiveViewRotation(true, true, false);
+		}
+	}
+}
+
+
+void UEditorLevelLibrary::EditorSetGameView(bool bGameView)
+{
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+
+	TSharedPtr<ILevelViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
+	if (ActiveLevelViewport.IsValid())
+	{
+		if (ActiveLevelViewport->IsInGameView() != bGameView)
+		{
+			ActiveLevelViewport->ToggleGameView();
+		}
+	}
+}
+
+#if WITH_EDITOR
+
+void UEditorLevelLibrary::EditorPlaySimulate()
+{
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+
+	TSharedPtr<ILevelViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
+	if (ActiveLevelViewport.IsValid())
+	{
+		const bool bSimulateInEditor = true;
+		GUnrealEd->RequestPlaySession(false, ActiveLevelViewport, bSimulateInEditor, NULL, NULL, -1, false);
+	}
+}
+
+void UEditorLevelLibrary::EditorInvalidateViewports()
+{
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+
+	TSharedPtr<ILevelViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
+	if (ActiveLevelViewport.IsValid())
+	{
+		FLevelEditorViewportClient& LevelViewportClient = ActiveLevelViewport->GetLevelViewportClient();
+		LevelViewportClient.Invalidate();
+	}
+}
+
+#endif
 
 namespace InternalEditorLevelLibrary
 {
@@ -310,7 +411,10 @@ bool UEditorLevelLibrary::DestroyActor(class AActor* ToDestroyActor)
 		GEditor->SelectNone(true, true, false);
 	}
 
-	GEditor->Layers->DisassociateActorFromLayers(ToDestroyActor);
+	if (GEditor->Layers)
+	{
+		GEditor->Layers->DisassociateActorFromLayers(ToDestroyActor);
+	}
 	return World->EditorDestroyActor(ToDestroyActor, true);
 }
 
@@ -325,6 +429,14 @@ UWorld* UEditorLevelLibrary::GetEditorWorld()
 
 	return InternalEditorLevelLibrary::GetEditorWorld();
 }
+
+UWorld* UEditorLevelLibrary::GetGameWorld()
+{
+	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+
+	return InternalEditorLevelLibrary::GetGameWorld();
+}
+
 
 /**
  *
@@ -917,6 +1029,11 @@ namespace InternalEditorLevelLibrary
 			}
 		}
 
+		if (ActorsToTest.Num() == 0)
+		{
+			return false;
+		}
+
 		// All actors need to come from the same World
 		UWorld* CurrentWorld = ActorsToTest[0]->GetWorld();
 		if (CurrentWorld == nullptr)
@@ -1196,14 +1313,21 @@ bool UEditorLevelLibrary::CreateProxyMeshActor(const TArray<class AStaticMeshAct
 		return false;
 	}
 
+	FString FailureReason;
+	FString PackageName = EditorScriptingUtils::ConvertAnyPathToLongPackagePath(MergeOptions.BasePackageName, FailureReason);
+	if (PackageName.IsEmpty())
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("CreateProxyMeshActor. Failed to convert the BasePackageName. %s"), *FailureReason);
+		return false;
+	}
+
 	// Cleanup actors
 	TArray<AStaticMeshActor*> StaticMeshActors;
 	TArray<UPrimitiveComponent*> AllComponents_UNUSED;
 	FVector PivotLocation;
-	FString FailureReason;
 	if (!InternalEditorLevelLibrary::FindValidActorAndComponents(ActorsToMerge, StaticMeshActors, AllComponents_UNUSED, PivotLocation, FailureReason))
 	{
-		UE_LOG(LogEditorScripting, Error, TEXT("MergeStaticMeshActors failed. %s"), *FailureReason);
+		UE_LOG(LogEditorScripting, Error, TEXT("CreateProxyMeshActor failed. %s"), *FailureReason);
 		return false;
 	}
 	TArray<AActor*> AllActors(StaticMeshActors);
@@ -1219,7 +1343,7 @@ bool UEditorLevelLibrary::CreateProxyMeshActor(const TArray<class AStaticMeshAct
 		MergeOptions.MeshProxySettings, // Merge settings
 		nullptr,                        // Base Material used for final proxy material. Note: nullptr for default impl: /Engine/EngineMaterials/BaseFlattenMaterial.BaseFlattenMaterial
 		nullptr,                        // Package for generated assets. Note: if nullptr, BasePackageName is used
-		MergeOptions.BasePackageName,   // Will be used for naming generated assets, in case InOuter is not specified ProxyBasePackageName will be used as long package name for creating new packages
+		PackageName,                    // Will be used for naming generated assets, in case InOuter is not specified ProxyBasePackageName will be used as long package name for creating new packages
 		FGuid::NewGuid(),               // Identify a job, First argument of the ProxyDelegate
 		ProxyDelegate                   // Called back on asset creation
 	);

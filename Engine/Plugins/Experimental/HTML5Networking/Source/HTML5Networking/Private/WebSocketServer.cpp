@@ -67,6 +67,10 @@ bool FWebSocketServer::Init(uint32 Port, FWebsocketClientConnectedCallBack CallB
 	Info.options = 0;
 	// tack on this object.
 	Info.user = this;
+
+	//Info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+	Info.options |= LWS_SERVER_OPTION_DISABLE_IPV6;
+
 	Context = lws_create_context(&Info);
 
 	if (Context == NULL)
@@ -74,13 +78,10 @@ bool FWebSocketServer::Init(uint32 Port, FWebsocketClientConnectedCallBack CallB
 		ServerPort = 0;
 		delete Protocols;
 		Protocols = NULL;
-		IsAlive = false;
 		return false; // couldn't create a server.
 	}
 
 	ConnectedCallBack = CallBack;
-	IsAlive = true;
-
 #endif
 	return true;
 }
@@ -88,11 +89,8 @@ bool FWebSocketServer::Init(uint32 Port, FWebsocketClientConnectedCallBack CallB
 bool FWebSocketServer::Tick()
 {
 #if USE_LIBWEBSOCKET
-	if (IsAlive)
-	{
-		lws_service(Context, 0);
-		lws_callback_on_writable_all_protocol(Context, &Protocols[0]);
-	}
+	lws_service(Context, 0);
+	lws_callback_on_writable_all_protocol(Context, &Protocols[0]);
 #endif
 	return true;
 }
@@ -111,8 +109,6 @@ FWebSocketServer::~FWebSocketServer()
 
 	 delete Protocols;
 	 Protocols = NULL;
-
-	 IsAlive = false;
 #endif
 }
 
@@ -139,10 +135,6 @@ static int unreal_networking_server
 	struct lws_context *Context = lws_get_context(Wsi);
 	PerSessionDataServer* BufferInfo = (PerSessionDataServer*)User;
 	FWebSocketServer* Server = (FWebSocketServer*)lws_context_user(Context);
-	if (!Server->IsAlive)
-	{
-		return 0;
-	}
 
 	switch (Reason)
 	{
@@ -162,10 +154,11 @@ static int unreal_networking_server
 			break;
 
 		case LWS_CALLBACK_SERVER_WRITEABLE:
+			if (BufferInfo->Socket->Context == Context) // UE-68340 -- bandaid until this file is removed in favor of using LwsWebSocketsManager.cpp & LwsWebSocket.cpp
 			{
 				BufferInfo->Socket->OnRawWebSocketWritable(Wsi);
-				lws_set_timeout(Wsi, NO_PENDING_TIMEOUT, 0);
 			}
+			lws_set_timeout(Wsi, NO_PENDING_TIMEOUT, 0);
 			break;
 		case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
 			{
@@ -176,9 +169,6 @@ static int unreal_networking_server
 		case LWS_CALLBACK_PROTOCOL_DESTROY:
 		case LWS_CALLBACK_CLOSED:
 		case LWS_CALLBACK_CLOSED_HTTP:
-			{
-				Server->IsAlive = false;
-			}
 			break;
 	}
 

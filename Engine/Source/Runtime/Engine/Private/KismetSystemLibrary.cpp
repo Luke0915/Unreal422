@@ -83,6 +83,11 @@ FString UKismetSystemLibrary::GetClassDisplayName(UClass* Class)
 	return Class ? Class->GetName() : FString();
 }
 
+UObject* UKismetSystemLibrary::GetOuterObject(const UObject* Object)
+{
+	return Object ? Object->GetOuter() : nullptr;
+}
+
 FString UKismetSystemLibrary::GetEngineVersion()
 {
 	return FEngineVersion::Current().ToString();
@@ -296,14 +301,19 @@ void UKismetSystemLibrary::SetWindowTitle(const FText& Title)
 void UKismetSystemLibrary::ExecuteConsoleCommand(UObject* WorldContextObject, const FString& Command, APlayerController* Player)
 {
 	// First, try routing through the primary player
-	APlayerController* TargetPC = Player ? Player : UGameplayStatics::GetPlayerController(WorldContextObject, 0);
-	if( TargetPC )
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
+	APlayerController* TargetPC = Player || !World ? Player : World->GetFirstPlayerController();
+	if (TargetPC)
 	{
 		TargetPC->ConsoleCommand(Command, true);
 	}
+	else
+	{
+		GEngine->Exec(World, *Command);
+	}
 }
 
-float UKismetSystemLibrary::GetConsoleVariableFloatValue(UObject* WorldContextObject, const FString& VariableName)
+float UKismetSystemLibrary::GetConsoleVariableFloatValue(const FString& VariableName)
 {
 	float Value = 0.0f;
 
@@ -320,7 +330,7 @@ float UKismetSystemLibrary::GetConsoleVariableFloatValue(UObject* WorldContextOb
 	return Value;
 }
 
-int32 UKismetSystemLibrary::GetConsoleVariableIntValue(UObject* WorldContextObject, const FString& VariableName)
+int32 UKismetSystemLibrary::GetConsoleVariableIntValue(const FString& VariableName)
 {
 	int32 Value = 0;
 
@@ -337,7 +347,10 @@ int32 UKismetSystemLibrary::GetConsoleVariableIntValue(UObject* WorldContextObje
 	return Value;
 }
 
-
+bool UKismetSystemLibrary::GetConsoleVariableBoolValue(const FString& VariableName)
+{
+	return (GetConsoleVariableIntValue(VariableName) != 0);
+}
 
 
 void UKismetSystemLibrary::QuitGame(UObject* WorldContextObject, class APlayerController* SpecificPlayer, TEnumAsByte<EQuitPreference::Type> QuitPreference, bool bIgnorePlatformRestrictions)

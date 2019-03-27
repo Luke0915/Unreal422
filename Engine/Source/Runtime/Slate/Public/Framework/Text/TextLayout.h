@@ -217,7 +217,7 @@ public:
 		int16 MaxAboveBaseline;
 		int16 MaxBelowBaseline;
 
-		uint8 Kerning;
+		int8 Kerning;
 
 #if TEXT_LAYOUT_DEBUG
 		FString DebugSlice;
@@ -245,7 +245,7 @@ public:
 
 		FVector2D Measure( int32 BeginIndex, int32 EndIndex, float Scale, const FRunTextContext& InTextContext );
 
-		uint8 GetKerning( int32 CurrentIndex, float Scale, const FRunTextContext& InTextContext );
+		int8 GetKerning( int32 CurrentIndex, float Scale, const FRunTextContext& InTextContext );
 
 		static int32 BinarySearchForBeginIndex( const TArray< FTextRange >& Ranges, int32 BeginIndex );
 
@@ -262,7 +262,8 @@ public:
 
 		TSharedRef< IRun > Run;
 		TArray< FTextRange > MeasuredRanges;
-		TArray< FVector2D > MeasuredRangeSizes;
+		// HACK: This should be a Vector2D, but changing to a FVector4 to overcome a compiler issue with vectorization running off the end of the array.
+		TArray< FVector4 > MeasuredRangeSizes;
 	};
 
 	struct ELineModelDirtyState

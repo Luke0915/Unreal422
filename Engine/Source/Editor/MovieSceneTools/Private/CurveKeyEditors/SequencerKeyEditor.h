@@ -65,11 +65,6 @@ struct TSequencerKeyEditor
 	{
 		using namespace MovieScene;
 
-		if (TOptional<ValueType> ExternalValue = GetExternalValue())
-		{
-			return ExternalValue.GetValue();
-		}
-
 		ChannelType* Channel = ChannelHandle.Get();
 		ISequencer* Sequencer = WeakSequencer.Pin().Get();
 		UMovieSceneSection* OwningSection = WeakSection.Get();
@@ -79,7 +74,17 @@ struct TSequencerKeyEditor
 		if (Channel && Sequencer && OwningSection)
 		{
 			const FFrameTime CurrentTime = MovieScene::ClampToDiscreteRange(Sequencer->GetLocalTime().Time, OwningSection->GetRange());
-			EvaluateChannel(Channel, CurrentTime, Result);
+			//If we have no keys and no default, key with the external value if it exists
+			if (!EvaluateChannel(Channel, CurrentTime, Result))
+			{
+				if (TOptional<ValueType> ExternalValue = GetExternalValue())
+				{
+					if (ExternalValue.IsSet())
+					{
+						Result = ExternalValue.GetValue();
+					}
+				}
+			}
 		}
 
 		return Result;

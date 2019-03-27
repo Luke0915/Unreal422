@@ -29,6 +29,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SMediaImage.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -196,7 +197,7 @@ void SMediaFrameworkVideoInputDisplay::OnMediaClosed()
 			const double TimeBetweenWarningsInSeconds = 3.0;
 			if (TimeNow - VideoInputDisplayUtilities::PreviousWarningTime > TimeBetweenWarningsInSeconds)
 			{
-				FNotificationInfo NotificationInfo(LOCTEXT("MediaOpenFailedError", "A Media Player failed. Check Output Log for details!"));
+				FNotificationInfo NotificationInfo(LOCTEXT("MediaOpenFailedError", "A Media Player failed. Check Output Log for details."));
 				NotificationInfo.ExpireDuration = 2.0f;
 				FSlateNotificationManager::Get().AddNotification(NotificationInfo);
 				VideoInputDisplayUtilities::PreviousWarningTime = TimeNow;
@@ -235,46 +236,6 @@ void SMediaFrameworkVideoInputDisplay::OnMediaClosed()
 	}
 }
 
-const FSlateBrush* SMediaFrameworkVideoInputDisplay::CreateDisplayBrush(UMediaTexture* InTexture)
-{
-	if (InTexture)
-	{
-		// create wrapper material
-		Material = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient | RF_Public);
-		UMaterialExpressionTextureSample* TextureSampler = NewObject<UMaterialExpressionTextureSample>(Material);
-		{
-			TextureSampler->Texture = InTexture;
-			TextureSampler->AutoSetSampleType();
-		}
-
-		FExpressionOutput& Output = TextureSampler->GetOutputs()[0];
-		FExpressionInput& Input = Material->EmissiveColor;
-		{
-			Input.Expression = TextureSampler;
-			Input.Mask = Output.Mask;
-			Input.MaskR = Output.MaskR;
-			Input.MaskG = Output.MaskG;
-			Input.MaskB = Output.MaskB;
-			Input.MaskA = Output.MaskA;
-		}
-
-		Material->Expressions.Add(TextureSampler);
-		Material->MaterialDomain = EMaterialDomain::MD_UI;
-		Material->PostEditChange();
-		Material->AddToRoot();
-
-		// create Slate brush
-		MaterialBrush = MakeShareable(new FSlateBrush());
-		{
-			MaterialBrush->SetResourceObject(Material);
-		}
-
-		return MaterialBrush.Get();
-	}
-
-	return FEditorStyle::GetDefaultBrush();
-}
-
 TSharedRef<SWidget> SMediaFrameworkVideoInputDisplay::ConstructVideoDisplay()
 {
 	UMediaTexture* MediaTexture = GetMediaTexture();
@@ -288,8 +249,7 @@ TSharedRef<SWidget> SMediaFrameworkVideoInputDisplay::ConstructVideoDisplay()
 				return VideoInputDisplayUtilities::CalculateWitdhForDisplay(GetMediaTexture());
 			})
 			[
-				SNew(SImage)
-				.Image(CreateDisplayBrush(MediaTexture))
+				SNew(SMediaImage, MediaTexture)
 			];
 	}
 
@@ -456,6 +416,8 @@ void SMediaFrameworkVideoInputMediaSourceDisplay::Construct(const FArguments& In
 		check(MediaTexture);
 	}
 
+	bool bOpened = false;
+
 	if (MediaSource && MediaTexture)
 	{
 		MediaPlayer = MediaTexture->GetMediaPlayer();
@@ -471,11 +433,21 @@ void SMediaFrameworkVideoInputMediaSourceDisplay::Construct(const FArguments& In
 			{
 				AttachCallback();
 			}
-			MediaPlayer->OpenSource(MediaSource);
-			MediaPlayer->Play();
+			bOpened = MediaPlayer->OpenSource(MediaSource);
+			bOpened = bOpened && MediaPlayer->Play();
+		}
+		else
+		{
+			UE_LOG(LogMediaFrameworkUtilitiesEditor, Error, TEXT("There is not MediaPlayer associated with the MediaTexture '%s'."), *MediaTexture->GetName());
 		}
 
 		SMediaFrameworkVideoInputDisplay::Construct(MediaSource->GetName());
+
+		if (!bOpened)
+		{
+			FNotificationInfo NotificationInfo(LOCTEXT("MediaOpenFailedError", "A Media Player failed. Check Output Log for details."));
+			FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		}
 	}
 }
 

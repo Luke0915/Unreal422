@@ -72,6 +72,9 @@ FWebSocket::FWebSocket(
 	Info.uid = -1;
 	Info.user = this;
 
+	//Info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+	Info.options |= LWS_SERVER_OPTION_DISABLE_IPV6;
+
 	Context = lws_create_context(&Info);
 
 	check(Context);
@@ -485,7 +488,7 @@ static int unreal_networking_client(
 			lws_set_timeout(Wsi, NO_PENDING_TIMEOUT, 0);
 			break;
 		}
-	case LWS_CALLBACK_CLOSED:
+	case LWS_CALLBACK_CLIENT_CLOSED:
 		{
 			Socket->ErrorCallBack.ExecuteIfBound();
 			return -1;

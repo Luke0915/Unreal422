@@ -165,7 +165,7 @@ FText FEnvTraceData::ToText(FEnvTraceData::EDescriptionMode DescMode) const
 
 		if (DescMode == FEnvTraceData::Brief)
 		{
-			static UEnum* ChannelEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("ETraceTypeQuery"), true);
+			static UEnum* ChannelEnum = StaticEnum<ETraceTypeQuery>();
 			check(ChannelEnum != nullptr);
 
 			FFormatNamedArguments Args;
@@ -394,7 +394,7 @@ void FEQSParametrizedQueryExecutionRequest::InitForOwnerAndBlackboard(UObject& O
 
 	EQSQueryBlackboardKey.AddObjectFilter(&Owner, NAME_None, UEnvQuery::StaticClass());
 
-	if ((QueryConfig.Num() > 0 || bUseBBKeyForQueryTemplate) && BBAsset)
+	if ((bUseBBKeyForQueryTemplate || QueryConfig.Num() > 0) && BBAsset)
 	{
 		for (FAIDynamicParam& RuntimeParam : QueryConfig)
 		{
@@ -404,7 +404,10 @@ void FEQSParametrizedQueryExecutionRequest::InitForOwnerAndBlackboard(UObject& O
 			}
 		}
 
-		EQSQueryBlackboardKey.ResolveSelectedKey(*BBAsset);
+		if (bUseBBKeyForQueryTemplate)
+		{
+			EQSQueryBlackboardKey.ResolveSelectedKey(*BBAsset);
+		}
 	}
 }
 

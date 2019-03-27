@@ -273,6 +273,35 @@ protected:
 	 */
 	TArray<int32> MasterBoneMap;
 
+	/** Cached relative transform for slave bones that are missing in the master */
+	struct FMissingMasterBoneCacheEntry
+	{
+		FMissingMasterBoneCacheEntry()
+			: RelativeTransform(FTransform::Identity)
+			, CommonAncestorBoneIndex(INDEX_NONE)
+		{}
+
+		FMissingMasterBoneCacheEntry(const FTransform& InRelativeTransform, int32 InCommonAncestorBoneIndex)
+			: RelativeTransform(InRelativeTransform)
+			, CommonAncestorBoneIndex(InCommonAncestorBoneIndex)
+		{}
+
+		/** 
+		 * Relative transform of the missing bone's ref pose, based on the earliest common ancestor 
+		 * this will be equivalent to the component space transform of the bone had it existed in the master. 
+		 */
+		FTransform RelativeTransform;
+
+		/** The index of the earliest common ancestor of the master mesh. Index is the bone index in *this* mesh. */
+		int32 CommonAncestorBoneIndex;
+	};
+
+	/**  
+	 * Map of missing bone indices->transforms so that calls to GetBoneTransform() succeed when bones are not
+	 * present in a master mesh when using master-pose. Index key is the bone index of *this* mesh.
+	 */
+	TMap<int32, FMissingMasterBoneCacheEntry> MissingMasterBoneMap;
+
 	/**
 	*	Mapping for socket overrides, key is the Source socket name and the value is the override socket name
 	*/
@@ -402,6 +431,10 @@ public:
 #endif
 
 protected:
+	/** Record of the tick rate we are using when externally controlled */
+	uint8 ExternalTickRate;
+
+protected:
 	/** used to cache previous bone transform or not */
 	uint8 bHasValidBoneTransform:1;
 
@@ -518,6 +551,9 @@ protected:
 	UPROPERTY(Transient)
 	mutable uint8 bCachedLocalBoundsUpToDate:1;
 
+	/** Whether we have updated bone visibility this tick */
+	uint8 bBoneVisibilityDirty:1;
+
 private:
 	/** If true, UpdateTransform will always result in a call to MeshObject->Update. */
 	UPROPERTY(transient)
@@ -539,6 +575,15 @@ protected:
 public:
 	/** Set whether we have our tick rate externally controlled non-URO-based interpolation */
 	void EnableExternalTickRateControl(bool bInEnable) { bExternalTickRateControlled = bInEnable; }
+
+	/** Check whether we we have our tick rate externally controlled */
+	bool IsUsingExternalTickRateControl() const { return bExternalTickRateControlled; }
+
+	/** Set the external tick rate */
+	void SetExternalTickRate(uint8 InTickRate) { ExternalTickRate = InTickRate; }
+
+	/** Get the external tick rate */
+	uint8 GetExternalTickRate() const { return ExternalTickRate; }
 
 	/** Enable non-URO-based interpolation */
 	void EnableExternalInterpolation(bool bInEnable) { bExternalInterpolate = bInEnable; }
@@ -686,6 +731,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
 	FTransform GetDeltaTransformFromRefPose(FName BoneName, FName BaseName = NAME_None) const;
 
+	/** 
+	 * Get Twist and Swing Angle in Degree of Delta Rotation from Reference Pose in Local space 
+	 *
+	 * First this function gets rotation of current, and rotation of ref pose in local space, and 
+	 * And gets twist/swing angle value from refpose aligned. 
+	 * 
+	 * @param BoneName Name of the bone
+	 * @param OutTwistAngle TwistAngle in degree
+	 * @param OutSwingAngle SwingAngle in degree
+	 *
+	 * @return true if succeed. False otherwise. Often due to incorrect bone name. 
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
+	bool GetTwistAndSwingAngleOfDeltaRotationFromRefPose(FName BoneName, float& OutTwistAngle, float& OutSwingAngle) const;
+
 public:
 	//~ Begin UObject Interface
 	virtual void BeginDestroy() override;
@@ -730,9 +790,12 @@ public:
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false) const override;
 	virtual bool GetMaterialStreamingData(int32 MaterialIndex, FPrimitiveMaterialInfo& MaterialData) const override;
-	virtual void GetStreamingTextureInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingTexturePrimitiveInfo>& OutStreamingTextures) const override;
+	virtual void GetStreamingRenderAssetInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const override;
 	virtual int32 GetNumMaterials() const override;
 	//~ End UPrimitiveComponent Interface
+
+	/** Get the pre-skinning local space bounds for this component. */
+	FBoxSphereBounds GetPreSkinnedLocalBounds() const;
 
 	/**
 	 *	Sets the value of the bForceWireframe flag and reattaches the component as necessary.
@@ -1322,6 +1385,12 @@ private:
 	* This refresh all morphtarget curves including SetMorphTarget as well as animation curves
 	*/
 	virtual void RefreshMorphTargets() {};
+
+	/**  
+	 * When bones are not resent in a master mesh when using master-pose, we call this to evaluate 
+	 * relative transforms.
+	 */
+	bool GetMissingMasterBoneRelativeTransform(int32 InBoneIndex, FMissingMasterBoneCacheEntry& OutInfo) const;
 
 	// Animation update rate control.
 public:

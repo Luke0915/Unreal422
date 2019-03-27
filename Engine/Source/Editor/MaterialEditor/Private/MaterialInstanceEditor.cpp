@@ -1201,6 +1201,7 @@ void FMaterialInstanceEditor::RebuildMaterialInstanceEditor()
 	if( MaterialEditorInstance )
 	{
 		ReInitMaterialFunctionProxies();
+		MaterialEditorInstance->CopyBasePropertiesFromParent();
 		MaterialEditorInstance->RegenerateArrays();
 		RebuildInheritanceList(); // Required b/c recompiled parent materials result in invalid weak object pointers
 		UpdatePropertyWindow();
@@ -1241,7 +1242,7 @@ void FMaterialInstanceEditor::DrawSamplerWarningStrings(FCanvas* Canvas, int32& 
 		{
 			UFont* FontToUse = GEngine->GetTinyFont();
 			const int32 SpacingBetweenLines = 13;
-			UEnum* SamplerTypeEnum = FindObject<UEnum>( NULL, TEXT("/Script/Engine.EMaterialSamplerType") );
+			UEnum* SamplerTypeEnum = StaticEnum<EMaterialSamplerType>();
 			check( SamplerTypeEnum );
 
 			const int32 GroupCount = MaterialEditorInstance->ParameterGroups.Num();

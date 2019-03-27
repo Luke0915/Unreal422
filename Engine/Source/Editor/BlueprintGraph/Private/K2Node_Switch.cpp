@@ -44,7 +44,7 @@ public:
 		FBPTerminal* BoolTerm = Context.CreateLocalTerminal();
 		BoolTerm->Type.PinCategory = UEdGraphSchema_K2::PC_Boolean;
 		BoolTerm->Source = Node;
-		BoolTerm->Name = Context.NetNameMap->MakeValidName(Node) + TEXT("_CmpSuccess");
+		BoolTerm->Name = Context.NetNameMap->MakeValidName(Node, TEXT("CmpSuccess"));
 		BoolTermMap.Add(Node, BoolTerm);
 	}
 
@@ -102,7 +102,8 @@ public:
 				if ((Pin->Direction == EGPD_Output) && (Pin != DefaultPin) && (!bCanSkipUnlinkedCase || Pin->LinkedTo.Num() > 0))
 				{
 					// Create a term for the switch case value
-					FBPTerminal* CaseValueTerm = new (Context.Literals) FBPTerminal();
+					FBPTerminal* CaseValueTerm = new FBPTerminal();
+					Context.Literals.Add(CaseValueTerm);
 					CaseValueTerm->Name = Pin->PinName.ToString();
 					CaseValueTerm->Type = SwitchNode->GetInnerCaseType();
 					CaseValueTerm->SourcePin = Pin;

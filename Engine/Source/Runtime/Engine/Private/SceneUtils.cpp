@@ -60,9 +60,10 @@ void TDrawEvent<TRHICmdList>::Start(TRHICmdList& InRHICmdList, FColor Color, con
 		va_start(ptr, Fmt);
 		TCHAR TempStr[256];
 		// Build the string in the temp buffer
-		FCString::GetVarArgs(TempStr, ARRAY_COUNT(TempStr), ARRAY_COUNT(TempStr) - 1, Fmt, ptr);
+		FCString::GetVarArgs(TempStr, ARRAY_COUNT(TempStr), Fmt, ptr);
 		InRHICmdList.PushEvent(TempStr, Color);
 		RHICmdList = &InRHICmdList;
+		va_end(ptr);
 	}
 }
 
@@ -86,9 +87,10 @@ void FDrawEventRHIExecute::Start(IRHIComputeContext& InRHICommandContext, FColor
 		va_start(ptr, Fmt);
 		TCHAR TempStr[256];
 		// Build the string in the temp buffer
-		FCString::GetVarArgs(TempStr, ARRAY_COUNT(TempStr), ARRAY_COUNT(TempStr) - 1, Fmt, ptr);
+		FCString::GetVarArgs(TempStr, ARRAY_COUNT(TempStr), Fmt, ptr);
 		RHICommandContext = &InRHICommandContext;
 		RHICommandContext->RHIPushEvent(TempStr, Color);
+		va_end(ptr);
 	}
 }
 
@@ -162,6 +164,13 @@ ENGINE_API EMobileHDRMode GetMobileHDRMode()
 	return HDRMode;
 }
 
+ENGINE_API bool IsMobileColorsRGB()
+{
+	static auto* MobileUseHWsRGBEncodingCVAR = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.UseHWsRGBEncoding"));
+	const bool bMobileUseHWsRGBEncoding = (MobileUseHWsRGBEncodingCVAR && MobileUseHWsRGBEncodingCVAR->GetValueOnAnyThread() == 1);
+
+	return !IsMobileHDR() && bMobileUseHWsRGBEncoding;
+}
 
 #if HAS_GPU_STATS
 static const int32 NumGPUProfilerBufferedFrames = 4;
@@ -255,13 +264,14 @@ public:
 
 	bool GatherQueryResults(FRHICommandListImmediate& RHICmdList)
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_SceneUtils_GatherQueryResults);
 		// Get the query results which are still outstanding
 		check(GFrameNumberRenderThread != FrameNumber);
 		if ( HasQueriesAllocated() )
 		{
 			if (StartResultMicroseconds == InvalidQueryResult)
 			{
-				if (!RHICmdList.GetRenderQueryResult(StartQuery, StartResultMicroseconds, true))
+				if (!RHICmdList.GetRenderQueryResult(StartQuery, StartResultMicroseconds, false))
 				{
 					StartResultMicroseconds = InvalidQueryResult;
 				}
@@ -269,7 +279,7 @@ public:
 			}
 			if (EndResultMicroseconds == InvalidQueryResult)
 			{
-				if (!RHICmdList.GetRenderQueryResult(EndQuery, EndResultMicroseconds, true))
+				if (!RHICmdList.GetRenderQueryResult(EndQuery, EndResultMicroseconds, false))
 				{
 					EndResultMicroseconds = InvalidQueryResult;
 				}

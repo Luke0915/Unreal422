@@ -11,7 +11,7 @@
 #include "ConcertClientPresenceActor.h"
 #include "ConcertClientPresenceMode.h"
 #include "UObject/Class.h"
-#include "UObject/StrongObjectPtr.h"
+#include "UObject/GCObject.h"
 
 #if WITH_EDITOR
 
@@ -23,7 +23,7 @@ class IConcertClientSession;
 struct FConcertClientPresenceStateEntry
 {
 	FConcertClientPresenceStateEntry(TSharedRef<FConcertClientPresenceEventBase> InPresenceEvent)
-		: PresenceEvent(InPresenceEvent)
+		: PresenceEvent(MoveTemp(InPresenceEvent))
 		, bSyncPending(true) {}
 
 	/** Presence state */
@@ -38,9 +38,10 @@ struct FConcertClientPresenceState
 {
 	FConcertClientPresenceState()
 		: bIsConnected(true)
+		, bVisible(true)
 		, bInPIE(false)
-		, bInVR(false)
-		, bVisible(true) {}
+		, VRDevice(NAME_None)
+	{}
 
 	/** State map */
 	TMap<UScriptStruct*, FConcertClientPresenceStateEntry> EventStateMap;
@@ -51,14 +52,14 @@ struct FConcertClientPresenceState
 	/** Whether client is connected */
 	bool bIsConnected;
 
+	/** Whether client is visible */
+	bool bVisible;
+
 	/** Whether client is in PIE */
 	bool bInPIE;
 
-	/** Whether client is in VR editing mode */
-	bool bInVR;
-
-	/** Whether client is visible */
-	bool bVisible;
+	/** Whether client is using a VRDevice */
+	FName VRDevice;
 
 	/** Presence actor */
 	TWeakObjectPtr<AConcertClientPresenceActor> PresenceActor;
@@ -78,11 +79,14 @@ struct FConcertClientPresencePersistentState
 	bool bPropagateToAll;
 };
 
-class FConcertClientPresenceManager : public TSharedFromThis<FConcertClientPresenceManager>
+class FConcertClientPresenceManager : public TSharedFromThis<FConcertClientPresenceManager>, public FGCObject
 {
 public:
 	FConcertClientPresenceManager(TSharedRef<IConcertClientSession> InSession);
 	~FConcertClientPresenceManager();
+
+	//~ FGCObject interfaces
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
 	/** Gets the container for all the assets of Concert clients. */
 	const class UConcertAssetContainer& GetAssetContainer() const;
@@ -103,15 +107,22 @@ public:
 	void SetPresenceVisibility(const FString& InDisplayName, bool bVisibility, bool bPropagateToAll = false);
 
 	/** Get location update frequency */
-	static double GetLocationUpdateFrequency() { return LocationUpdateFrequencySeconds; }
+	static double GetLocationUpdateFrequency();
 
 	/** Jump (teleport) to another presence */
 	void InitiateJumpToPresence(FGuid InEndpointId);
 
-private:
+	/**
+	 * Returns the path to the UWorld object opened in the editor of the specified client endpoint.
+	 * The information may be unavailable if the client was disconnected, the information hasn't replicated yet
+	 * or the code was not compiled as part of the UE Editor. The path returned can be the path of a play world (PIE/SIE)
+	 * if the user is in PIE/SIE. It this case, the path will look like /Game/UEDPIE_10_FooMap.FooMap rather than /Game/FooMap.FooMap.
+	 * @param InEndpointId The end point of any clients connected to the session (local or remote).
+	 * @return The path to the world being opened in the specified end point editor or an empty string if the information is not available.
+	 */
+	FString GetClientWorldPath(FGuid InEndpointId) const;
 
-	/** Update frequency in seconds */
-	static const double LocationUpdateFrequencySeconds;
+private:
 
 	/** Register event and delegate handlers */
 	void Register();
@@ -152,10 +163,10 @@ private:
 	bool ShouldProcessPresenceEvent(const FConcertSessionContext& InSessionContext, const UStruct* InEventType, const FConcertClientPresenceEventBase& InEvent) const;
 
 	/** Create a new presence actor */
-	AConcertClientPresenceActor* CreatePresenceActor(const FConcertClientInfo& InClientInfo, bool bClientInVR);
+	AConcertClientPresenceActor* CreatePresenceActor(const FConcertClientInfo& InClientInfo, FName VRDevice);
 
 	/** Spawn a presence actor */
-	AConcertClientPresenceActor* SpawnPresenceActor(const FConcertClientInfo& InClientInfo, bool bClientInVR);
+	AConcertClientPresenceActor* SpawnPresenceActor(const FConcertClientInfo& InClientInfo, FName VRDevice);
 
 	/** Clear presence */
 	void ClearPresenceActor(const FGuid& InEndpointId);
@@ -188,13 +199,7 @@ private:
 	void HandleConcertClientPresenceInVREvent(const FConcertSessionContext& InSessionContext, const FConcertClientPresenceInVREvent& InEvent);
 
 	/** Updates presence avatar for remote client by invalidating current presence actor */
-	void UpdatePresenceAvatar(const FGuid& InEndpointId, bool bIsInVR);
-
-	/** Loads and returns the container for all the assets of Concert clients. */
-	static class UConcertAssetContainer& LoadAssetContainer();
-
-	/** Need to manage the GC of the asset container */
-	void AddReferencedObjects(FReferenceCollector& Collector);
+	void UpdatePresenceAvatar(const FGuid& InEndpointId, FName VRDevice);
 
 	/** Set presence PIE state */
 	void SetPresenceInPIE(const FGuid& InEndpointId, bool bInPIE);
@@ -259,8 +264,8 @@ private:
 	/** True if presence is currently enabled and should be shown (unless hidden by other settings) */
 	bool bIsPresenceEnabled;
 
-	/** True if in VR */
-	bool bInVR;
+	/** NAME_None if not in VR */
+	FName VRDeviceType;
 
 	/** Avatar actor class */
 	UClass* CurrentAvatarActorClass;
@@ -283,6 +288,14 @@ private:
 	/** Time since last location update for this client */
 	double SecondsSinceLastLocationUpdate;
 };
+
+#else
+
+namespace FConcertClientPresenceManager
+{
+	/** Get location update frequency */
+	double GetLocationUpdateFrequency();
+}
 
 #endif
 

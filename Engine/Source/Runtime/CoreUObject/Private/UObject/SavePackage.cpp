@@ -50,7 +50,6 @@
 #include "ProfilingDebugging/CookStats.h"
 #include "UObject/DebugSerializationFlags.h"
 #include "UObject/EnumProperty.h"
-#include "Blueprint/BlueprintSupport.h"
 #include "HAL/IConsoleManager.h"
 #include "Serialization/ArchiveStackTrace.h"
 #include "UObject/CoreRedirects.h"
@@ -382,10 +381,14 @@ static void CheckObjectPriorToSave(FArchiveUObject& Ar, UObject* InObj, UPackage
 	{
 		return;
 	}
-	FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
+	UObject* SerializedObject = nullptr;
+	FUObjectSerializeContext* SaveContext = Ar.GetSerializeContext();
+	check(SaveContext);
+	SerializedObject = SaveContext->SerializedObject;
+
 	if (!InObj->IsValidLowLevelFast() || !InObj->IsValidLowLevel())
 	{
-		UE_LOG(LogLinker, Fatal, TEXT("Attempt to save bogus object %p ThreadContext.SerializedObject=%s  SerializedProperty=%s"), (void*)InObj, *GetFullNameSafe(ThreadContext.SerializedObject), *GetFullNameSafe(Ar.GetSerializedProperty()));
+		UE_LOG(LogLinker, Fatal, TEXT("Attempt to save bogus object %p SaveContext.SerializedObject=%s  SerializedProperty=%s"), (void*)InObj, *GetFullNameSafe(SerializedObject), *GetFullNameSafe(Ar.GetSerializedProperty()));
 		return;
 	}
 	// if the object class is abstract or has been marked as deprecated, mark this
@@ -400,7 +403,7 @@ static void CheckObjectPriorToSave(FArchiveUObject& Ar, UObject* InObj, UPackage
 		{
 			TArray<UObject*> ComponentReferences;
 			FReferenceFinder ComponentCollector(ComponentReferences, InObj, false, true, true);
-			ComponentCollector.FindReferences(InObj, ThreadContext.SerializedObject, Ar.GetSerializedProperty());
+			ComponentCollector.FindReferences(InObj, SerializedObject, Ar.GetSerializedProperty());
 
 			for ( int32 Index = 0; Index < ComponentReferences.Num(); Index++ )
 			{
@@ -1006,7 +1009,14 @@ public:
 	void ProcessBaseObject(UObject* BaseObject);
 	virtual FArchive& operator<<(UObject*& Obj) override;
 	virtual FArchive& operator<<(FWeakObjectPtr& Value) override;
-
+	virtual void SetSerializeContext(FUObjectSerializeContext* InLoadContext) override
+	{
+		LoadContext = InLoadContext;
+	}
+	virtual FUObjectSerializeContext* GetSerializeContext() override
+	{
+		return LoadContext;
+	}
 	/**
 	 * Package we're currently saving.  Only objects contained
 	 * within this package will be tagged for serialization.
@@ -1018,6 +1028,7 @@ public:
 private:
 
 	TArray<UObject*> TaggedObjects;
+	TRefCountPtr<FUObjectSerializeContext> LoadContext;
 
 	void ProcessTaggedObjects();
 };
@@ -1231,6 +1242,18 @@ public:
 	
 	virtual void MarkSearchableName(const UObject* TypeObject, const FName& ValueName) const override;
 	virtual FString GetArchiveName() const override;
+	virtual void SetSerializeContext(FUObjectSerializeContext* InLoadContext) override
+	{
+		LoadContext = InLoadContext;
+	}
+	virtual FUObjectSerializeContext* GetSerializeContext() override
+	{
+		return LoadContext;
+	}
+
+private:
+
+	TRefCountPtr<FUObjectSerializeContext> LoadContext;
 };
 
 FString FArchiveSaveTagImports::GetArchiveName() const
@@ -1356,6 +1379,15 @@ FArchive& FArchiveSaveTagImports::operator<<( UObject*& Obj )
 				if( Parent )
 				{
 					*this << Parent;
+				}
+
+				// For things with a BP-created class we need to recurse into that class so the import ClassPackage will load properly
+				// We don't do this for native classes to avoid bloating the import table
+				UClass* ObjClass = Obj->GetClass();
+
+				if (!ObjClass->IsNative())
+				{
+					*this << ObjClass;
 				}
 			}
 		}
@@ -2968,19 +3000,21 @@ static bool ValidateConformCompatibility(UPackage* NewPackage, FLinkerLoad* OldL
 	// unfortunately, to get at the classes and their properties we will also need to load the default objects
 	// but the remapped package won't be bound to its native instance, so we need to manually copy the constructors
 	// so that classes with their own Serialize() implementations are loaded correctly
-	BeginLoad();
-	for (int32 i = 0; i < OldLinker->ExportMap.Num(); i++)
 	{
-		UClass* NewClass = (UClass*)StaticFindObjectFast(UClass::StaticClass(), NewPackage, OldLinker->ExportMap[i].ObjectName, true, false);
-		UClass* OldClass = static_cast<UClass*>(OldLinker->Create(UClass::StaticClass(), OldLinker->ExportMap[i].ObjectName, OldLinker->LinkerRoot, LOAD_None, false));
-		if (OldClass != nullptr && NewClass != nullptr && OldClass->IsNative() && NewClass->IsNative())
+		BeginLoad(OldLinker->GetSerializeContext());
+		for (int32 i = 0; i < OldLinker->ExportMap.Num(); i++)
 		{
-			OldClass->ClassConstructor = NewClass->ClassConstructor;
-			OldClass->ClassVTableHelperCtorCaller = NewClass->ClassVTableHelperCtorCaller;
-			OldClass->ClassAddReferencedObjects = NewClass->ClassAddReferencedObjects;
+			UClass* NewClass = (UClass*)StaticFindObjectFast(UClass::StaticClass(), NewPackage, OldLinker->ExportMap[i].ObjectName, true, false);
+			UClass* OldClass = static_cast<UClass*>(OldLinker->Create(UClass::StaticClass(), OldLinker->ExportMap[i].ObjectName, OldLinker->LinkerRoot, LOAD_None, false));
+			if (OldClass != nullptr && NewClass != nullptr && OldClass->IsNative() && NewClass->IsNative())
+			{
+				OldClass->ClassConstructor = NewClass->ClassConstructor;
+				OldClass->ClassVTableHelperCtorCaller = NewClass->ClassVTableHelperCtorCaller;
+				OldClass->ClassAddReferencedObjects = NewClass->ClassAddReferencedObjects;
+			}
 		}
+		EndLoad(OldLinker->GetSerializeContext());
 	}
-	EndLoad();
 
 	bool bHadCompatibilityErrors = false;
 	// check for illegal change of networking flags on class fields
@@ -2989,9 +3023,9 @@ static bool ValidateConformCompatibility(UPackage* NewPackage, FLinkerLoad* OldL
 		if (OldLinker->GetExportClassName(i) == NAME_Class)
 		{
 			// load the object so we can analyze it
-			BeginLoad();
-			UClass* OldClass = static_cast<UClass*>(OldLinker->Create(UClass::StaticClass(), OldLinker->ExportMap[i].ObjectName, OldLinker->LinkerRoot, LOAD_None, false));
-			EndLoad();
+			BeginLoad(OldLinker->GetSerializeContext());
+			UClass* OldClass = static_cast<UClass*>(OldLinker->Create(UClass::StaticClass(), OldLinker->ExportMap[i].ObjectName, OldLinker->LinkerRoot, LOAD_None, false));			
+			EndLoad(OldLinker->GetSerializeContext());
 			if (OldClass != nullptr)
 			{
 				UClass* NewClass = FindObjectFast<UClass>(NewPackage, OldClass->GetFName(), true, false);
@@ -3519,6 +3553,8 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 
 	if (FPlatformProperties::HasEditorOnlyData())
 	{
+		TRefCountPtr<FUObjectSerializeContext> SaveContext(FUObjectThreadContext::Get().GetSerializeContext());
+
 #if WITH_EDITOR
 		struct FDiffSettings
 		{
@@ -3761,7 +3797,8 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 			FArchiveSaveTagExports ExportTaggerArchive( InOuter );
 			ExportTaggerArchive.SetPortFlags( ComparisonFlags );
 			ExportTaggerArchive.SetCookingTarget(TargetPlatform);
-			
+			ExportTaggerArchive.SetSerializeContext(SaveContext);
+
 			check( ExportTaggerArchive.IsCooking() == !!TargetPlatform );
 			check( ExportTaggerArchive.IsCooking() == bIsCooking );
 
@@ -3940,6 +3977,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 
 				FStructuredArchive* StructuredArchive = new FStructuredArchive(*Formatter);
 				FStructuredArchive::FRecord StructuredArchiveRoot = StructuredArchive->Open().EnterRecord();
+				StructuredArchiveRoot.GetUnderlyingArchive().SetSerializeContext(SaveContext);
 #if WITH_EDITOR
 				if (!!TargetPlatform)
 				{
@@ -4052,6 +4090,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 						FArchiveSaveTagImports ImportTagger(Linker.Get(), SavePackageState);
 						ImportTagger.SetPortFlags(ComparisonFlags);
 						ImportTagger.SetFilterEditorOnly(FilterEditorOnly);
+						ImportTagger.SetSerializeContext(SaveContext);
 
 						UClass* Class = Obj->GetClass();
 
@@ -5463,7 +5502,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 								TimingInfo.Value++;
 								FScopedDurationTimer SerializeTimer(TimingInfo.Key);
 #endif
-								TGuardValue<UObject*> GuardSerializedObject(ThreadContext.SerializedObject, Export.Object);
+								TGuardValue<UObject*> GuardSerializedObject(SaveContext->SerializedObject, Export.Object);
 
 								if (bSupportsText)
 								{
@@ -5525,6 +5564,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 
 					FArchive* BulkArchive = nullptr;
 					FArchive* OptionalBulkArchive = nullptr;
+					FArchive* MappedBulkArchive = nullptr;
 					uint32 ExtraBulkDataFlags = 0;
 
 					static struct FUseSeperateBulkDataFiles
@@ -5552,6 +5592,10 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 
 					const FString OptionalBulkFilename = FPaths::ChangeExtension(Filename, OptionalBulkFileExtension);
 
+					const static TCHAR* MappedBulkFileExtension = TEXT(".m.ubulk");
+
+					const FString MappedBulkFilename = FPaths::ChangeExtension(Filename, MappedBulkFileExtension);
+
 					if (bShouldUseSeparateBulkFile)
 					{
 						ExtraBulkDataFlags = BULKDATA_PayloadInSeperateFile;
@@ -5559,13 +5603,23 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 						{
 							BulkArchive = new FBufferArchive(true);
 							OptionalBulkArchive = new FBufferArchive(true);
-
+							MappedBulkArchive = new FBufferArchive(true);
 						}
 						else
 						{
 							BulkArchive = IFileManager::Get().CreateFileWriter(*BulkFilename);
 							OptionalBulkArchive = IFileManager::Get().CreateFileWriter(*OptionalBulkFilename);
+							MappedBulkArchive = IFileManager::Get().CreateFileWriter(*MappedBulkFilename);
 						}
+					}
+
+					bool bAlignBulkData = false;
+					int64 BulkDataAlignment = 0;
+
+					if (TargetPlatform)
+					{
+						bAlignBulkData = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MemoryMappedFiles);
+						BulkDataAlignment = TargetPlatform->GetMemoryMappingAlignment();
 					}
 
 					for (int32 i=0; i < Linker->BulkDataToAppend.Num(); ++i)
@@ -5577,6 +5631,16 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 						// Set bulk data flags to what they were during initial serialization (they might have changed after that)
 						const uint32 OldBulkDataFlags = BulkDataStorageInfo.BulkData->GetBulkDataFlags();
 						uint32 ModifiedBulkDataFlags = BulkDataStorageInfo.BulkDataFlags | ExtraBulkDataFlags;
+						bool bBulkItemIsOptional = (ModifiedBulkDataFlags & BULKDATA_OptionalPayload) != 0;
+						bool bBulkItemIsMapped = bAlignBulkData && ((ModifiedBulkDataFlags & BULKDATA_MemoryMappedPayload) != 0);
+
+						if (bBulkItemIsMapped && bBulkItemIsOptional)
+						{
+							UE_LOG(LogSavePackage, Warning, TEXT("%s has bulk data that is both mapped and optional. This is not currently supported. Will not be mapped."), Filename);
+							ModifiedBulkDataFlags &= ~BULKDATA_MemoryMappedPayload;
+							bBulkItemIsMapped = false;
+						}
+
 						BulkDataStorageInfo.BulkData->ClearBulkDataFlags(0xFFFFFFFF);
 						BulkDataStorageInfo.BulkData->SetBulkDataFlags(ModifiedBulkDataFlags);
 
@@ -5584,10 +5648,33 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 						if ( bShouldUseSeparateBulkFile )
 						{
 							check( OptionalBulkArchive && BulkArchive );
-							TargetArchive = ModifiedBulkDataFlags & BULKDATA_OptionalPayload ? OptionalBulkArchive : BulkArchive;
+							TargetArchive = bBulkItemIsOptional ? OptionalBulkArchive : (bBulkItemIsMapped ? MappedBulkArchive : BulkArchive);
 						}
 
 						int64 BulkStartOffset = TargetArchive->Tell();
+
+						if (bBulkItemIsMapped && BulkDataAlignment > 0 && !IsAligned(BulkStartOffset, BulkDataAlignment))
+						{
+							int64 AlignedOffset = Align(BulkStartOffset, BulkDataAlignment);
+							int64 Padding = AlignedOffset - BulkStartOffset;
+							check(Padding > 0);
+							uint64 Zero64 = 0;
+							while (Padding >= 8)
+							{
+								*TargetArchive << Zero64;
+								Padding -= 8;
+							}
+							uint8 Zero8 = 0;
+							while (Padding > 0)
+							{
+								*TargetArchive << Zero8;
+								Padding--;
+							}
+							BulkStartOffset = TargetArchive->Tell();
+							check(BulkStartOffset == AlignedOffset);
+						}
+
+
 						int64 StoredBulkStartOffset = BulkStartOffset - StartOfBulkDataArea;
 
 						BulkDataStorageInfo.BulkData->SerializeBulkData(*TargetArchive, BulkDataStorageInfo.BulkData->Lock(LOCK_READ_ONLY));
@@ -5595,7 +5682,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 						int64 BulkEndOffset = TargetArchive->Tell();
 						int64 LinkerEndOffset = Linker->Tell();
 
-						int32 SizeOnDisk = (int32)(BulkEndOffset - BulkStartOffset);
+						int64 SizeOnDisk = (int32)(BulkEndOffset - BulkStartOffset);
 				
 						Linker->Seek(BulkDataStorageInfo.BulkDataFlagsPos);
 						*Linker << ModifiedBulkDataFlags;
@@ -5604,7 +5691,16 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 						*Linker << StoredBulkStartOffset;
 
 						Linker->Seek(BulkDataStorageInfo.BulkDataSizeOnDiskPos);
-						*Linker << SizeOnDisk;
+						if (ModifiedBulkDataFlags & BULKDATA_Size64Bit)
+						{
+							*Linker << SizeOnDisk;
+						}
+						else
+						{
+							check(SizeOnDisk < (1LL << 31));
+							int32 SizeOnDiskAsInt32 = SizeOnDisk;
+							*Linker << SizeOnDiskAsInt32;
+						}
 
 						Linker->Seek(LinkerEndOffset);
 
@@ -5621,24 +5717,24 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 							{
 								TotalPackageSizeUncompressed += Archive->TotalSize();
 								Archive->Close();
-						if ( bSaveAsync )
-						{
+								if ( bSaveAsync )
+								{
 									FBufferArchive* Buffer = (FBufferArchive*)(Archive);
 
 									if ( Buffer->TotalSize() > 0 )
 									{
 										int64 DataSize = Buffer->TotalSize();
 
-							// TODO - update the BulkBuffer code to write into a FLargeMemoryWriter so we can 
-							// take ownership of the data
-							uint8* Data = new uint8[DataSize];
+										// TODO - update the BulkBuffer code to write into a FLargeMemoryWriter so we can 
+										// take ownership of the data
+										uint8* Data = new uint8[DataSize];
 										FMemory::Memcpy(Data, Buffer->GetData(), DataSize);
 
-							FLargeMemoryPtr DataPtr = FLargeMemoryPtr(Data);
+										FLargeMemoryPtr DataPtr = FLargeMemoryPtr(Data);
 		
 										AsyncWriteFile(MoveTemp(DataPtr), DataSize, *ArchiveFilename, FDateTime::MinValue(), false);
-							}
-						}
+									}
+								}
 								delete Archive;
 							};
 
@@ -5654,10 +5750,15 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 								{
 									CookedPackageHash.Update(((FBufferArchive*)OptionalBulkArchive)->GetData(), OptionalBulkArchive->TotalSize());
 								}
+								if (MappedBulkArchive->TotalSize())
+								{
+									CookedPackageHash.Update(((FBufferArchive*)MappedBulkArchive)->GetData(), MappedBulkArchive->TotalSize());
+								}
 							}
 						}
 						FinalizeBulkDataFile(BulkArchive, BulkFilename);
 						FinalizeBulkDataFile(OptionalBulkArchive, OptionalBulkFilename);
+						FinalizeBulkDataFile(MappedBulkArchive, MappedBulkFilename);
 
 						if (SaveFlags & SAVE_ComputeHash)
 						{
@@ -5665,6 +5766,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 							{
 								AddFileToHash(BulkFilename, CookedPackageHash);
 								AddFileToHash(OptionalBulkFilename, CookedPackageHash);
+								AddFileToHash(MappedBulkFilename, CookedPackageHash);
 							}
 						}
 						
@@ -6280,10 +6382,10 @@ void UPackage::SaveAssetRegistryData(UPackage* InOuter, FLinkerSave* Linker, FSt
 		TArray<FAssetRegistryTag> Tags;
 		for (FAssetRegistryTag& SourceTag : SourceTags)
 		{
-			const FAssetRegistryTag* Existing = Tags.FindByPredicate([SourceTag](const FAssetRegistryTag& InTag) { return InTag.Name == SourceTag.Name; });
+			FAssetRegistryTag* Existing = Tags.FindByPredicate([SourceTag](const FAssetRegistryTag& InTag) { return InTag.Name == SourceTag.Name; });
 			if (Existing)
 			{
-				check(Existing->Value == SourceTag.Value);
+				Existing->Value = SourceTag.Value;
 			}
 			else
 			{

@@ -30,7 +30,6 @@
 #include "Abilities/GameplayAbilityTargetActor.h"
 #include "TickableAttributeSetInterface.h"
 #include "GameplayTagResponseTable.h"
-#include "Engine/DemoNetDriver.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
 #define LOCTEXT_NAMESPACE "AbilitySystemComponent"
@@ -444,7 +443,8 @@ void UAbilitySystemComponent::OnRemoveAbility(FGameplayAbilitySpec& Spec)
 
 		auto& TriggeredAbilityMap = (TriggerData.TriggerSource == EGameplayAbilityTriggerSource::GameplayEvent) ? GameplayEventTriggeredAbilities : OwnedTagTriggeredAbilities;
 
-		if (TriggeredAbilityMap.Contains(EventTag))
+		if (ensureMsgf(TriggeredAbilityMap.Contains(EventTag), 
+			TEXT("%s::%s not found in TriggeredAbilityMap while removing, TriggerSource: %d"), *Spec.Ability->GetName(), *EventTag.ToString(), (int32)TriggerData.TriggerSource))
 		{
 			TriggeredAbilityMap[EventTag].Remove(Spec.Handle);
 			if (TriggeredAbilityMap[EventTag].Num() == 0)
@@ -1921,6 +1921,14 @@ int32 UAbilitySystemComponent::HandleGameplayEvent(FGameplayTag EventTag, const 
 		{
 			TArray<FGameplayAbilitySpecHandle> TriggeredAbilityHandles = GameplayEventTriggeredAbilities[CurrentTag];
 
+			// FORT-152163 - Tracking cases where GameplayEventTriggeredAbilities has an AbilityHandle that is not in ActivatableAbilities
+			// We suspect that triggering one ability may be causing others in the array to be invalidated
+			// If we do not ensure here, but ensure in TriggerAbilityFromGameplayEvent(), then it will confirm our suspicion
+			for (auto AbilityHandle : TriggeredAbilityHandles)
+			{
+				ensureMsgf(FindAbilitySpecFromHandle(AbilityHandle), TEXT("Stale ability handle in GameplayEventTriggeredAbilities: %s"), *EventTag.ToString());
+			}
+
 			for (auto AbilityHandle : TriggeredAbilityHandles)
 			{
 				if (TriggerAbilityFromGameplayEvent(AbilityHandle, AbilityActorInfo.Get(), EventTag, Payload, *this))
@@ -2519,7 +2527,7 @@ void UAbilitySystemComponent::OnRep_ReplicatedAnimMontage()
 		RepAnimMontageInfo.PlayRate = 1.f;
 	}
 
-	const bool bIsPlayingReplay = World && World->DemoNetDriver && World->DemoNetDriver->IsPlaying();
+	const bool bIsPlayingReplay = World && World->IsPlayingReplay();
 
 	const float MONTAGE_REP_POS_ERR_THRESH = bIsPlayingReplay ? CVarReplayMontageErrorThreshold.GetValueOnGameThread() : 0.1f;
 

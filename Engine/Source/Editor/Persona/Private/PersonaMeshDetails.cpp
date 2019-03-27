@@ -329,6 +329,17 @@ void SSkeletalLODActions::Construct(const FArguments& InArgs)
 /**
 * FPersonaMeshDetails
 */
+FPersonaMeshDetails::FPersonaMeshDetails(TSharedRef<class IPersonaToolkit> InPersonaToolkit) : PersonaToolkitPtr(InPersonaToolkit), MeshDetailLayout(nullptr)
+{
+	CustomLODEditMode = false;
+	bDeleteWarningConsumed = false;
+
+	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostLODImport.AddRaw(this, &FPersonaMeshDetails::OnAssetPostLODImported);
+}
+
+/**
+* FPersonaMeshDetails
+*/
 FPersonaMeshDetails::~FPersonaMeshDetails()
 {
 	if (HasValidPersonaToolkit())
@@ -336,6 +347,8 @@ FPersonaMeshDetails::~FPersonaMeshDetails()
 		TSharedRef<IPersonaPreviewScene> PreviewScene = GetPersonaToolkit()->GetPreviewScene();
 		PreviewScene->UnregisterOnPreviewMeshChanged(this);
 	}
+
+	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostLODImport.RemoveAll(this);
 }
 
 TSharedRef<IDetailCustomization> FPersonaMeshDetails::MakeInstance(TWeakPtr<class IPersonaToolkit> InPersonaToolkit)
@@ -1042,8 +1055,8 @@ void FPersonaMeshDetails::AddLODLevelCategories(IDetailLayoutBuilder& DetailLayo
 							.ButtonFlags(ButtonFlag)
 							.OnApplyLODChangeClicked(this, &FPersonaMeshDetails::RegenerateLOD, LODIndex)
 							.OnRemoveLODClicked(this, &FPersonaMeshDetails::RemoveOneLOD, LODIndex)
-							.OnReimportClicked(this, &FPersonaMeshDetails::OnReimportLodClicked, &DetailLayout, EReimportButtonType::Reimport, LODIndex)
-							.OnReimportNewFileClicked(this, &FPersonaMeshDetails::OnReimportLodClicked, &DetailLayout, EReimportButtonType::ReimportWithNewFile, LODIndex)
+							.OnReimportClicked(this, &FPersonaMeshDetails::OnReimportLodClicked, EReimportButtonType::Reimport, LODIndex)
+							.OnReimportNewFileClicked(this, &FPersonaMeshDetails::OnReimportLodClicked, EReimportButtonType::ReimportWithNewFile, LODIndex)
 						];
 				}
 			}
@@ -1297,6 +1310,11 @@ void FPersonaMeshDetails::CustomizeLODSettingsCategories(IDetailLayoutBuilder& D
 	IDetailPropertyRow& MinLODRow = LODSettingsCategory.AddProperty(MinLODPropertyHandle);
 	MinLODRow.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FPersonaMeshDetails::IsLODInfoEditingEnabled, -1)));
 	DetailLayout.HideProperty(MinLODPropertyHandle);
+
+	TSharedPtr<IPropertyHandle> DisableBelowMinLodStrippingPropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(USkeletalMesh, DisableBelowMinLodStripping), USkeletalMesh::StaticClass());
+	IDetailPropertyRow& DisableBelowMinLodStrippingRow = LODSettingsCategory.AddProperty(DisableBelowMinLodStrippingPropertyHandle);
+	DisableBelowMinLodStrippingRow.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FPersonaMeshDetails::IsLODInfoEditingEnabled, -1)));
+	DetailLayout.HideProperty(DisableBelowMinLodStrippingPropertyHandle);
 }
 
 // save LOD settings
@@ -1385,6 +1403,14 @@ bool FPersonaMeshDetails::IsLODInfoEditingEnabled(int32 LODIndex) const
 	return true;
 }
 
+void FPersonaMeshDetails::OnAssetPostLODImported(UObject* InObject, int32 InLODIndex)
+{
+	if (InObject == GetPersonaToolkit()->GetMesh())
+	{
+		MeshDetailLayout->ForceRefreshDetails();
+	}
+}
+
 void FPersonaMeshDetails::OnImportLOD(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo, IDetailLayoutBuilder* DetailLayout)
 {
 	int32 LODIndex = 0;
@@ -1394,8 +1420,6 @@ void FPersonaMeshDetails::OnImportLOD(TSharedPtr<FString> NewValue, ESelectInfo:
 		check(SkelMesh);
 
 		FbxMeshUtils::ImportMeshLODDialog(SkelMesh, LODIndex);
-
-		DetailLayout->ForceRefreshDetails();
 	}
 }
 
@@ -1446,6 +1470,19 @@ void FPersonaMeshDetails::RegenerateOneLOD(int32 LODIndex)
 		{
 			//Nothing to reduce
 			return;
+		}
+
+		//If we are doing inline reduction, restore the skeletalmesh LOD if it was already reduced and we want to reduced it again (user change the options)
+		//This will ensure the data is the same when starting the reduction
+		if (LODIndex == CurrentLODInfo.ReductionSettings.BaseLOD
+			&& CurrentLODInfo.bHasBeenSimplified
+			&& SkelMesh->IsReductionActive(LODIndex)
+			&& SkelMesh->GetImportedModel()->OriginalReductionSourceMeshData.IsValidIndex(LODIndex)
+			&& !SkelMesh->GetImportedModel()->OriginalReductionSourceMeshData[LODIndex]->IsEmpty())
+		{
+			//Restore the base LOD data
+			CurrentLODInfo.bHasBeenSimplified = false;
+			FLODUtilities::RestoreSkeletalMeshLODImportedData(SkelMesh, LODIndex, false);
 		}
 
 		FSkeletalMeshUpdateContext UpdateContext;
@@ -1508,7 +1545,7 @@ FReply FPersonaMeshDetails::RegenerateLOD(int32 LODIndex)
 			else if (bIsReductionActive)
 			{
 				//Ask user a special permission when the base LOD can be reduce 
-				const FText Text(LOCTEXT("Warning_ReductionApplyingToImportedMesh_ReduceBaseLOD", "Are you sure you'd like to apply mesh reduction to the base LOD?"));
+				const FText Text(LOCTEXT("Warning_ReductionApplyingToImportedMesh_ReduceNonGenBaseLOD", "Are you sure you'd like to apply mesh reduction to the non-generated base LOD?"));
 				EAppReturnType::Type Ret = FMessageDialog::Open(EAppMsgType::YesNo, Text);
 				if (Ret == EAppReturnType::No)
 				{
@@ -1860,7 +1897,7 @@ void FPersonaMeshDetails::OnSetPostProcessBlueprint(const FAssetData& AssetData,
 	}
 }
 
-FReply FPersonaMeshDetails::OnReimportLodClicked(IDetailLayoutBuilder* DetailLayout, EReimportButtonType InReimportType, int32 InLODIndex)
+FReply FPersonaMeshDetails::OnReimportLodClicked(EReimportButtonType InReimportType, int32 InLODIndex)
 {
 	if(USkeletalMesh* SkelMesh = GetPersonaToolkit()->GetMesh())
 	{
@@ -1883,14 +1920,6 @@ FReply FPersonaMeshDetails::OnReimportLodClicked(IDetailLayoutBuilder* DetailLay
 		{
 			// Copy old source file back, as this one failed
 			SkelMesh->GetLODInfo(InLODIndex)->SourceImportFilename = SourceFilenameBackup;
-		}
-
-		//Regenerate dependent LODs
-		RegenerateDependentLODs(InLODIndex);
-
-		if(DetailLayout)
-		{
-			DetailLayout->ForceRefreshDetails();
 		}
 
 		return FReply::Handled();
@@ -2734,7 +2763,7 @@ FText FPersonaMeshDetails::GetCurrentLodTooltip() const
 {
 	if (GetPersonaToolkit()->GetPreviewMeshComponent() != nullptr && GetPersonaToolkit()->GetPreviewMeshComponent()->ForcedLodModel == 0)
 	{
-		return FText::FromString(TEXT("LOD0 is edit when selecting Auto LOD"));
+		return LOCTEXT("PersonaLODPickerCurrentLODTooltip", "With Auto LOD selected, LOD0's properties are visible for editing");
 	}
 	return FText::GetEmpty();
 }

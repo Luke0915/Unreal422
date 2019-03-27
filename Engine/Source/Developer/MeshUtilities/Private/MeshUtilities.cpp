@@ -2428,8 +2428,10 @@ public:
 		for (int32 LODIndex = 0; LODIndex < SourceModels.Num(); ++LODIndex)
 		{
 			FStaticMeshSourceModel& SrcModel = SourceModels[LODIndex];
-			FRawMesh& RawMesh = *new(LODMeshes)FRawMesh;
-			FOverlappingCorners& OverlappingCorners = *new(LODOverlappingCorners)FOverlappingCorners;
+			FRawMesh& RawMesh = *new FRawMesh;
+			LODMeshes.Add(&RawMesh);
+			FOverlappingCorners& OverlappingCorners = *new FOverlappingCorners;
+			LODOverlappingCorners.Add(&OverlappingCorners);
 
 			if (!SrcModel.IsRawMeshEmpty())
 			{
@@ -2501,11 +2503,21 @@ public:
 					}
 
 					FLayoutUVRawMeshView RawMeshView(RawMesh, SrcModel.BuildSettings.SrcLightmapIndex, SrcModel.BuildSettings.DstLightmapIndex);
-					FLayoutUV Packer(RawMeshView, SrcModel.BuildSettings.MinLightmapResolution);
+					FLayoutUV Packer(RawMeshView);
 					Packer.SetVersion(LightmapUVVersion);
 
 					Packer.FindCharts(OverlappingCorners);
-					bool bPackSuccess = Packer.FindBestPacking();
+
+					int32 EffectiveMinLightmapResolution = SrcModel.BuildSettings.MinLightmapResolution;
+					if (LightmapUVVersion >= ELightmapUVVersion::ConsiderLightmapPadding)
+					{
+						if (GLightmassDebugOptions.bPadMappings)
+						{
+							EffectiveMinLightmapResolution -= 2;
+						}
+					}
+
+					bool bPackSuccess = Packer.FindBestPacking(EffectiveMinLightmapResolution);
 					if (bPackSuccess)
 					{
 						Packer.CommitPackedUVs();
@@ -2789,7 +2801,7 @@ public:
 						InversedIndices[SectionInfo.FirstIndex + i] = CombinedIndices[SectionInfo.FirstIndex + SectionIndexCount - 1 - i];
 					}
 				}
-				LODModel.ReversedIndexBuffer.SetIndices(InversedIndices, bNeeds32BitIndices ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
+				LODModel.AdditionalIndexBuffers->ReversedIndexBuffer.SetIndices(InversedIndices, bNeeds32BitIndices ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
 			}
 
 			// Build the depth-only index buffer.
@@ -2820,7 +2832,7 @@ public:
 				{
 					ReversedDepthOnlyIndices[i] = DepthOnlyIndices[IndexCount - 1 - i];
 				}
-				LODModel.ReversedDepthOnlyIndexBuffer.SetIndices(ReversedDepthOnlyIndices, bNeeds32BitIndices ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
+				LODModel.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.SetIndices(ReversedDepthOnlyIndices, bNeeds32BitIndices ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
 			}
 
 			// Build a list of wireframe edges in the static mesh.
@@ -2836,7 +2848,7 @@ public:
 					WireframeIndices.Add(Edge.Vertices[0]);
 					WireframeIndices.Add(Edge.Vertices[1]);
 				}
-				LODModel.WireframeIndexBuffer.SetIndices(WireframeIndices, bNeeds32BitIndices ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
+				LODModel.AdditionalIndexBuffers->WireframeIndexBuffer.SetIndices(WireframeIndices, bNeeds32BitIndices ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
 			}
 
 			// Build the adjacency index buffer used for tessellation.
@@ -2850,7 +2862,7 @@ public:
 					CombinedIndices,
 					AdjacencyIndices
 					);
-				LODModel.AdjacencyIndexBuffer.SetIndices(AdjacencyIndices, bNeeds32BitIndices ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
+				LODModel.AdditionalIndexBuffers->AdjacencyIndexBuffer.SetIndices(AdjacencyIndices, bNeeds32BitIndices ? EIndexBufferStride::Force32Bit : EIndexBufferStride::Force16Bit);
 			}
 		}
 
@@ -3942,7 +3954,8 @@ public:
 
 		BeginSlowTask();
 
-		FOverlappingCorners& OverlappingCorners = *new(LODOverlappingCorners)FOverlappingCorners;
+		FOverlappingCorners& OverlappingCorners = *new FOverlappingCorners;
+		LODOverlappingCorners.Add(&OverlappingCorners);
 
 		float ComparisonThreshold = THRESH_POINTS_ARE_SAME;//GetComparisonThreshold(LODBuildSettings[LODIndex]);
 		int32 NumWedges = BuildData->GetNumWedges();
@@ -5662,10 +5675,10 @@ bool FMeshUtilities::GenerateUniqueUVsForSkeletalMesh(const FSkeletalMeshLODMode
 
 	// Generate new UVs
 	FLayoutUVRawMeshView TempMeshView(TempMesh, 0, 1);
-	FLayoutUV Packer(TempMeshView, FMath::Clamp(TextureResolution / 4, 32, 512));
+	FLayoutUV Packer(TempMeshView);
 	Packer.FindCharts(OverlappingCorners);
 
-	bool bPackSuccess = Packer.FindBestPacking();
+	bool bPackSuccess = Packer.FindBestPacking(FMath::Clamp(TextureResolution / 4, 32, 512));
 	if (bPackSuccess)
 	{
 		Packer.CommitPackedUVs();
@@ -6163,10 +6176,10 @@ bool FMeshUtilities::GenerateUniqueUVsForStaticMesh(const FRawMesh& RawMesh, int
 
 	// Generate new UVs
 	FLayoutUVRawMeshView TempMeshView(TempMesh, 0, 1);
-	FLayoutUV Packer(TempMeshView, FMath::Clamp(TextureResolution / 4, 32, 512));
+	FLayoutUV Packer(TempMeshView);
 	Packer.FindCharts(OverlappingCorners);
 
-	bool bPackSuccess = Packer.FindBestPacking();
+	bool bPackSuccess = Packer.FindBestPacking(FMath::Clamp(TextureResolution / 4, 32, 512));
 	if (bPackSuccess)
 	{
 		Packer.CommitPackedUVs();

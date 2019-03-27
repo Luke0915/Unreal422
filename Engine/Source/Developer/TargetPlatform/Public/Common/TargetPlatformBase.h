@@ -109,15 +109,12 @@ public:
 	{
 	}
 
-	virtual int32 GetCompressionBitWindow() const override
-	{
-		return DEFAULT_ZLIB_BIT_WINDOW;
-	}
-
 	virtual int32 GetPlatformOrdinal() const override
 	{
 		return PlatformOrdinal;
 	}
+
+	TARGETPLATFORM_API virtual TSharedPtr<IDeviceManagerCustomPlatformWidgetCreator> GetCustomWidgetCreator() const override;
 
 protected:
 
@@ -246,6 +243,16 @@ public:
 
 		case ETargetPlatformFeatures::TextureStreaming:
 			return TPlatformProperties::SupportsTextureStreaming();
+		case ETargetPlatformFeatures::MeshLODStreaming:
+			return TPlatformProperties::SupportsMeshLODStreaming();
+
+		case ETargetPlatformFeatures::MemoryMappedFiles:
+			return TPlatformProperties::SupportsMemoryMappedFiles();
+
+		case ETargetPlatformFeatures::MemoryMappedAudio:
+			return TPlatformProperties::SupportsMemoryMappedAudio();
+		case ETargetPlatformFeatures::MemoryMappedAnimation:
+			return TPlatformProperties::SupportsMemoryMappedAnimation();
 
 		case ETargetPlatformFeatures::SdkConnectDisconnect:
 		case ETargetPlatformFeatures::UserCredentials:
@@ -265,6 +272,16 @@ public:
 
 		return false;
 	}
+	virtual FName GetZlibReplacementFormat() const override
+	{
+		return TPlatformProperties::GetZlibReplacementFormat() != nullptr ? FName(TPlatformProperties::GetZlibReplacementFormat()) : NAME_Zlib;
+	}
+
+	virtual int32 GetMemoryMappingAlignment() const override
+	{
+		return TPlatformProperties::GetMemoryMappingAlignment();
+	}
+
 
 #if WITH_ENGINE
 	virtual FName GetPhysicsFormat( class UBodySetup* Body ) const override

@@ -22,6 +22,7 @@
 #include "AbilitySystemGlobals.h"
 #include "GameplayEffectDetails.h"
 #include "GameplayEffectExecutionScopedModifierInfoDetails.h"
+#include "GameplayTagBlueprintPropertyMappingDetails.h"
 #include "GameplayEffectExecutionDefinitionDetails.h"
 #include "GameplayEffectModifierMagnitudeDetails.h"
 #include "GameplayModEvaluationChannelSettingsDetails.h"
@@ -128,6 +129,7 @@ void FGameplayAbilitiesEditorModule::StartupModule()
 	PropertyModule.RegisterCustomPropertyTypeLayout( "GameplayAttribute", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FAttributePropertyDetails::MakeInstance ) );
 	PropertyModule.RegisterCustomPropertyTypeLayout( "ScalableFloat", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FScalableFloatDetails::MakeInstance ) );
 	PropertyModule.RegisterCustomPropertyTypeLayout( "GameplayEffectExecutionScopedModifierInfo", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FGameplayEffectExecutionScopedModifierInfoDetails::MakeInstance ) );
+	PropertyModule.RegisterCustomPropertyTypeLayout( "GameplayTagBlueprintPropertyMapping", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FGameplayTagBlueprintPropertyMappingDetails::MakeInstance ) );
 	PropertyModule.RegisterCustomPropertyTypeLayout( "GameplayEffectExecutionDefinition", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FGameplayEffectExecutionDefinitionDetails::MakeInstance ) );
 	PropertyModule.RegisterCustomPropertyTypeLayout( "GameplayEffectModifierMagnitude", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FGameplayEffectModifierMagnitudeDetails::MakeInstance ) );
 	PropertyModule.RegisterCustomPropertyTypeLayout( "GameplayCueTag", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FGameplayCueTagDetails::MakeInstance ) );
@@ -279,6 +281,7 @@ void FGameplayAbilitiesEditorModule::ShutdownModule()
 		PropertyModule.UnregisterCustomPropertyTypeLayout("GameplayEffectModifierMagnitude");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("GameplayEffectExecutionDefinition");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("GameplayEffectExecutionScopedModifierInfo");
+		PropertyModule.UnregisterCustomPropertyTypeLayout("GameplayTagBlueprintPropertyMapping");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("ScalableFloat");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("GameplayAttribute");
 	}
@@ -363,7 +366,7 @@ FAutoConsoleCommand RecompileGameplayAbilitiesEditorCommand(
 void FGameplayAbilitiesEditorModule::ApplyGameplayModEvaluationChannelAliasesToEnumMetadata()
 {
 	UAbilitySystemGlobals* AbilitySystemGlobalsCDO = UAbilitySystemGlobals::StaticClass()->GetDefaultObject<UAbilitySystemGlobals>();
-	const UEnum* EvalChannelEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EGameplayModEvaluationChannel"));
+	const UEnum* EvalChannelEnum = StaticEnum<EGameplayModEvaluationChannel>();
 	if (ensure(EvalChannelEnum) && ensure(AbilitySystemGlobalsCDO))
 	{
 		const TCHAR* DisplayNameMeta = TEXT("DisplayName");
@@ -396,7 +399,7 @@ void FGameplayAbilitiesEditorModule::ApplyGameplayModEvaluationChannelAliasesToE
 		else
 		{
 			// If not allowed to use channels, also hide the "Evaluate up to channel" option 
-			const UEnum* AttributeBasedFloatCalculationTypeEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EAttributeBasedFloatCalculationType"));
+			const UEnum* AttributeBasedFloatCalculationTypeEnum = StaticEnum<EAttributeBasedFloatCalculationType>();
 			if (ensure(AttributeBasedFloatCalculationTypeEnum))
 			{
 				const int32 ChannelBasedCalcIdx = AttributeBasedFloatCalculationTypeEnum->GetIndexByValue(static_cast<int64>(EAttributeBasedFloatCalculationType::AttributeMagnitudeEvaluatedUpToChannel));

@@ -675,17 +675,22 @@ static void ParseBranchModificationResults(const FP4RecordSet& InRecords, const 
 		if (BranchModifications.Contains(BranchFile))
 		{
 			FBranchModification& BranchModification = BranchModifications[BranchFile];
-
-			// Never overwrite a current branch modification with the same from a different branch
+			
 			if (BranchModification.ModTime == HeadModTime)
 			{
+				// Never overwrite a current branch modification with the same from a different branch
 				if (BranchModification.BranchName == CurrentBranch && Branch != CurrentBranch)
+				{
+					continue;
+				}
+
+				// Never overwrite edit with an integrate for same mod time
+				if (BranchModification.Action == TEXT("edit"))
 				{
 					continue;
 				}
 			}
 
-			//  We want latest modification, <= so we catch the actual edit CL in the revision list
 			if (BranchModification.ModTime <= HeadModTime)
 			{
 				BranchModification.ModTime = HeadModTime;
@@ -756,7 +761,7 @@ static void ParseUpdateStatusResults(const FP4RecordSet& InRecords, const TArray
 
 				int32 AtIndex = OtherOpenRecordValue.Find(TEXT("@"));
 				FString OtherOpenUser = AtIndex == INDEX_NONE ? FString(TEXT("")) : OtherOpenRecordValue.Left(AtIndex);
-				BranchModification.OtherUserCheckedOut += OtherOpenUser + TEXT(" @ ") + BranchModification.BranchName;
+				BranchModification.OtherUserCheckedOut += OtherOpenUser + TEXT(" @ ") + Branch;
 
 				if (OpenIdx < OtherOpenNum - 1)
 				{

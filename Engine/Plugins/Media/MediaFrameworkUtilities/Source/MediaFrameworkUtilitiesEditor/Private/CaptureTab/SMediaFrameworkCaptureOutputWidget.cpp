@@ -20,6 +20,7 @@
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSplitter.h"
+#include "Widgets/SMediaImage.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/Text/STextBlock.h"
@@ -481,37 +482,7 @@ void SMediaFrameworkCaptureRenderTargetWidget::Construct(const FArguments& InArg
 	BaseArguments._CaptureOptions = InArgs._CaptureOptions;
 	SMediaFrameworkCaptureOutputWidget::Construct(BaseArguments);
 
-	// create material
-	ImageMaterial.Reset(NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient));
-	UMaterialExpressionTextureSample* TextureSampler = NewObject<UMaterialExpressionTextureSample>(ImageMaterial.Get());
-	{
-		TextureSampler->Texture = RenderTarget.Get();
-		TextureSampler->AutoSetSampleType();
-	}
-
-	FExpressionOutput& Output = TextureSampler->GetOutputs()[0];
-	FExpressionInput& Input = ImageMaterial->EmissiveColor;
-	{
-		Input.Expression = TextureSampler;
-		Input.Mask = Output.Mask;
-		Input.MaskR = Output.MaskR;
-		Input.MaskG = Output.MaskG;
-		Input.MaskB = Output.MaskB;
-		Input.MaskA = Output.MaskA;
-	}
-
-	ImageMaterial->Expressions.Add(TextureSampler);
-	ImageMaterial->MaterialDomain = EMaterialDomain::MD_UI;
-	ImageMaterial->PostEditChange();
-
-	// create Slate brush
-	ImageMaterialBrush = MakeShareable(new FSlateBrush());
-	{
-		ImageMaterialBrush->SetResourceObject(ImageMaterial.Get());
-	}
-
-	TSharedRef<SWidget> PictureBox = SNew(SImage)
-		.Image(ImageMaterialBrush.IsValid() ? ImageMaterialBrush.Get() : FEditorStyle::GetBrush("WhiteTexture"));
+	TSharedRef<SWidget> PictureBox = SNew(SMediaImage, RenderTarget.Get());
 
 	this->ChildSlot
 	[
@@ -591,11 +562,6 @@ void SMediaFrameworkCaptureCurrentViewportWidget::Construct(const FArguments& In
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
-SMediaFrameworkCaptureCurrentViewportWidget::~SMediaFrameworkCaptureCurrentViewportWidget()
-{
-	ShutdownViewport();
-}
-
 void SMediaFrameworkCaptureCurrentViewportWidget::StartOutput()
 {
 	ShutdownViewport();
@@ -654,14 +620,26 @@ void SMediaFrameworkCaptureCurrentViewportWidget::StartOutput()
 
 			if (SceneViewport.IsValid())
 			{
-				GEditor->OnLevelViewportClientListChanged().AddRaw(this, &SMediaFrameworkCaptureCurrentViewportWidget::OnLevelViewportClientListChanged);
+				GEditor->OnLevelViewportClientListChanged().AddSP(this, &SMediaFrameworkCaptureCurrentViewportWidget::OnLevelViewportClientListChanged);
 				EditorSceneViewport = SceneViewport;
-				FIntPoint TargetSize = MediaOutputPtr->GetRequestedSize();
-				SceneViewport->SetFixedViewportSize(TargetSize.X, TargetSize.Y);
-				MediaCapture->CaptureSceneViewport(SceneViewport, CaptureOptions);
+				MediaCapture->OnStateChangedNative.AddSP(this, &SMediaFrameworkCaptureCurrentViewportWidget::OnMediaCaptureStateChanged);
+
+				if (!MediaCapture->CaptureSceneViewport(SceneViewport, CaptureOptions))
+				{
+					ShutdownViewport();
+				}
 			}
 		}
 	}
+}
+
+void SMediaFrameworkCaptureCurrentViewportWidget::StopOutput()
+{
+	if (MediaCapture.IsValid())
+	{
+		MediaCapture->StopCapture(false);
+	}
+	ShutdownViewport();
 }
 
 void SMediaFrameworkCaptureCurrentViewportWidget::OnLevelViewportClientListChanged()
@@ -686,34 +664,33 @@ void SMediaFrameworkCaptureCurrentViewportWidget::OnLevelViewportClientListChang
 	}
 }
 
-void SMediaFrameworkCaptureCurrentViewportWidget::OnPrePIE()
+void SMediaFrameworkCaptureCurrentViewportWidget::OnMediaCaptureStateChanged()
 {
 	if (MediaCapture.IsValid())
 	{
-		MediaCapture->StopCapture(false);
+		EMediaCaptureState State = MediaCapture->GetState();
+		if (State != EMediaCaptureState::Capturing && State != EMediaCaptureState::Preparing)
+		{
+			ShutdownViewport();
+		}
 	}
-	ShutdownViewport();
+}
+
+void SMediaFrameworkCaptureCurrentViewportWidget::OnPrePIE()
+{
+	StopOutput();
 }
 
 void SMediaFrameworkCaptureCurrentViewportWidget::OnPrePIEEnded()
 {
-	if (MediaCapture.IsValid())
-	{
-		MediaCapture->StopCapture(false);
-	}
-	ShutdownViewport();
+	StopOutput();
 }
 
 void SMediaFrameworkCaptureCurrentViewportWidget::ShutdownViewport()
 {
-	TSharedPtr<FSceneViewport> EditorSceneViewportPin = EditorSceneViewport.Pin();
-	if (EditorSceneViewportPin.IsValid())
-	{
-		EditorSceneViewportPin->SetFixedViewportSize(0, 0);
-	}
-
 	GEditor->OnLevelViewportClientListChanged().RemoveAll(this);
 
+	TSharedPtr<FSceneViewport> EditorSceneViewportPin = EditorSceneViewport.Pin();
 	TSharedPtr<ILevelViewport> LevelViewportPin = LevelViewport.Pin();
 	if (LevelViewportPin.IsValid() && LevelViewportPin->GetSharedActiveViewport() == EditorSceneViewportPin)
 	{
@@ -730,6 +707,7 @@ void SMediaFrameworkCaptureCurrentViewportWidget::ShutdownViewport()
 
 	LevelViewport.Reset();
 	EditorSceneViewport.Reset();
+	MediaCapture.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE

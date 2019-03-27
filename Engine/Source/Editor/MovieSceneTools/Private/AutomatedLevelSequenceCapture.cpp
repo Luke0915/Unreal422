@@ -88,6 +88,7 @@ UAutomatedLevelSequenceCapture::UAutomatedLevelSequenceCapture(const FObjectInit
 	WarmUpFrameCount = 0;
 	DelayBeforeWarmUp = 0.0f;
 	DelayBeforeShotWarmUp = 0.0f;
+	DelayEveryFrame = 0.0f;
 	bWriteEditDecisionList = true;
 	bWriteFinalCutProXML = true;
 
@@ -158,6 +159,17 @@ void UAutomatedLevelSequenceCapture::Initialize(TSharedPtr<FSceneViewport> InVie
 		{
 			DelayBeforeShotWarmUp = DelayBeforeShotWarmUpOverride;
 		}
+
+		float DelayEveryFrameOverride;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-MovieDelayEveryFrame="), DelayEveryFrameOverride))
+		{
+			DelayEveryFrame = DelayEveryFrameOverride;
+		}
+	}
+
+	if (Settings.bUsePathTracer)
+	{
+		DelayEveryFrame = float(Settings.FrameRate.AsSeconds(Settings.PathTracerSamplePerPixel));
 	}
 
 	ALevelSequenceActor* Actor = LevelSequenceActor.Get();
@@ -202,6 +214,9 @@ void UAutomatedLevelSequenceCapture::Initialize(TSharedPtr<FSceneViewport> InVie
 		}
 	}
 
+	ExportEDL();
+	ExportFCPXML();
+
 	if (Actor)
 	{
 		// Ensure it doesn't loop (-1 is indefinite)
@@ -242,9 +257,6 @@ void UAutomatedLevelSequenceCapture::Initialize(TSharedPtr<FSceneViewport> InVie
 	{
 		UE_LOG(LogMovieSceneCapture, Error, TEXT("Could not find or create a Level Sequence Actor for this capture. Capturing will fail."));
 	}
-
-	ExportEDL();
-	ExportFCPXML();
 
 	CaptureState = ELevelSequenceCaptureState::Setup;
 	CaptureStrategy = MakeShareable(new FFixedTimeStepCaptureStrategy(Settings.FrameRate));
@@ -308,6 +320,8 @@ bool UAutomatedLevelSequenceCapture::InitializeShots()
 
 	// Compute handle frames in tick resolution space since that is what the section ranges are defined in
 	FFrameNumber HandleFramesResolutionSpace = ConvertFrameTime(Settings.HandleFrames, Settings.FrameRate, MovieScene->GetTickResolution()).FloorToFrame();
+
+	CinematicShotTrack->SortSections();
 
 	for (int32 SectionIndex = 0; SectionIndex < CinematicShotTrack->GetAllSections().Num(); ++SectionIndex)
 	{
@@ -540,11 +554,11 @@ void UAutomatedLevelSequenceCapture::OnTick(float DeltaSeconds)
 
 		StartWarmup();
 
-		if (DelayBeforeWarmUp + DelayBeforeShotWarmUp > 0)
+		if (DelayBeforeWarmUp + DelayBeforeShotWarmUp + DelayEveryFrame > 0)
 		{
 			CaptureState = ELevelSequenceCaptureState::DelayBeforeWarmUp;
 
-			Actor->GetWorld()->GetTimerManager().SetTimer(DelayTimer, FTimerDelegate::CreateUObject(this, &UAutomatedLevelSequenceCapture::DelayBeforeWarmupFinished), DelayBeforeWarmUp + DelayBeforeShotWarmUp, false);
+			Actor->GetWorld()->GetTimerManager().SetTimer(DelayTimer, FTimerDelegate::CreateUObject(this, &UAutomatedLevelSequenceCapture::DelayBeforeWarmupFinished), DelayBeforeWarmUp + DelayBeforeShotWarmUp + DelayEveryFrame, false);
 		}
 		else
 		{
@@ -675,10 +689,14 @@ void UAutomatedLevelSequenceCapture::SequenceUpdated(const UMovieSceneSequencePl
 		if (Actor && Actor->SequencePlayer)
 		{
 			// If this is a new shot, set the state to shot warm up and pause on this frame until warmed up			
-			bool bHasMultipleShots = PreviousState.CurrentShotName != PreviousState.MasterName;
-			bool bNewShot = bHasMultipleShots && PreviousState.ShotID != CachedState.ShotID;
-			
-			if (bNewShot && Actor->SequencePlayer->IsPlaying() && DelayBeforeShotWarmUp > 0)
+			const bool bHasMultipleShots = PreviousState.CurrentShotName != PreviousState.MasterName;
+			const bool bNewShot = bHasMultipleShots && PreviousState.ShotID != CachedState.ShotID;
+			const bool bNewFrame = PreviousTime != CurrentTime;
+
+			const bool bDelayingBeforeShotWarmUp = (bNewShot && DelayBeforeShotWarmUp > 0);
+			const bool bDelayingEveryFrame = (bNewFrame && DelayEveryFrame > 0);
+
+			if (Actor->SequencePlayer->IsPlaying() && ( bDelayingBeforeShotWarmUp || bDelayingEveryFrame ))
 			{
 				if (bIsAudioCapturePass)
 				{
@@ -699,7 +717,7 @@ void UAutomatedLevelSequenceCapture::SequenceUpdated(const UMovieSceneSequencePl
 				
 				CaptureState = ELevelSequenceCaptureState::Paused;
 
-				Actor->GetWorld()->GetTimerManager().SetTimer(DelayTimer, FTimerDelegate::CreateUObject(this, &UAutomatedLevelSequenceCapture::PauseFinished), DelayBeforeShotWarmUp, false);
+				Actor->GetWorld()->GetTimerManager().SetTimer(DelayTimer, FTimerDelegate::CreateUObject(this, &UAutomatedLevelSequenceCapture::PauseFinished), DelayBeforeShotWarmUp + DelayEveryFrame, false);
 				CachedPlayRate = Actor->SequencePlayer->GetPlayRate();
 				Actor->SequencePlayer->SetPlayRate(0.f);
 			}
@@ -903,8 +921,9 @@ void UAutomatedLevelSequenceCapture::ExportEDL()
 
 	FString SaveFilename = 	Settings.OutputDirectory.Path / MovieScene->GetOuter()->GetName();
 	int32 HandleFrames = Settings.HandleFrames;
+	FString MovieExtension = Settings.MovieExtension;
 
-	MovieSceneTranslatorEDL::ExportEDL(MovieScene, Settings.FrameRate, SaveFilename, HandleFrames);
+	MovieSceneTranslatorEDL::ExportEDL(MovieScene, Settings.FrameRate, SaveFilename, HandleFrames, MovieExtension);
 }
 
 double UAutomatedLevelSequenceCapture::GetEstimatedCaptureDurationSeconds() const
@@ -947,13 +966,14 @@ void UAutomatedLevelSequenceCapture::ExportFCPXML()
 	FFrameRate FrameRate = Settings.FrameRate;
 	uint32 ResX = Settings.Resolution.ResX;
 	uint32 ResY = Settings.Resolution.ResY;
+	FString MovieExtension = Settings.MovieExtension;
 
 	FFCPXMLExporter *Exporter = new FFCPXMLExporter;
 
 	TSharedRef<FMovieSceneTranslatorContext> ExportContext(new FMovieSceneTranslatorContext);
 	ExportContext->Init();
 
-	bool bSuccess = Exporter->Export(MovieScene, FilenameFormat, FrameRate, ResX, ResY, HandleFrames, SaveFilename, ExportContext);
+	bool bSuccess = Exporter->Export(MovieScene, FilenameFormat, FrameRate, ResX, ResY, HandleFrames, SaveFilename, ExportContext, MovieExtension);
 
 	// Log any messages in context
 	MovieSceneToolHelpers::MovieSceneTranslatorLogMessages(Exporter, ExportContext, false);

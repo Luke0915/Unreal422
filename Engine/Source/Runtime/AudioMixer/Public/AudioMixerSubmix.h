@@ -6,6 +6,7 @@
 #include "Sound/SoundSubmix.h"
 #include "Sound/SampleBuffer.h"
 #include "DSP/EnvelopeFollower.h"
+#include "DSP/SpectrumAnalyzer.h"
 
 class USoundEffectSubmix;
 
@@ -86,6 +87,9 @@ namespace Audio
 		/** Clears all submix effects from the effect submix chain. */
 		void ClearSoundEffectSubmixes();
 
+		/** Whether or not this submix instance is muted. */
+		void SetBackgroundMuted(bool bInMuted);
+
 		// Function which processes audio.
 		void ProcessAudio(const ESubmixChannelFormat ParentInputChannels, AlignedFloatBuffer& OutAudio);
 
@@ -94,9 +98,6 @@ namespace Audio
 
 		// Returns the output channels this submix is rendering to
 		int32 GetNumOutputChannels() const;
-
-		// Updates the submix from the main thread.
-		void Update();
 
 		// Returns the number of effects in this submix's effect chain
 		int32 GetNumChainEffects() const;
@@ -134,12 +135,28 @@ namespace Audio
 		// Adds an envelope follower delegate
 		void AddEnvelopeFollowerDelegate(const FOnSubmixEnvelopeBP& OnSubmixEnvelopeBP);
 
+		// Initializes a new FFT analyzer for this submix and immediately begins feeding audio to it.
+		void StartSpectrumAnalysis(const FSpectrumAnalyzerSettings& InSettings);
+
+		// Terminates whatever FFT Analyzer is being used for this submix.
+		void StopSpectrumAnalysis();
+
+		// Gets the most recent magnitude values for each corresponding value in InFrequencies (in Hz).
+		// This requires StartSpectrumAnalysis to be called first.
+		void GetMagnitudeForFrequencies(const TArray<float>& InFrequencies, TArray<float>& OutMagnitudes);
+
+		// Gets the most recent phase values for each corresponding value in InFrequencies (in Hz).
+		// This requires StartSpectrumAnalysis to be called first.
+		void GetPhaseForFrequencies(const TArray<float>& InFrequencies, TArray<float>& OutPhases);
+
 		// Broadcast the envelope value on the game thread
 		void BroadcastEnvelope();
 
 	protected:
 		// Down mix the given buffer to the desired down mix channel count
 		void FormatChangeBuffer(const ESubmixChannelFormat NewChannelType, AlignedFloatBuffer& InBuffer, AlignedFloatBuffer& OutNewBuffer);
+
+		void MixBufferDownToMono(const AlignedFloatBuffer& InBuffer, int32 NumInputChannels, AlignedFloatBuffer& OutBuffer);
 
 		// Set up ambisonics encoder. Called when ambisonics settings are changed.
 		void SetUpAmbisonicsEncoder();
@@ -238,6 +255,12 @@ namespace Audio
 		int32 EnvelopeNumChannels;
 		FCriticalSection EnvelopeCriticalSection;
 
+		// Spectrum analyzer:
+		TUniquePtr<FSpectrumAnalyzer> SpectrumAnalyzer;
+		
+		// This buffer is used to downmix the submix output to mono before submitting it to the SpectrumAnalyzer.
+		AlignedFloatBuffer MonoMixBuffer;
+
 		// This buffer is encoded into for each source, then summed into the ambisonics buffer.
 		AlignedFloatBuffer InputAmbisonicsBuffer;
 
@@ -258,6 +281,9 @@ namespace Audio
 
 		// Bool set to true when this submix is recording data.
 		uint8 bIsRecording : 1;
+
+		// Whether or not this submix is muted.
+		uint8 bIsBackgroundMuted : 1;
 
 		// Bool set to true when envelope following is enabled
 		FThreadSafeBool bIsEnvelopeFollowing;

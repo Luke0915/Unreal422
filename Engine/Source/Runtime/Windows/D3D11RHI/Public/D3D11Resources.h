@@ -9,6 +9,9 @@
 #include "BoundShaderStateCache.h"
 #include "D3D11ShaderResources.h"
 
+interface ID3D11DeviceContext;
+typedef ID3D11DeviceContext FD3D11DeviceContext;
+
 template <>
 struct TTypeTraits<D3D11_INPUT_ELEMENT_DESC> : public TTypeTraitsBase<D3D11_INPUT_ELEMENT_DESC>
 {
@@ -120,7 +123,7 @@ public:
 	TRefCountPtr<ID3D11DomainShader> DomainShader;
 	TRefCountPtr<ID3D11GeometryShader> GeometryShader;
 
-	bool bShaderNeedsGlobalConstantBuffer[SF_NumFrequencies];
+	bool bShaderNeedsGlobalConstantBuffer[SF_NumStandardFrequencies];
 
 
 	/** Initialization constructor. */
@@ -784,12 +787,21 @@ public:
 
 class FD3D11StagingBuffer : public FRHIStagingBuffer
 {
+	friend class FD3D11DynamicRHI;
 public:
-	FD3D11StagingBuffer(FVertexBufferRHIRef InBuffer)
-		: FRHIStagingBuffer(InBuffer)
+	FD3D11StagingBuffer()
+		: FRHIStagingBuffer()
 	{}
 
+	virtual ~FD3D11StagingBuffer() final override;
+
+	virtual void* Lock(uint32 Offset, uint32 NumBytes) final override;
+	virtual void Unlock() final override;
+
+private:
+	FD3D11DeviceContext* Context;
 	TRefCountPtr<ID3D11Buffer> StagedRead;
+	uint32 ShadowBufferSize;
 };
 
 /** Shader resource view class. */
@@ -804,6 +816,12 @@ public:
 	: View(InView)
 	, Resource(InResource)
 	{}
+
+	void Rename(ID3D11ShaderResourceView* InView, FD3D11BaseShaderResource* InResource)
+	{
+		View = InView;
+		Resource = InResource;
+	}
 };
 
 /** Unordered access view class. */
@@ -923,6 +941,12 @@ template<>
 struct TD3D11ResourceTraits<FRHIStagingBuffer>
 {
 	typedef FD3D11StagingBuffer TConcreteType;
+};
+// @todo-staging Implement D3D11 fences.
+template<>
+struct TD3D11ResourceTraits<FRHIGPUFence>
+{
+	typedef FGenericRHIGPUFence TConcreteType;
 };
 template<>
 struct TD3D11ResourceTraits<FRHIShaderResourceView>

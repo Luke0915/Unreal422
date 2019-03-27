@@ -1003,7 +1003,7 @@ void FMaterialEditor::OnFinishedChangingProperties(const FPropertyChangedEvent& 
 void FMaterialEditor::OnFinishedChangingParametersFromOverview(const FPropertyChangedEvent& PropertyChangedEvent)
 {
 	bool bRefreshNodePreviews = false;
-	if (PropertyChangedEvent.Property != nullptr)
+	if (PropertyChangedEvent.Property != nullptr && PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
 		RefreshExpressionPreviews(true);
 		RefreshPreviewViewport();
@@ -1028,16 +1028,9 @@ FText FMaterialEditor::GetBaseToolkitName() const
 FText FMaterialEditor::GetToolkitName() const
 {
 	const UObject* EditingObject = GetEditingObjects()[0];
-
 	check(EditingObject);
 
-	const bool bDirtyState = EditingObject->GetOutermost()->IsDirty();
-
-	// Overridden to accommodate editing of multiple objects (original and preview materials)
-	FFormatNamedArguments Args;
-	Args.Add( TEXT("ObjectName"), FText::FromString( EditingObject->GetName() ) );
-	Args.Add( TEXT("DirtyState"), bDirtyState ? FText::FromString( TEXT( "*" ) ) : FText::GetEmpty() );
-	return FText::Format( LOCTEXT("MaterialEditorAppLabel", "{ObjectName}{DirtyState}"), Args );
+	return FText::FromString(EditingObject->GetName());
 }
 
 FText FMaterialEditor::GetToolkitToolTipText() const
@@ -3393,6 +3386,10 @@ void FMaterialEditor::SetPreviewExpression(UMaterialExpression* NewPreviewExpres
 			{
 				ExpressionPreviewMaterial->MaterialDomain = MD_UI;
 			}
+			else if (Material->IsPostProcessMaterial())
+			{
+				ExpressionPreviewMaterial->MaterialDomain = MD_PostProcess;
+			}
 		}
 
 		if (FunctionOutput)
@@ -3930,6 +3927,8 @@ FText FMaterialEditor::GetOriginalObjectName() const
 
 void FMaterialEditor::UpdateMaterialAfterGraphChange()
 {
+	FlushRenderingCommands();
+	
 	Material->MaterialGraph->LinkMaterialExpressionsFromGraph();
 
 	// Update the current preview material.
@@ -3954,6 +3953,8 @@ FMaterialRenderProxy* FMaterialEditor::GetExpressionPreview(UMaterialExpression*
 
 void FMaterialEditor::UndoGraphAction()
 {
+	FlushRenderingCommands();
+	
 	int32 NumExpressions = Material->Expressions.Num();
 	GEditor->UndoTransaction();
 
@@ -3965,6 +3966,8 @@ void FMaterialEditor::UndoGraphAction()
 
 void FMaterialEditor::RedoGraphAction()
 {
+	FlushRenderingCommands();
+	
 	// Clear selection, to avoid holding refs to nodes that go away
 	GraphEditor->ClearSelectionSet();
 
@@ -4293,7 +4296,8 @@ FMatExpressionPreview* FMaterialEditor::GetExpressionPreview(UMaterialExpression
 		if( !Preview )
 		{
 			bNewlyCreated = true;
-			Preview = new(ExpressionPreviews) FMatExpressionPreview(MaterialExpression);
+			Preview = new FMatExpressionPreview(MaterialExpression);
+			ExpressionPreviews.Add(Preview);
 			Preview->CacheShaders(GMaxRHIShaderPlatform, true);
 		}
 		return Preview;

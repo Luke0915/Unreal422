@@ -21,7 +21,7 @@ namespace Audio
 	{
 		const int32 N = bIsPeriodic ? NumFrames : NumFrames - 1;
 		const float PhaseDelta = 2.0f * PI / N;
-		float Phase = 0;
+		float Phase = 0.0f;
 
 		for (int32 FrameIndex = 0; FrameIndex < NumFrames; FrameIndex++)
 		{
@@ -104,59 +104,6 @@ namespace Audio
 		}
 	}
 
-	FWindow::FWindow(EWindowType InType, int32 InNumFrames, int32 InNumChannels, bool bIsPeriodic)
-		: WindowType(InType)
-		, NumSamples(InNumFrames * InNumChannels)
-	{
-		checkf(NumSamples % 4 == 0, TEXT("For performance reasons, this window's length should be a multiple of 4."));
-		Generate(InNumFrames, InNumChannels, bIsPeriodic);
-	}
-
-	FWindow::~FWindow()
-	{
-
-	}
-
-	void FWindow::Generate(int32 NumFrames, int32 NumChannels, bool bIsPeriodic)
-	{
-		if (WindowType == EWindowType::None)
-		{
-			return;
-		}
-
-		WindowBuffer.Reset();
-		WindowBuffer.AddZeroed(NumSamples);
-
-		switch (WindowType)
-		{
-			case EWindowType::Hann:
-			{
-				GenerateHannWindow(WindowBuffer.GetData(), NumFrames, NumChannels, bIsPeriodic);
-				break;
-			}
-			case EWindowType::Blackman:
-			{
-				GenerateBlackmanWindow(WindowBuffer.GetData(), NumFrames, NumChannels, bIsPeriodic);
-				break;
-			}
-			default:
-			{
-				break;
-			}
-		}
-	}
-
-	void FWindow::ApplyToBuffer(float* InBuffer)
-	{
-		if (WindowType == EWindowType::None)
-		{
-			return;
-		}
-
-		check(IsAligned<float*>(InBuffer, 4));
-		MultiplyBuffersInPlace(WindowBuffer.GetData(), InBuffer, NumSamples);
-	}
-
 	namespace FFTIntrinsics
 	{
 		// Fast bit reversal helper function. Can be used if N is a power of 2. Not well exercised.
@@ -193,6 +140,13 @@ namespace Audio
 			return ((ReversedX << Count) & ((1 << N) - 1));
 		}
 
+		// Alternate method for SlowBitReversal. Faster when N >= 7.
+		uint32 SlowBitReversal2(uint32 X, uint32 N)
+		{
+			X = ReverseBits(X);
+			return X >> (32 - N);
+		}
+
 		void ComplexMultiply(const float AReal, const float AImag, const float BReal, const float BImag, float& OutReal, float& OutImag)
 		{
 			OutReal = AReal * BReal - AImag * BImag;
@@ -218,7 +172,7 @@ namespace Audio
 			for (uint32 Index = 0; Index < NumSamples; Index++)
 			{
 				const uint32 NumBits = FMath::Log2(NumSamples);
-				const uint32 ReversedIndex = SlowBitReversal(Index, NumBits);
+				const uint32 ReversedIndex = SlowBitReversal2(Index, NumBits);
 				OutBuffer[ReversedIndex] = InBuffer[Index];
 			}
 		}

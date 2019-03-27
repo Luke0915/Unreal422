@@ -79,7 +79,7 @@ struct FScopeCycleCounterSWidget
 	{
 	}
 	~FScopeCycleCounterSWidget()
-	{;
+	{
 	}
 };
 
@@ -112,6 +112,7 @@ SWidget::SWidget()
 	, bNeedsDesiredSize(true)
 	, bUpdatingDesiredSize(false)
 	, Clipping(EWidgetClipping::Inherit)
+	, FlowDirectionPreference(EFlowDirectionPreference::Inherit)
 	, UpdateFlags(EWidgetUpdateFlags::NeedsTick)
 	, DesiredSize()
 	, PrepassLayoutScaleMultiplier(1.0f)
@@ -159,6 +160,7 @@ void SWidget::Construct(
 	const FName& InTag,
 	const bool InForceVolatile,
 	const EWidgetClipping InClipping,
+	const EFlowDirectionPreference InFlowPreference,
 	const TArray<TSharedRef<ISlateMetaData>>& InMetaData
 )
 {
@@ -187,12 +189,13 @@ void SWidget::Construct(
 	Tag = InTag;
 	bForceVolatile = InForceVolatile;
 	Clipping = InClipping;
+	FlowDirectionPreference = InFlowPreference;
 	MetaData = InMetaData;
 }
 
-void SWidget::SWidgetConstruct(const TAttribute<FText>& InToolTipText, const TSharedPtr<IToolTip>& InToolTip, const TAttribute< TOptional<EMouseCursor::Type> >& InCursor, const TAttribute<bool>& InEnabledState, const TAttribute<EVisibility>& InVisibility, const float InRenderOpacity, const TAttribute<TOptional<FSlateRenderTransform>>& InTransform, const TAttribute<FVector2D>& InTransformPivot, const FName& InTag, const bool InForceVolatile, const EWidgetClipping InClipping, const TArray<TSharedRef<ISlateMetaData>>& InMetaData)
+void SWidget::SWidgetConstruct(const TAttribute<FText>& InToolTipText, const TSharedPtr<IToolTip>& InToolTip, const TAttribute< TOptional<EMouseCursor::Type> >& InCursor, const TAttribute<bool>& InEnabledState, const TAttribute<EVisibility>& InVisibility, const float InRenderOpacity, const TAttribute<TOptional<FSlateRenderTransform>>& InTransform, const TAttribute<FVector2D>& InTransformPivot, const FName& InTag, const bool InForceVolatile, const EWidgetClipping InClipping, const EFlowDirectionPreference InFlowPreference, const TArray<TSharedRef<ISlateMetaData>>& InMetaData)
 {
-	Construct(InToolTipText, InToolTip, InCursor, InEnabledState, InVisibility, InRenderOpacity, InTransform, InTransformPivot, InTag, InForceVolatile, InClipping, InMetaData);
+	Construct(InToolTipText, InToolTip, InCursor, InEnabledState, InVisibility, InRenderOpacity, InTransform, InTransformPivot, InTag, InForceVolatile, InClipping, InFlowPreference, InMetaData);
 }
 
 FReply SWidget::OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent)
@@ -498,17 +501,18 @@ void SWidget::SlatePrepass(float InLayoutScaleMultiplier)
 		// a function of its children's sizes.
 		FChildren* MyChildren = this->GetChildren();
 		const int32 NumChildren = MyChildren->Num();
-		for ( int32 ChildIndex=0; ChildIndex < NumChildren; ++ChildIndex )
+		for (int32 ChildIndex = 0; ChildIndex < MyChildren->Num(); ++ChildIndex)
 		{
 			const TSharedRef<SWidget>& Child = MyChildren->GetChildAt(ChildIndex);
 
-			if ( GSlateLayoutCaching || Child->Visibility.Get() != EVisibility::Collapsed )
+			if (GSlateLayoutCaching || Child->Visibility.Get() != EVisibility::Collapsed)
 			{
 				const float ChildLayoutScaleMultiplier = GetRelativeLayoutScale(MyChildren->GetSlotAt(ChildIndex), InLayoutScaleMultiplier);
 				// Recur: Descend down the widget tree.
 				Child->SlatePrepass(InLayoutScaleMultiplier * ChildLayoutScaleMultiplier);
 			}
 		}
+		ensure(NumChildren == MyChildren->Num());
 	}
 
 	if(!GSlateLayoutCaching)
@@ -851,6 +855,8 @@ bool SWidget::IsDirectlyHovered() const
 
 void SWidget::Invalidate(EInvalidateWidget InvalidateReason)
 {
+	SLATE_CROSS_THREAD_CHECK();
+
 	SCOPED_NAMED_EVENT_TEXT("SWidget::Invalidate", FColor::Orange);
 
 	const bool bWasVolatile = IsVolatileIndirectly() || IsVolatile();
@@ -862,7 +868,6 @@ void SWidget::Invalidate(EInvalidateWidget InvalidateReason)
 	}
 
 	LayoutChanged(InvalidateReason);
-
 }
 
 void SWidget::SetCursor( const TAttribute< TOptional<EMouseCursor::Type> >& InCursor )
@@ -1029,6 +1034,11 @@ int32 SWidget::Paint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, 
 	FSlateDebugging::BeginWidgetPaint.Broadcast(this, UpdatedArgs, AllottedGeometry, CullingBounds, OutDrawElements, LayerId);
 #endif
 
+	// Establish the flow direction if we're changing from inherit.
+	// FOR RB mode, this should first set GSlateFlowDirection to the incoming state that was cached for the widget, then paint
+	// will override it here to reflow is needed.
+	TGuardValue<EFlowDirection> FlowGuard(GSlateFlowDirection, ComputeFlowDirection());
+	
 	// Paint the geometry of this widget.
 	int32 NewLayerID = OnPaint(UpdatedArgs, AllottedGeometry, CullingBounds, OutDrawElements, LayerId, ContentWidgetStyle, bParentEnabled);
 

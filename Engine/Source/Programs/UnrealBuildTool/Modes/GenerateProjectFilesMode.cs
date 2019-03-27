@@ -143,7 +143,7 @@ namespace UnrealBuildTool
 						Generator = new VCProjectFileGenerator(ProjectFile, VCProjectFileFormat.VisualStudio2019, Arguments);
 						break;
 					case ProjectFileFormat.XCode:
-						Generator = new XcodeProjectFileGenerator(ProjectFile);
+						Generator = new XcodeProjectFileGenerator(ProjectFile, Arguments);
 						break;
 					case ProjectFileFormat.Eddie:
 						Generator = new EddieProjectFileGenerator(ProjectFile);
@@ -164,7 +164,8 @@ namespace UnrealBuildTool
 			}
 
 			// Check there are no superfluous command line arguments
-			Arguments.CheckAllArgumentsUsed();
+			// TODO (still pass raw arguments below)
+			// Arguments.CheckAllArgumentsUsed();
 
 			// Now generate project files
 			ProjectFileGenerator.bGenerateProjectFiles = true;

@@ -63,6 +63,9 @@ public:
 	 */
 	void ConstructViewportOverlayContent();
 
+	TSharedRef<SWidget> GenerateLevelMenu() const;
+	FReply OnMenuClicked();
+
 	/**
 	 * Constructs the level editor viewport client
 	 */
@@ -292,6 +295,12 @@ public:
 	/** @return The visibility of the current level text display */
 	virtual EVisibility GetCurrentLevelTextVisibility() const;
 
+	/** @return The visibility of the current level text display */
+	virtual EVisibility GetSelectedActorsCurrentLevelTextVisibility() const;
+
+	/** Called to get the text for the level the currently selected actor or actors are in. */
+	FText GetSelectedActorsCurrentLevelText(bool bDrawOnlyLabel) const;
+
 	/** @return The visibility of the current screen percentage text display */
 	EVisibility GetCurrentScreenPercentageVisibility() const;
 
@@ -437,7 +446,7 @@ private:
 	/**
 	 * Called to create a cameraActor in the currently selected perspective viewport
 	 */
-	void OnCreateCameraActor();
+	void OnCreateCameraActor(UClass *InClass);
 
 	/**
 	 * Called to bring up the screenshot UI
@@ -846,6 +855,8 @@ private:
 
 	/** Whether to show a full toolbar, or a compact one */
 	bool bShowFullToolbar;
+
+	TSharedPtr<class SMenuAnchor> LevelMenuAnchor;
 
 protected:
 	void LockActorInternal(AActor* NewActorToLock);

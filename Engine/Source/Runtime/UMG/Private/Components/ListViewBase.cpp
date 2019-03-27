@@ -5,6 +5,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "TimerManager.h"
 #include "Engine/Blueprint.h"
+#include "Editor/WidgetCompilerLog.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -21,11 +22,11 @@ const FText UListViewBase::GetPaletteCategory()
 	return LOCTEXT("Lists", "Lists");
 }
 
-void UListViewBase::ValidateCompiledDefaults(FCompilerResultsLog& CompileLog) const
+void UListViewBase::ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) const
 {
 	if (!EntryWidgetClass)
 	{
-		CompileLog.Error(*FText::Format(LOCTEXT("Error_ListViewBase_MissingEntryClass", "{0} has no EntryWidgetClass specified - required for any UListViewBase to function."), FText::FromString(GetName())).ToString());
+		CompileLog.Error(FText::Format(LOCTEXT("Error_ListViewBase_MissingEntryClass", "{0} has no EntryWidgetClass specified - required for any UListViewBase to function."), FText::FromString(GetName())));
 	}
 }
 #endif
@@ -87,7 +88,7 @@ TSharedRef<SWidget> UListViewBase::RebuildWidget()
 		}
 		else if (EntryWidgetBP->Status == BS_Error)
 		{
-			ErrorText = FText::Format(LOCTEXT("Error_NonBPEntryWidget", "EntryWidget BP [{0}] has not compiled successfully"), FText::FromString(EntryWidgetBP->GetName()));
+			ErrorText = FText::Format(LOCTEXT("Error_CompilationError", "EntryWidget BP [{0}] has not compiled successfully"), FText::FromString(EntryWidgetBP->GetName()));
 		}
 	}
 #endif

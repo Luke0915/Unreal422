@@ -11,10 +11,12 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Object.h"
+#include "Misc/FallbackStruct.h"
 #include "Misc/Guid.h"
 #include "Math/RandomStream.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/CoreNative.h"
+#include "UObject/ReflectedTypeAccessors.h"
 #include "Templates/HasGetTypeHash.h"
 #include "Templates/IsAbstract.h"
 #include "Templates/IsEnum.h"
@@ -1553,6 +1555,23 @@ public:
 	explicit UDelegateFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
 };
 
+//
+// Function definition used by sparse dynamic delegate declarations
+//
+class COREUOBJECT_API USparseDelegateFunction : public UDelegateFunction
+{
+	DECLARE_CASTED_CLASS_INTRINSIC(USparseDelegateFunction, UDelegateFunction, 0, TEXT("/Script/CoreUObject"), CASTCLASS_USparseDelegateFunction)
+	DECLARE_WITHIN(UObject)
+public:
+	explicit USparseDelegateFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
+	explicit USparseDelegateFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags = FUNC_None, SIZE_T ParamsSize = 0);
+
+	virtual void Serialize(FArchive& Ar) override;
+
+	FName OwningClassName;
+	FName DelegateName;
+};
+
 /*-----------------------------------------------------------------------------
 	UEnum.
 -----------------------------------------------------------------------------*/
@@ -1888,6 +1907,86 @@ public:
 		out_TextValue = GetDisplayValueAsText( EnumPath, EnumeratorValue);
 	}
 
+	/**
+	 * @param EnumeratorValue  Enumerator Value.
+	 *
+	 * @return the name associated with the enumerator for the specified enum value for the enum specified by the template type.
+	 */
+	template<typename EnumType>
+	FORCEINLINE static FName GetValueAsName(const EnumType EnumeratorValue)
+	{
+		// For the C++ enum.
+		static_assert(TIsEnum<EnumType>::Value, "Should only call this with enum types");
+		UEnum* EnumClass = StaticEnum<EnumType>();
+		check(EnumClass != nullptr);
+		return EnumClass->GetNameByValue((int64)EnumeratorValue);
+	}
+
+	template<typename EnumType>
+	FORCEINLINE static FName GetValueAsName(const TEnumAsByte<EnumType> EnumeratorValue)
+	{
+		return GetValueAsName((int64)EnumeratorValue.GetValue());
+	}
+
+	template<typename EnumType>
+	FORCEINLINE static void GetValueAsName(const EnumType EnumeratorValue, FName& out_NameValue )
+	{
+		out_NameValue = GetValueAsName(EnumeratorValue);
+	}
+
+	/**
+	 * @param EnumeratorValue  Enumerator Value.
+	 *
+	 * @return the string associated with the enumerator for the specified enum value for the enum specified by the template type.
+	 */
+	template<typename EnumType>
+	FORCEINLINE static FString GetValueAsString(const EnumType EnumeratorValue)
+	{
+		// For the C++ enum.
+		static_assert(TIsEnum<EnumType>::Value, "Should only call this with enum types");
+		return GetValueAsName(EnumeratorValue).ToString();
+	}
+
+	template<typename EnumType>
+	FORCEINLINE static FString GetValueAsString(const TEnumAsByte<EnumType> EnumeratorValue)
+	{
+		return GetValueAsString((int64)EnumeratorValue.GetValue());
+	}
+
+	template<typename EnumType>
+	FORCEINLINE static void GetValueAsString(const EnumType EnumeratorValue, FString& out_StringValue )
+	{
+		out_StringValue = GetValueAsString(EnumeratorValue );
+	}
+
+
+	/**
+	 * @param EnumeratorValue  Enumerator Value.
+	 *
+	 * @return the localized display string associated with the specified enum value for the enum specified by the template type.
+	 */
+	template<typename EnumType>
+	FORCEINLINE static FText GetDisplayValueAsText(const EnumType EnumeratorValue )
+	{
+		// For the C++ enum.
+		static_assert(TIsEnum<EnumType>::Value, "Should only call this with enum types");
+		UEnum* EnumClass = StaticEnum<EnumType>();
+		check(EnumClass != nullptr);
+		return EnumClass->GetDisplayNameTextByValue((int64)EnumeratorValue);
+	}
+
+	template<typename EnumType>
+	FORCEINLINE static FText GetDisplayValueAsText(const TEnumAsByte<EnumType> EnumeratorValue)
+	{
+		return GetDisplayValueAsText((int64)EnumeratorValue.GetValue());
+	}
+
+	template<typename EnumType>
+	FORCEINLINE static void GetDisplayValueAsText(const EnumType EnumeratorValue, FText& out_TextValue )
+	{
+		out_TextValue = GetDisplayValueAsText(EnumeratorValue);
+	}
+
 	// Deprecated Functions
 	UE_DEPRECATED(4.16, "FindEnumIndex is deprecated, call GetIndexByName or GetValueByName instead")
 	int32 FindEnumIndex(FName InName) const { return GetIndexByName(InName, EGetByNameFlags::ErrorIfNotFound); }
@@ -2121,22 +2220,12 @@ public:
 	/** This is the blueprint that caused the generation of this class, or null if it is a native compiled-in class */
 	UObject* ClassGeneratedBy;
 
-#if USE_UBER_GRAPH_PERSISTENT_FRAME
-	/**
-	 * Property that points to the ubergraph frame, this is a blueprint specific structure that has been hoisted
-	 * to UClass so that the interpreter (ScriptCore.cpp) can access it efficiently. The uber graph frame is a struct
-	 * owned by a UObject but allocated separately that has a layout that corresponds to a specific UFunction (the
-	 * UberGraphFunction) in a blueprint.
-	 */
-	UStructProperty* UberGraphFramePointerProperty;
-#endif //USE_UBER_GRAPH_PERSISTENT_FRAME
-
 #if WITH_EDITOR
 	/**
 	 * Conditionally recompiles the class after loading, in case any dependencies were also newly loaded
 	 * @param ObjLoaded	If set this is the list of objects that are currently loading, usualy GObjLoaded
 	 */
-	virtual void ConditionalRecompileClass(TArray<UObject*>* ObjLoaded) {}
+	virtual void ConditionalRecompileClass(FUObjectSerializeContext* InLoadContext) {}
 	virtual void FlushCompilationQueueForLevel() {}
 #endif //WITH_EDITOR
 
@@ -2316,10 +2405,7 @@ public:
 	}
 
 	/** Clears the function name caches, in case things have changed */
-	void ClearFunctionMapsCaches()
-	{
-		SuperFuncMap.Empty();
-	}
+	void ClearFunctionMapsCaches();
 
 	/** Looks for a given function name */
 	UFunction* FindFunctionByName(FName InName, EIncludeSuperFlag::Type IncludeSuper = EIncludeSuperFlag::IncludeSuper) const;
@@ -2426,6 +2512,12 @@ public:
 	 * @return The name of the CDO
 	 */
 	FName GetDefaultObjectName();
+
+	/** Returns memory used to store temporary data on an instance, used by blueprints */
+	virtual uint8* GetPersistentUberGraphFrame(UObject* Obj, UFunction* FuncToCheck) const
+	{
+		return nullptr;
+	}
 
 	/** Creates memory to store temporary data */
 	virtual void CreatePersistentUberGraphFrame(UObject* Obj, bool bCreateOnlyIfEmpty = false, bool bSkipSuperClass = false, UClass* OldClass = nullptr) const
@@ -2697,6 +2789,11 @@ private:
 	{
 		return UObject::FindFunctionChecked(InName);
 	}
+
+	/**
+	 * Tests if all properties tagged with Replicate were registered in GetLifetimeReplicatedProps
+	 */
+	void ValidateRuntimeReplicationData();
 
 protected:
 	/**
@@ -3164,7 +3261,6 @@ template<> struct TBaseStructure<FBox2D>
 	COREUOBJECT_API static UScriptStruct* Get();
 };	
 
-struct FFallbackStruct;
 template<> struct TBaseStructure<FFallbackStruct>
 {
 	COREUOBJECT_API static UScriptStruct* Get();

@@ -20,6 +20,7 @@ ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 #include "Interfaces/IShaderFormatArchive.h"
 #include "ShaderPipelineCache.h"
 #include "Misc/FileHelper.h"
+#include "Misc/ConfigCacheIni.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Modules/ModuleManager.h"
@@ -34,7 +35,7 @@ ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 
 DEFINE_LOG_CATEGORY(LogShaderLibrary);
 
-static const ECompressionFlags ShaderLibraryCompressionFlag = ECompressionFlags::COMPRESS_ZLIB;
+static const FName ShaderLibraryCompressionFormat = NAME_Zlib;
 
 static uint32 GShaderCodeArchiveVersion = 1;
 static uint32 GShaderPipelineArchiveVersion = 1;
@@ -73,7 +74,7 @@ static TArray<uint8>& FShaderLibraryHelperUncompressCode(EShaderPlatform Platfor
 	if (Code.Num() != UncompressedSize)
 	{
 		UncompressedCode.SetNum(UncompressedSize);
-		bool bSucceed = FCompression::UncompressMemory(ShaderLibraryCompressionFlag, UncompressedCode.GetData(), UncompressedSize, Code.GetData(), Code.Num());
+		bool bSucceed = FCompression::UncompressMemory(ShaderLibraryCompressionFormat, UncompressedCode.GetData(), UncompressedSize, Code.GetData(), Code.Num());
 		check(bSucceed);
 		return UncompressedCode;
 	}
@@ -85,18 +86,18 @@ static TArray<uint8>& FShaderLibraryHelperUncompressCode(EShaderPlatform Platfor
 
 static void FShaderLibraryHelperCompressCode(EShaderPlatform Platform, const TArray<uint8>& UncompressedCode, TArray<uint8>& CompressedCode)
 {
-	int32 CompressedSize = UncompressedCode.Num() * 4.f / 3.f;
-	CompressedCode.SetNumUninitialized(CompressedSize); // Allocate large enough buffer for compressed code
+		int32 CompressedSize = UncompressedCode.Num() * 4.f / 3.f;
+		CompressedCode.SetNumUninitialized(CompressedSize); // Allocate large enough buffer for compressed code
 
-	if (FCompression::CompressMemory(ShaderLibraryCompressionFlag, CompressedCode.GetData(), CompressedSize, UncompressedCode.GetData(), UncompressedCode.Num()))
-	{
-		CompressedCode.SetNum(CompressedSize);
-	}
-	else
-	{
-		CompressedCode = UncompressedCode;
-	}
-	CompressedCode.Shrink();
+		if (FCompression::CompressMemory(ShaderLibraryCompressionFormat, CompressedCode.GetData(), CompressedSize, UncompressedCode.GetData(), UncompressedCode.Num()))
+		{
+			CompressedCode.SetNum(CompressedSize);
+		}
+		else
+		{
+			CompressedCode = UncompressedCode;
+		}
+		CompressedCode.Shrink();
 }
 
 FString FCompactFullName::ToString() const
@@ -520,6 +521,7 @@ public:
 			FScopeLock ScopeLock(&ReadRequestLock);
 
 			Entry->NumRefs--;
+			check(Entry->NumRefs >= 0);
 			if (Entry->NumRefs == 0)
 			{
 				// should not attempt to release shader code while it's loading
@@ -778,7 +780,7 @@ private:
 			UE_LOG(LogShaderLibrary, Fatal, TEXT("Failed to create shader %s, %s, %s"), *DebugCopy.ToString(), *LibraryName, *LibraryDir);
 		}
 #endif
-	}
+			}
 };
 
 #if WITH_EDITOR
@@ -1917,7 +1919,10 @@ void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
 	}
 
 	// Cannot be enabled by the server, pointless if we can't ever render and not compatible with cook-on-the-fly
-	bool bEnable = !FPlatformProperties::IsServerOnly() && FApp::CanEverRender();
+	bool bArchive = false;
+	GConfig->GetBool(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("bShareMaterialShaderCode"), bArchive, GGameIni);
+
+	bool bEnable = !FPlatformProperties::IsServerOnly() && FApp::CanEverRender() && bArchive;
 #if !UE_BUILD_SHIPPING
 	FString FileHostIP;
 	const bool bCookOnTheFly = FParse::Value(FCommandLine::Get(), TEXT("filehostip"), FileHostIP);
@@ -1945,6 +1950,9 @@ void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
 		}
 		else
 		{
+#if !WITH_EDITOR
+            UE_LOG(LogShaderLibrary, Fatal, TEXT("Failed to initialise ShaderCodeLibrary required by the project because part of the Global shader library is missing from %s."), *FPaths::ProjectContentDir());
+#endif
 			Shutdown();
 		}
 	}

@@ -59,7 +59,8 @@ public:
 		}
 
 		{
-			FBPTerminal* Term = new (Context.InlineGeneratedValues) FBPTerminal();
+			FBPTerminal* Term = new FBPTerminal();
+			Context.InlineGeneratedValues.Add(Term);
 			Term->CopyFromPin(ReturnPin, Context.NetNameMap->MakeValidName(ReturnPin));
 			Context.NetMap.Add(ReturnPin, Term);
 		}
@@ -74,7 +75,7 @@ public:
 				return;
 			}
 
-			FString DefaultTermName = Context.NetNameMap->MakeValidName(Node) + TEXT("_Default");
+			FString DefaultTermName = Context.NetNameMap->MakeValidName(Node, TEXT("Default"));
 			FBPTerminal* DefaultTerm = Context.CreateLocalTerminalFromPinAutoChooseScope(OptionPins[0], DefaultTermName);
 			DefaultTermMap.Add(Node, DefaultTerm);
 		}

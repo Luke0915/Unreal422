@@ -145,7 +145,9 @@ void USimpleConstructionScript::PostLoad()
 	// This pass is not needed during reinstancing.
 	if (!GIsDuplicatingClassForReinstancing)
 	{
-		for (USCS_Node* Node : GetAllNodes())
+		// Use a copy of the array for iterating, as we might have to reposition nodes in the hierarchy below (which can temporarily modify the array).
+		TArray<USCS_Node*> LocalAllNodes = GetAllNodes();
+		for (USCS_Node* Node : LocalAllNodes)
 		{
 			// Fix up any uninitialized category names
 			if (Node->CategoryName.IsEmpty())
@@ -1253,7 +1255,6 @@ USCS_Node* USimpleConstructionScript::CreateNode(UClass* NewComponentClass, FNam
 	check(NewComponentClass->IsChildOf(UActorComponent::StaticClass()));
 	ensure(Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass));
 
-	// note that naming logic is duplicated in CreateNodeAndRenameComponent:
 	NewComponentVariableName = GenerateNewComponentName(NewComponentClass, NewComponentVariableName);
 
 	// At this point we should have a unique, explicit name to use for the template object.
@@ -1277,8 +1278,16 @@ USCS_Node* USimpleConstructionScript::CreateNodeAndRenameComponent(UActorCompone
 {
 	check(NewComponentTemplate);
 
-	// note that naming logic is duplicated in CreateNode:
-	FName NewComponentVariableName = GenerateNewComponentName(NewComponentTemplate->GetClass());
+	// When copying and pasting we'd prefer to keep the component name
+	// However, the incoming template will have the template name suffix on it so
+	// acquire the desired name by stripping the suffix
+	FName DesiredName;
+	FString TemplateName = NewComponentTemplate->GetName();
+	if (TemplateName.EndsWith(ComponentTemplateNameSuffix))
+	{
+		DesiredName = *TemplateName.LeftChop(ComponentTemplateNameSuffix.Len());
+	}
+	FName NewComponentVariableName = GenerateNewComponentName(NewComponentTemplate->GetClass(), DesiredName);
 
 	// At this point we should have a unique, explicit name to use for the template object.
 	check(NewComponentVariableName != NAME_None);

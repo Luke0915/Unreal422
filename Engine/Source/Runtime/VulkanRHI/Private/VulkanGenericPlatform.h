@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "PixelFormat.h"
 #include "Containers/ArrayView.h"
+#include "RHI.h"	// for GShaderPlatformForFeatureLevel and its friends
 
 struct FOptionalVulkanDeviceExtensions;
 
@@ -12,6 +13,7 @@ class FVulkanGenericPlatform
 {
 public:
 	static bool IsSupported() { return true; }
+	static void CheckDeviceDriver(uint32 DeviceIndex, const VkPhysicalDeviceProperties& Props) {}
 
 	static bool LoadVulkanLibrary() { return true; }
 	static bool LoadVulkanInstanceFunctions(VkInstance inInstance) { return true; }
@@ -96,4 +98,7 @@ public:
 
 	// Ensure the last frame completed on the GPU
 	static bool RequiresWaitingForFrameCompletionEvent() { return true; }
+
+	// Blocks until hardware window is available
+	static void BlockUntilWindowIsAwailable() {};
 };

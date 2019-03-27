@@ -84,7 +84,7 @@ FGlobalComponentReregisterContext::FGlobalComponentReregisterContext()
 	// Detach all actor components.
 	for(UActorComponent* Component : TObjectRange<UActorComponent>())
 	{
-		new(ComponentContexts) FComponentReregisterContext(Component);
+		ComponentContexts.Add(new FComponentReregisterContext(Component));
 	}
 }
 
@@ -110,7 +110,7 @@ FGlobalComponentReregisterContext::FGlobalComponentReregisterContext(const TArra
 		}
 		if( bShouldReregister )
 		{
-			new(ComponentContexts) FComponentReregisterContext(Component);		
+			ComponentContexts.Add(new FComponentReregisterContext(Component));
 		}
 	}
 }
@@ -131,7 +131,7 @@ FGlobalComponentRecreateRenderStateContext::FGlobalComponentRecreateRenderStateC
 	// recreate render state for all components.
 	for (UActorComponent* Component : TObjectRange<UActorComponent>())
 	{
-		new(ComponentContexts) FComponentRecreateRenderStateContext(Component);
+		ComponentContexts.Add(new FComponentRecreateRenderStateContext(Component));
 	}
 }
 
@@ -501,6 +501,11 @@ bool UActorComponent::NeedsLoadForServer() const
 	return (!IsEditorOnly() && bNeedsLoadOuter && Super::NeedsLoadForServer());
 }
 
+bool UActorComponent::NeedsLoadForEditorGame() const
+{
+	return !IsEditorOnly() && Super::NeedsLoadForEditorGame();
+}
+
 int32 UActorComponent::GetFunctionCallspace( UFunction* Function, void* Parameters, FFrame* Stack )
 {
 	AActor* MyOwner = GetOwner();
@@ -797,17 +802,9 @@ void UActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	bHasBegunPlay = false;
 }
 
-FActorComponentInstanceData* UActorComponent::GetComponentInstanceData() const
+TStructOnScope<FActorComponentInstanceData> UActorComponent::GetComponentInstanceData() const
 {
-	FActorComponentInstanceData* InstanceData = new FActorComponentInstanceData(this);
-
-	if (!InstanceData->ContainsSavedProperties())
-	{
-		delete InstanceData;
-		InstanceData = nullptr;
-	}
-
-	return InstanceData;
+	return MakeStructOnScope<FActorComponentInstanceData>(this);
 }
 
 void FActorComponentTickFunction::ExecuteTick(float DeltaTime, enum ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
@@ -1731,7 +1728,7 @@ bool UActorComponent::IsEditableWhenInherited() const
 		}
 		else
 #endif
-			if (CreationMethod == EComponentCreationMethod::UserConstructionScript)
+		if (CreationMethod == EComponentCreationMethod::UserConstructionScript)
 		{
 			bCanEdit = false;
 		}

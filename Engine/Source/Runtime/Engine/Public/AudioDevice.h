@@ -15,6 +15,7 @@
 #include "Sound/SoundSourceBus.h"
 #include "Sound/AudioSettings.h"
 #include "AudioDeviceManager.h"
+#include "DSP/SpectrumAnalyzer.h"
 #include "EngineGlobals.h"
 
 class FAudioEffectsManager;
@@ -423,7 +424,7 @@ public:
 class ENGINE_API ISubmixBufferListener
 {
 public:
-	/* 
+	/**
 	Called when a new buffer has been rendered for a given submix
 	@param OwningSubmix	The submix object which has renderered a new buffer
 	@param AudioData		Ptr to the audio buffer
@@ -597,6 +598,8 @@ public:
 	 */
 	void StopSoundsUsingResource(USoundWave* SoundWave, TArray<UAudioComponent*>* StoppedComponents = nullptr);
 
+	static bool LegacyReverbDisabled();
+
 #if WITH_EDITOR
 	/** Deals with anything audio related that should happen when PIE starts */
 	void OnBeginPIE(const bool bIsSimulating);
@@ -623,7 +626,12 @@ public:
 	/** 
 	 * Sets the maximum number of channels dynamically. Can't raise the cap over the initial value but can lower it 
 	 */
-	virtual void SetMaxChannels(int32 InMaxChannels);
+	void SetMaxChannels(int32 InMaxChannels);
+
+	/**
+	 * Sets the maximum number of channels dynamically by scaled percentage.
+	 */
+	void SetMaxChannelsScaled(float InScaledChannelCount);
 
 	/** Returns the max channels used by the audio device. */
 	int32 GetMaxChannels() const;
@@ -682,7 +690,7 @@ public:
 
 		USoundAttenuation* AttenuationSettings;
 		TSubclassOf<UAudioComponent> AudioComponentClass = UAudioComponent::StaticClass();
-		USoundConcurrency* ConcurrencySettings;
+		TSet<USoundConcurrency*> ConcurrencySet;
 		bool bAutoDestroy;
 		bool bPlay;
 		bool bStopWhenOwnerDestroyed;
@@ -985,7 +993,7 @@ public:
 		return ActiveSounds; 
 	}
 
-	/* When the set of Audio volumes have changed invalidate the cached values of active sounds */
+	/** When the set of Audio volumes have changed invalidate the cached values of active sounds */
 	void InvalidateCachedInteriorVolumes() const;
 
 	/** Suspend any context related objects */
@@ -1028,7 +1036,7 @@ public:
 	/** Registers a third party listener-observer to this audio device. */
 	void RegisterPluginListener(const TAudioPluginListenerPtr PluginListener);
 
-	/* Unregisters a third party listener-observer to this audio device. */
+	/** Unregisters a third party listener-observer to this audio device. */
 	void UnregisterPluginListener(const TAudioPluginListenerPtr PluginListener);
 
 	bool IsAudioDeviceMuted() const;
@@ -1165,6 +1173,12 @@ public:
 		return bIsStoppingVoicesEnabled;
 	}
 
+	/** Returns if baked analysis querying is enabled. */
+	bool IsBakedAnalaysisQueryingEnabled() const
+	{
+		return bIsBakedAnalysisEnabled;
+	}
+
 	/** Updates the source effect chain. Only implemented in audio mixer. */
 	virtual void UpdateSourceEffectChain(const uint32 SourceEffectChainId, const TArray<FSourceEffectChainEntry>& SourceEffectChain, const bool bPlayEffectChainTails) {}
 
@@ -1204,6 +1218,26 @@ public:
 		UE_LOG(LogAudio, Error, TEXT("Envelope following submixes only works with the audio mixer. Please run using -audiomixer or set INI file to use submix recording."));
 	}
 
+	virtual void StartSpectrumAnalysis(USoundSubmix* InSubmix, const Audio::FSpectrumAnalyzerSettings& InSettings)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Spectrum analysis of submixes only works with the audio mixer. Please run using -audiomixer or set INI file to use submix recording."));
+	}
+
+	virtual void StopSpectrumAnalysis(USoundSubmix* InSubmix)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Spectrum analysis of submixes only works with the audio mixer. Please run using -audiomixer or set INI file to use submix recording."));
+	}
+
+	virtual void GetMagnitudesForFrequencies(USoundSubmix* InSubmix, const TArray<float>& InFrequencies, TArray<float>& OutMagnitudes)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Spectrum analysis of submixes only works with the audio mixer. Please run using -audiomixer or set INI file to use submix recording."));
+	}
+
+	virtual void GetPhasesForFrequencies(USoundSubmix* InSubmix, const TArray<float>& InFrequencies, TArray<float>& OutPhases)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Spectrum analysis of submixes only works with the audio mixer. Please run using -audiomixer or set INI file to use submix recording."));
+	}
+
 protected:
 	friend class FSoundSource;
 
@@ -1239,6 +1273,9 @@ private:
 	 */
 	void ParseSoundClasses();
 
+	/** Stops quiet sounds due to being evaluated as not fulfilling concurrency requirements
+	 */
+	void StopQuietSoundsDueToMaxConcurrency(TArray<FWaveInstance*>& WaveInstances, TArray<FActiveSound*>& ActiveSoundsCopy);
 
 	/**
 	 * Set the mix for altering sound class properties
@@ -1360,14 +1397,26 @@ public:
 		return Effects;
 	}
 
-	TMap<USoundMix *, FSoundMixState> GetSoundMixModifiers()
+	const TMap<USoundMix*, FSoundMixState>& GetSoundMixModifiers() const
 	{
 		return SoundMixModifiers;
 	}
 
-	void SetSoundMixModifiers(TMap<USoundMix *, FSoundMixState>& InSoundMixModifiers)
+	const TArray<USoundMix*>& GetPrevPassiveSoundMixModifiers() const
+	{
+		return PrevPassiveSoundMixModifiers;
+	}
+
+	USoundMix* GetDefaultBaseSoundMixModifier()
+	{
+		return DefaultBaseSoundMix;
+	}
+
+	void SetSoundMixModifiers(const TMap<USoundMix*, FSoundMixState>& InSoundMixModifiers, const TArray<USoundMix*>& InPrevPassiveSoundMixModifiers, USoundMix* InDefaultBaseSoundMix)
 	{
 		SoundMixModifiers = InSoundMixModifiers;
+		PrevPassiveSoundMixModifiers = InPrevPassiveSoundMixModifiers;
+		DefaultBaseSoundMix = InDefaultBaseSoundMix;
 	}
 
 private:
@@ -1489,6 +1538,9 @@ public:
 	float GetTransientMasterVolume() const { check(IsInAudioThread()); return TransientMasterVolume; }
 	void SetTransientMasterVolume(float TransientMasterVolume);
 
+	/** Returns the volume that combines transient master volume and the FApp::GetVolumeMultiplier() value */
+	float GetMasterVolume() const { return MasterVolume; }
+
 	FSoundSource* GetSoundSource(FWaveInstance* WaveInstance) const;
 
 	const FGlobalFocusSettings& GetGlobalFocusSettings() const;
@@ -1496,6 +1548,7 @@ public:
 
 	const FDynamicParameter& GetGlobalPitchScale() const { check(IsInAudioThread()); return GlobalPitchScale; }
 	void SetGlobalPitchModulation(float PitchScale, float TimeSec);
+	float ClampPitch(float InPitchScale);
 
 	float GetPlatformAudioHeadroom() const { check(IsInAudioThread()); return PlatformAudioHeadroom; }
 	void SetPlatformAudioHeadroom(float PlatformHeadRoom);
@@ -1529,6 +1582,11 @@ public:
 
 	/** The maximum number of concurrent audible sounds */
 	int32 MaxChannels;
+	int32 MaxChannels_GameThread;
+
+	/** A scaler on the max channels. */
+	float MaxChannelsScale;
+	float MaxChannelsScale_GameThread;
 
 	/** The number of sources to reserve for stopping sounds. */
 	int32 NumStoppingVoices;
@@ -1566,7 +1624,7 @@ public:
 	/** 3rd party occlusion interface. */
 	TAudioOcclusionPtr OcclusionInterface;
 
-	/* This devices ambisonics pointer, if one exists */
+	/** This devices ambisonics pointer, if one exists */
 	TAmbisonicsMixerPtr AmbisonicsMixer;
 
 	/** 3rd party listener observers registered to this audio device. */
@@ -1587,6 +1645,9 @@ private:
 
 	/** transient master volume multiplier that can be modified at runtime without affecting user settings automatically reset to 1.0 on level change */
 	float TransientMasterVolume;
+
+	/** The master volume of the game combines the FApp::GetVolumeMultipler() value and the TransientMastervolume. */
+	float MasterVolume;
 
 	/** Global dynamic pitch scale parameter */
 	FDynamicParameter GlobalPitchScale;
@@ -1661,13 +1722,16 @@ private:
 	uint8 bGameWasTicking:1;
 
 public:
-	/* HACK: Temporarily disable audio caching.  This will be done better by changing the decompression pool size in the future */
+	/** HACK: Temporarily disable audio caching.  This will be done better by changing the decompression pool size in the future */
 	uint8 bDisableAudioCaching:1;
 
 	/** Whether or not the lower-level audio device hardware initialized. */
 	uint8 bIsAudioDeviceHardwareInitialized : 1;
 
 	uint8 bIsStoppingVoicesEnabled : 1;
+
+	/** If baked analysis querying is enabled. */
+	uint8 bIsBakedAnalysisEnabled : 1;
 
 	/** Whether or not the audio mixer module is being used by this device. */
 	uint8 bAudioMixerModuleLoaded : 1;
@@ -1677,8 +1741,11 @@ public:
 	uint8 bOcclusionIsExternalSend:1;
 	uint8 bReverbIsExternalSend:1;
 
+	/** Max amount of channels a source can be to be spatialized by our active spatialization plugin. */
+	int32 MaxChannelsSupportedBySpatializationPlugin;
+
 private:
-	/* True once the startup sounds have been precached */
+	/** True once the startup sounds have been precached */
 	uint8 bStartupSoundsPreCached:1;
 
 	/** Whether or not various audio plugin interfaces are enabled. */
@@ -1770,6 +1837,10 @@ private:
 
 	/** Threshold priority for allowing oneshot active sounds through the max oneshot active sound limit. */
 	float OneShotPriorityCullThreshold;
+
+	// Global min and max pitch scale, derived from audio settings
+	float GlobalMinPitch;
+	float GlobalMaxPitch;
 };
 
 
