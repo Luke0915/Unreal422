@@ -83,16 +83,21 @@ void NiagaraRendererVolumes::GetDynamicMeshElements(const TArray<const FSceneVie
 			//Mat.ApplyScale(1000.0f);
 			FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters = GetPrimitiveUniformShaderParameters(
 				Mat,
+				Mat,
 				SceneProxy->GetActorPosition(),
 				SceneProxy->GetBounds(),
 				SceneProxy->GetLocalBounds(),
+				SceneProxy->GetPreSkinnedLocalBounds(),
 				SceneProxy->ReceivesDecals(),
 				false,
 				false,
 				SceneProxy->UseSingleSampleShadowFromStationaryLights(),
 				SceneProxy->GetScene().HasPrecomputedVolumetricLightmap_RenderThread(),
 				SceneProxy->UseEditorDepthTest(),
-				SceneProxy->GetLightingChannelMask()
+				SceneProxy->GetLightingChannelMask(),
+				SceneProxy->GetLpvBiasMultiplier(),
+				INDEX_NONE,
+				INDEX_NONE
 			);
 			WorldSpacePrimitiveUniformBuffer.SetContents(PrimitiveUniformShaderParameters);
 			WorldSpacePrimitiveUniformBuffer.InitResource();
@@ -120,12 +125,12 @@ void NiagaraRendererVolumes::GetDynamicMeshElements(const TArray<const FSceneVie
 					
 					if (MaterialProxy == nullptr && ParticleMeshMaterial)
 					{
-						MaterialProxy = ParticleMeshMaterial->GetRenderProxy(false, false);
+						MaterialProxy = ParticleMeshMaterial->GetRenderProxy();
 					}
 
 					if (MaterialProxy == nullptr)
 					{
-						MaterialProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy(SceneProxy->IsSelected(), SceneProxy->IsHovered());
+						MaterialProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 					}
 
 					MaterialProxies.Add(MaterialProxy);
@@ -163,13 +168,13 @@ void NiagaraRendererVolumes::GetDynamicMeshElements(const TArray<const FSceneVie
 					
 					if (bIsWireframe)
 					{
-						if (LODModel.WireframeIndexBuffer.IsInitialized())
+						if (LODModel.AdditionalIndexBuffers != nullptr && LODModel.AdditionalIndexBuffers->WireframeIndexBuffer.IsInitialized())
 						{
 							Mesh.Type = PT_LineList;
-							Mesh.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy(SceneProxy->IsSelected(), SceneProxy->IsHovered());
+							Mesh.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 							BatchElement.FirstIndex = 0;
-							BatchElement.IndexBuffer = &LODModel.WireframeIndexBuffer;
-							BatchElement.NumPrimitives = LODModel.WireframeIndexBuffer.GetNumIndices() / 2;
+							BatchElement.IndexBuffer = &LODModel.AdditionalIndexBuffers->WireframeIndexBuffer;
+							BatchElement.NumPrimitives = LODModel.AdditionalIndexBuffers->WireframeIndexBuffer.GetNumIndices() / 2;
 
 						}
 						else
