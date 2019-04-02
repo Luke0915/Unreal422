@@ -21,18 +21,18 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnNameChanged);
 public:
 	/** Creates a new emitter editor view model with the supplied emitter handle and simulation. */
-	FNiagaraEmitterHandleViewModel(FNiagaraEmitterHandle* InEmitterHandle, TWeakPtr<FNiagaraEmitterInstance> InSimulation, UNiagaraSystem& InOwningSystem);
+	FNiagaraEmitterHandleViewModel(FNiagaraEmitterHandle* InEmitterHandle, TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation, UNiagaraSystem& InOwningSystem);
 	
 	~FNiagaraEmitterHandleViewModel();
 
 	/** Reuses a the emitter editor view model with the supplied emitter handle and simulation.*/
-	bool Set(FNiagaraEmitterHandle* InEmitterHandle, TWeakPtr<FNiagaraEmitterInstance> InSimulation, UNiagaraSystem& InOwningSystem);
+	bool Set(FNiagaraEmitterHandle* InEmitterHandle, TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation, UNiagaraSystem& InOwningSystem);
 
 	/** Sets the emitter handle.*/
 	void SetEmitterHandle(FNiagaraEmitterHandle* InEmitterHandle);
 
 	/** Sets the simulation for the emitter this handle references. */
-	void SetSimulation(TWeakPtr<FNiagaraEmitterInstance> InSimulation);
+	void SetSimulation(TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation);
 
 	/** Gets the id of the emitter handle. */
 	FGuid GetId() const;

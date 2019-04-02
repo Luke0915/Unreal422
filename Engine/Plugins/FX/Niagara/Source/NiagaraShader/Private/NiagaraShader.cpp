@@ -728,6 +728,8 @@ void FNiagaraShaderMap::Compile(
 		// Since it creates a temporary ref counted pointer.
 		check(NumRefs > 0);
   
+		//All access to NiagaraShaderMapsBeingCompiled must be done on the game thread!
+		check(IsInGameThread());
 		// Add this shader map and to NiagaraShaderMapsBeingCompiled
 		TArray<FNiagaraShaderScript*>* CorrespondingScripts = NiagaraShaderMapsBeingCompiled.Find(this);
   
@@ -888,6 +890,8 @@ bool FNiagaraShaderMap::ProcessCompilationResults(const TArray<FShaderCommonComp
 bool FNiagaraShaderMap::TryToAddToExistingCompilationTask(FNiagaraShaderScript* Script)
 {
 	check(NumRefs > 0);
+	//All access to NiagaraShaderMapsBeingCompiled must be done on the game thread!
+	check(IsInGameThread());
 	TArray<FNiagaraShaderScript*>* CorrespondingScripts = FNiagaraShaderMap::NiagaraShaderMapsBeingCompiled.Find(this);
 
 	if (CorrespondingScripts)
@@ -926,6 +930,8 @@ bool FNiagaraShaderMap::IsComplete(const FNiagaraShaderScript* Script, bool bSil
 	// Make sure we are operating on a referenced shader map or the below Find will cause this shader map to be deleted,
 	// Since it creates a temporary ref counted pointer.
 	check(NumRefs > 0);
+	//All access to NiagaraShaderMapsBeingCompiled must be done on the game thread!
+	check(IsInGameThread());
 	const TArray<FNiagaraShaderScript*>* CorrespondingScripts = FNiagaraShaderMap::NiagaraShaderMapsBeingCompiled.Find(this);
 
 	if (CorrespondingScripts)
@@ -954,6 +960,8 @@ void FNiagaraShaderMap::LoadMissingShadersFromMemory(const FNiagaraShaderScript*
 	// Since it creates a temporary ref counted pointer.
 	check(NumRefs > 0);
 
+	//All access to NiagaraShaderMapsBeingCompiled must be done on the game thread!
+	check(IsInGameThread());
 	const TArray<FNiagaraShaderScript*>* CorrespondingScripts = FNiagaraShaderMap::NiagaraShaderMapsBeingCompiled.Find(this);
 
 	if (CorrespondingScripts)
@@ -1123,6 +1131,8 @@ void FNiagaraShaderMap::DiscardSerializedShaders()
 
 void FNiagaraShaderMap::RemovePendingScript(FNiagaraShaderScript* Script)
 {
+	//All access to NiagaraShaderMapsBeingCompiled must be done on the game thread!
+	check(IsInGameThread());
 	for (TMap<TRefCountPtr<FNiagaraShaderMap>, TArray<FNiagaraShaderScript*> >::TIterator It(NiagaraShaderMapsBeingCompiled); It; ++It)
 	{
 		TArray<FNiagaraShaderScript*>& Scripts = It.Value();
@@ -1144,6 +1154,8 @@ void FNiagaraShaderMap::RemovePendingScript(FNiagaraShaderScript* Script)
 
 void FNiagaraShaderMap::RemovePendingMap(FNiagaraShaderMap* Map)
 {
+	//All access to NiagaraShaderMapsBeingCompiled must be done on the game thread!
+	check(IsInGameThread());
 	TArray<FNiagaraShaderScript*>* Scripts = NiagaraShaderMapsBeingCompiled.Find(Map);
 	if (Scripts)
 	{
@@ -1160,6 +1172,8 @@ void FNiagaraShaderMap::RemovePendingMap(FNiagaraShaderMap* Map)
 const FNiagaraShaderMap* FNiagaraShaderMap::GetShaderMapBeingCompiled(const FNiagaraShaderScript* Script)
 {
 	// Inefficient search, but only when compiling a lot of shaders
+	//All access to NiagaraShaderMapsBeingCompiled must be done on the game thread!
+	check(IsInGameThread());
 	for (TMap<TRefCountPtr<FNiagaraShaderMap>, TArray<FNiagaraShaderScript*> >::TIterator It(NiagaraShaderMapsBeingCompiled); It; ++It)
 	{
 		TArray<FNiagaraShaderScript*>& Scripts = It.Value();

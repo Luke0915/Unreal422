@@ -93,7 +93,8 @@ void UNiagaraMeshRendererProperties::GetUsedMaterials(TArray<UMaterialInterface*
 
 uint32 UNiagaraMeshRendererProperties::GetNumIndicesPerInstance() 
 {
-	return ParticleMesh ? ParticleMesh->RenderData->LODResources[0].IndexBuffer.GetNumIndices() : 0;
+	// TODO: Add proper support for multiple mesh sections for GPU mesh particles.
+	return ParticleMesh ? ParticleMesh->RenderData->LODResources[0].Sections[0].NumTriangles * 3 : 0;
 }
 
 

@@ -14,8 +14,23 @@ DECLARE_CYCLE_STAT(TEXT("Generate Mesh Vertex Data [GT]"), STAT_NiagaraGenMeshVe
 DECLARE_CYCLE_STAT(TEXT("Render Meshes [RT]"), STAT_NiagaraRenderMeshes, STATGROUP_Niagara);
 
 
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumMeshesRenderer"), STAT_NiagaraNumMeshes, STATGROUP_Niagara);
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumMesheVerts"), STAT_NiagaraNumMeshVerts, STATGROUP_Niagara);
+
+
 
 extern int32 GbNiagaraParallelEmitterRenderers;
+
+
+
+static int32 GbEnableNiagaraMeshRendering = 1;
+static FAutoConsoleVariableRef CVarEnableNiagaraMeshRendering(
+	TEXT("fx.EnableNiagaraMeshRendering"),
+	GbEnableNiagaraMeshRendering,
+	TEXT("If == 0, Niagara Mesh Renderers are disabled. \n"),
+	ECVF_Default
+);
+
 
 
 
@@ -54,6 +69,12 @@ NiagaraRendererMeshes::NiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLevel
 	VertexFactory = ConstructNiagaraMeshVertexFactory(NVFT_Mesh, FeatureLevel);
 	Properties = Cast<UNiagaraMeshRendererProperties>(InProps);
 
+#if STATS
+	if (UNiagaraEmitter* Emitter = InProps->GetTypedOuter<UNiagaraEmitter>())
+	{
+		EmitterStatID = Emitter->GetStatID(false, false);
+	}
+#endif
 
 	if (Properties && Properties->ParticleMesh)
 	{
@@ -127,10 +148,15 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 		|| DynamicDataMesh->RTParticleData.GetNumInstances() == 0
 		|| nullptr == Properties
 		|| !GSupportsResourceView  // Current shader requires SRV to draw properly in all cases.
+		|| GbEnableNiagaraMeshRendering == 0
 		)
 	{
 		return;
 	}
+
+#if STATS
+	FScopeCycleCounter EmitterStatsCounter(EmitterStatID);
+#endif
 
 	int32 NumInstances = DynamicDataMesh->RTParticleData.GetNumInstances();
 
@@ -272,6 +298,7 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 							SortInfo.ParticleCount >= GNiagaraGPUSortingCPUToGPUThreshold &&
 							SceneProxy->GetBatcher())
 						{
+							SortInfo.ParticleCount = NumInstances;
 							SortInfo.ParticleDataFloatSRV = ParticleData.ReadBuffer->SRV;
 							SortInfo.FloatDataOffset = ParticleData.FirstIndex / sizeof(float);
 							SortInfo.FloatDataStride = DynamicDataMesh->RTParticleData.GetFloatStride() / sizeof(float);
@@ -306,7 +333,26 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 							CollectorResources.VertexFactory.SetSortedIndices(SceneProxy->GetBatcher()->GetGPUSortedBuffer().VertexBufferSRV, IndexBufferOffset);
 						}
 					}
-					CollectorResources.VertexFactory.SetParticleData(DynamicDataMesh->DataSet->CurrData().GetGPUBufferFloat()->SRV, 0, DynamicDataMesh->DataSet->CurrData().GetFloatStride() / sizeof(float));
+					const FNiagaraDataSet* GPUDataSet = DynamicDataMesh->DataSet;
+					check(GPUDataSet);
+
+					if (SortInfo.SortMode != ENiagaraSortMode::None && SortInfo.SortAttributeOffset != INDEX_NONE && GNiagaraGPUSorting && SceneProxy->GetBatcher())
+					{
+						// Here we need to be conservative about the InstanceCount, since the final value is only known on the GPU after the simulation.
+						SortInfo.ParticleCount = (int32)FMath::Max<uint32>(GPUDataSet->CurrData().GetNumInstances(), GPUDataSet->PrevData().GetNumInstances()) + GPUDataSet->NumOfSpawnedInstances_RT;
+
+						SortInfo.ParticleDataFloatSRV = GPUDataSet->CurrData().GetGPUBufferFloat()->SRV;
+						SortInfo.FloatDataOffset = 0;
+						SortInfo.FloatDataStride = GPUDataSet->CurrData().GetFloatStride() / sizeof(float);
+						SortInfo.GPUParticleCountSRV = GPUDataSet->GetCurDataSetIndices().SRV;
+						SortInfo.GPUParticleCountOffset = 1;
+						const int32 IndexBufferOffset = SceneProxy->GetBatcher()->AddSortedGPUSimulation(SortInfo);
+						if (IndexBufferOffset != INDEX_NONE)
+						{
+							CollectorResources.VertexFactory.SetSortedIndices(SceneProxy->GetBatcher()->GetGPUSortedBuffer().VertexBufferSRV, IndexBufferOffset);
+						}
+					}
+					CollectorResources.VertexFactory.SetParticleData(GPUDataSet->CurrData().GetGPUBufferFloat()->SRV, 0, GPUDataSet->CurrData().GetFloatStride() / sizeof(float));
 				}
 
 				// Collector.AllocateOneFrameResource uses default ctor, initialize the vertex factory
@@ -317,9 +363,11 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 				CollectorResources.VertexFactory.InitResource();
 				CollectorResources.VertexFactory.SetUniformBuffer(CollectorResources.UniformBuffer);
 			
+				// GPU mesh rendering currently only supports one mesh section.
+				// TODO: Add proper support for multiple mesh sections for GPU mesh particles.
+				int32 MaxSection = DynamicDataMesh->DataSet->GetSimTarget() == ENiagaraSimTarget::GPUComputeSim ? 1 : LODModel.Sections.Num();
 				const bool bIsWireframe = AllowDebugViewmodes() && View && View->Family->EngineShowFlags.Wireframe;
-
-				for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
+				for (int32 SectionIndex = 0; SectionIndex < MaxSection; SectionIndex++)
 				{
 					const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
 					FMaterialRenderProxy* MaterialProxy = MaterialProxies[SectionIndex];
@@ -387,6 +435,9 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 					Mesh.bUseWireframeSelectionColoring = SceneProxy->IsSelected();
 
 					Collector.AddMesh(ViewIndex, Mesh);
+
+					INC_DWORD_STAT_BY(STAT_NiagaraNumMeshVerts, NumInstances * LODModel.GetNumVertices());
+					INC_DWORD_STAT_BY(STAT_NiagaraNumMeshes, NumInstances);
 				}
 			}
 		}

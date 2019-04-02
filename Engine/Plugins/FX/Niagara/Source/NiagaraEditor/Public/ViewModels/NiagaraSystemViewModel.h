@@ -96,6 +96,17 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnPinnedCurvesChanged);
 
 public:
+	struct FEmitterHandleToDuplicate
+	{
+		FString SystemPath;
+		FGuid EmitterHandleId;
+		bool operator==(const FEmitterHandleToDuplicate& Other) const
+		{
+			return SystemPath == Other.SystemPath && EmitterHandleId == Other.EmitterHandleId;
+		}
+	};
+
+public:
 	/** Creates a new view model with the supplied System and System instance. */
 	FNiagaraSystemViewModel(UNiagaraSystem& InSystem, FNiagaraSystemViewModelOptions InOptions);
 
@@ -133,9 +144,6 @@ public:
 
 	/** Adds a new emitter to the System. */
 	void AddEmitter(UNiagaraEmitter& Emitter);
-
-	/** Duplicates the selected emitter in this System. */
-	void DuplicateEmitter(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleToDuplicate);
 
 	/** Deletes the selected emitter from the System. */
 	void DeleteEmitter(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleToDelete);
@@ -354,7 +362,7 @@ private:
 	void SystemInstanceReset();
 
 	/** Duplicates a set of emitters and refreshes everything.*/
-	void DuplicateEmitters(TSet<FGuid> EmitterHandleIdsToDuplicate);
+	void DuplicateEmitters(TArray<FEmitterHandleToDuplicate> EmitterHandlesToDuplicate);
 
 	/** Adds event handler for the system's scripts. */
 	void AddSystemEventHandlers();

@@ -14,8 +14,23 @@
 
 DECLARE_CYCLE_STAT(TEXT("Generate Sprite Vertex Data [GT]"), STAT_NiagaraGenSpriteVertexData, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Render Sprites [RT]"), STAT_NiagaraRenderSprites, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Render Sprites - CPU Sim Copy[RT]"), STAT_NiagaraRenderSpritesCPUSimCopy, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Render Sprites - CPU Sim Memcopy[RT]"), STAT_NiagaraRenderSpritesCPUSimMemCopy, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Render Sprites - Cutout[RT]"), STAT_NiagaraRenderSpritesCutout, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Render Sprites - Sorting[RT]"), STAT_NiagaraRenderSpritesSorting, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Render Sprites - GlobalSortCPU[RT]"), STAT_NiagaraRenderSpritesGlobalSortCPU, STATGROUP_Niagara);
 
 DECLARE_CYCLE_STAT(TEXT("Genereate GPU Buffers"), STAT_NiagaraGenSpriteGpuBuffers, STATGROUP_Niagara);
+
+DECLARE_DWORD_COUNTER_STAT(TEXT("NumSprites"), STAT_NiagaraNumSprites, STATGROUP_Niagara);
+
+static int32 GbEnableNiagaraSpriteRendering = 1;
+static FAutoConsoleVariableRef CVarEnableNiagaraSpriteRendering(
+	TEXT("fx.EnableNiagaraSpriteRendering"),
+	GbEnableNiagaraSpriteRendering,
+	TEXT("If == 0, Niagara Sprite Renderers are disabled. \n"),
+	ECVF_Default
+);
 
 struct FNiagaraDynamicDataSprites : public FNiagaraDynamicDataBase
 {
@@ -70,6 +85,13 @@ NiagaraRendererSprites::NiagaraRendererSprites(ERHIFeatureLevel::Type FeatureLev
 		NumCutoutVertexPerSubImage = Properties->GetNumCutoutVertexPerSubimage();
 		CutoutVertexBuffer.Data = Properties->GetCutoutData();
 	}
+	
+#if STATS
+	if (UNiagaraEmitter* Emitter = InProps->GetTypedOuter<UNiagaraEmitter>())
+	{
+		EmitterStatID = Emitter->GetStatID(false, false);
+	}
+#endif
 }
 
 void NiagaraRendererSprites::ReleaseRenderThreadResources()
@@ -149,8 +171,12 @@ NiagaraRendererSprites::FCPUSimParticleDataAllocation NiagaraRendererSprites::Co
 
 	if (DynamicDataSprites->DataSet->GetSimTarget() == ENiagaraSimTarget::CPUSim)
 	{
+		SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderSpritesCPUSimCopy);
 		CPUSimParticleDataAllocation.ParticleData = DynamicReadBuffer.AllocateFloat(TotalFloatSize);
-		FMemory::Memcpy(CPUSimParticleDataAllocation.ParticleData.Buffer, DynamicDataSprites->RTParticleData.GetFloatBuffer().GetData(), DynamicDataSprites->RTParticleData.GetFloatBuffer().Num());
+		{
+			SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderSpritesCPUSimMemCopy);
+			FMemory::Memcpy(CPUSimParticleDataAllocation.ParticleData.Buffer, DynamicDataSprites->RTParticleData.GetFloatBuffer().GetData(), DynamicDataSprites->RTParticleData.GetFloatBuffer().Num());
+		}
 	}
 
 	return CPUSimParticleDataAllocation;
@@ -245,6 +271,7 @@ void NiagaraRendererSprites::SetVertexFactoryParticleData(
 	const bool bUseCutout = CutoutVertexBuffer.VertexBufferRHI.IsValid();
 	if (bUseCutout)
 	{	// Is Accessing Properties safe here? Or should values be cached in the constructor?
+		SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderSpritesCutout);
 		if (bUseSubImage)
 		{
 			OutVertexFactory.SetCutoutParameters(NumCutoutVertexPerSubImage, CutoutVertexBuffer.VertexBufferSRV);
@@ -256,74 +283,89 @@ void NiagaraRendererSprites::SetVertexFactoryParticleData(
 	}
 
 	//Sort particles if needed.
-	FMaterialRenderProxy* MaterialRenderProxy = Material->GetRenderProxy();
-	EBlendMode BlendMode = MaterialRenderProxy->GetMaterial(VertexFactory->GetFeatureLevel())->GetBlendMode();
-	OutVertexFactory.SetSortedIndices(nullptr, 0xFFFFFFFF);
-
-	int32 NumInstances = DynamicDataSprites->RTParticleData.GetNumInstances();
-	FNiagaraGPUSortInfo SortInfo;
-	if (View && Properties->SortMode != ENiagaraSortMode::None && (BlendMode == BLEND_AlphaComposite || BlendMode == BLEND_Translucent || !Properties->bSortOnlyWhenTranslucent))
 	{
-		SortInfo.ParticleCount = NumInstances;
-		SortInfo.SortMode = Properties->SortMode;
-		SortInfo.SortAttributeOffset = (SortInfo.SortMode == ENiagaraSortMode::CustomAscending || SortInfo.SortMode == ENiagaraSortMode::CustomDecending) ? CustomSortingOffset : PositionOffset;
-		SortInfo.ViewOrigin = View->ViewMatrices.GetViewOrigin();
-		SortInfo.ViewDirection = View->GetViewDirection();
-		if (bLocalSpace)
-		{
-			FMatrix InvTransform = SceneProxy->GetLocalToWorld().InverseFast();
-			SortInfo.ViewOrigin = InvTransform.TransformPosition(SortInfo.ViewOrigin);
-			SortInfo.ViewDirection = InvTransform.TransformVector(SortInfo.ViewDirection);
-		}
-	};
+		SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderSpritesSorting)
 
-	if (DynamicDataSprites->DataSet->GetSimTarget() == ENiagaraSimTarget::CPUSim)//TODO: Compute shader for sorting gpu sims and larger cpu sims.
-	{
-		check(CPUSimParticleDataAllocation.ParticleData.IsValid());
-		if (SortInfo.SortMode != ENiagaraSortMode::None && SortInfo.SortAttributeOffset != INDEX_NONE)
+			FMaterialRenderProxy* MaterialRenderProxy = Material->GetRenderProxy();
+		EBlendMode BlendMode = MaterialRenderProxy->GetMaterial(VertexFactory->GetFeatureLevel())->GetBlendMode();
+		OutVertexFactory.SetSortedIndices(nullptr, 0xFFFFFFFF);
+
+		int32 NumInstances = DynamicDataSprites->RTParticleData.GetNumInstances();
+		FNiagaraGPUSortInfo SortInfo;
+		if (View && Properties->SortMode != ENiagaraSortMode::None && (BlendMode == BLEND_AlphaComposite || BlendMode == BLEND_Translucent || !Properties->bSortOnlyWhenTranslucent))
 		{
-			if (GNiagaraGPUSorting &&
-				GNiagaraGPUSortingCPUToGPUThreshold != INDEX_NONE &&
-				SortInfo.ParticleCount >= GNiagaraGPUSortingCPUToGPUThreshold &&
-				SceneProxy->GetBatcher())
+			SortInfo.ParticleCount = NumInstances;
+			SortInfo.SortMode = Properties->SortMode;
+			SortInfo.SortAttributeOffset = (SortInfo.SortMode == ENiagaraSortMode::CustomAscending || SortInfo.SortMode == ENiagaraSortMode::CustomDecending) ? CustomSortingOffset : PositionOffset;
+			SortInfo.ViewOrigin = View->ViewMatrices.GetViewOrigin();
+			SortInfo.ViewDirection = View->GetViewDirection();
+			if (bLocalSpace)
 			{
-				SortInfo.ParticleDataFloatSRV = CPUSimParticleDataAllocation.ParticleData.ReadBuffer->SRV;
-				SortInfo.FloatDataOffset = CPUSimParticleDataAllocation.ParticleData.FirstIndex / sizeof(float);
+				FMatrix InvTransform = SceneProxy->GetLocalToWorld().InverseFast();
+				SortInfo.ViewOrigin = InvTransform.TransformPosition(SortInfo.ViewOrigin);
+				SortInfo.ViewDirection = InvTransform.TransformVector(SortInfo.ViewDirection);
+			}
+		};
+
+		if (DynamicDataSprites->DataSet->GetSimTarget() == ENiagaraSimTarget::CPUSim)//TODO: Compute shader for sorting gpu sims and larger cpu sims.
+		{
+			check(CPUSimParticleDataAllocation.ParticleData.IsValid());
+			if (SortInfo.SortMode != ENiagaraSortMode::None && SortInfo.SortAttributeOffset != INDEX_NONE)
+			{
+				if (GNiagaraGPUSorting &&
+					GNiagaraGPUSortingCPUToGPUThreshold != INDEX_NONE &&
+					SortInfo.ParticleCount >= GNiagaraGPUSortingCPUToGPUThreshold &&
+					SceneProxy->GetBatcher())
+				{
+					SortInfo.ParticleCount = NumInstances;
+					SortInfo.ParticleDataFloatSRV = CPUSimParticleDataAllocation.ParticleData.ReadBuffer->SRV;
+					SortInfo.FloatDataOffset = CPUSimParticleDataAllocation.ParticleData.FirstIndex / sizeof(float);
+					SortInfo.FloatDataStride = DynamicDataSprites->RTParticleData.GetFloatStride() / sizeof(float);
+					const int32 IndexBufferOffset = SceneProxy->GetBatcher()->AddSortedGPUSimulation(SortInfo);
+					if (IndexBufferOffset != INDEX_NONE)
+					{
+						OutVertexFactory.SetSortedIndices(SceneProxy->GetBatcher()->GetGPUSortedBuffer().VertexBufferSRV, IndexBufferOffset);
+					}
+				}
+				else
+				{
+					SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderSpritesGlobalSortCPU);
+
+					FGlobalDynamicReadBuffer::FAllocation SortedIndices;
+					SortedIndices = CPUSimParticleDataAllocation.DynamicReadBuffer.AllocateInt32(NumInstances);
+					SortIndices(SortInfo.SortMode, SortInfo.SortAttributeOffset, DynamicDataSprites->RTParticleData, SceneProxy->GetLocalToWorld(), View, SortedIndices);
+					OutVertexFactory.SetSortedIndices(SortedIndices.ReadBuffer->SRV, SortedIndices.FirstIndex / sizeof(float));
+				}
+			}
+			OutVertexFactory.SetParticleData(CPUSimParticleDataAllocation.ParticleData.ReadBuffer->SRV, CPUSimParticleDataAllocation.ParticleData.FirstIndex / sizeof(float), DynamicDataSprites->RTParticleData.GetFloatStride() / sizeof(float));
+		}
+		else
+		{
+			const FNiagaraDataSet* GPUDataSet = DynamicDataSprites->DataSet;
+			check(GPUDataSet);
+
+			if (SortInfo.SortMode != ENiagaraSortMode::None && SortInfo.SortAttributeOffset != INDEX_NONE && GNiagaraGPUSorting && SceneProxy->GetBatcher())
+			{
+				// Here we need to be conservative about the InstanceCount, since the final value is only known on the GPU after the simulation.
+				SortInfo.ParticleCount = (int32)FMath::Max<uint32>(
+					DynamicDataSprites->DataSet->CurrData().GetNumInstances(),
+					DynamicDataSprites->DataSet->PrevData().GetNumInstances()) + DynamicDataSprites->DataSet->NumOfSpawnedInstances_RT;
+
+				SortInfo.ParticleDataFloatSRV = DynamicDataSprites->DataSet->CurrData().GetGPUBufferFloat()->SRV;
+				SortInfo.FloatDataOffset = 0;
 				SortInfo.FloatDataStride = DynamicDataSprites->RTParticleData.GetFloatStride() / sizeof(float);
+				SortInfo.GPUParticleCountSRV = DynamicDataSprites->DataSet->GetCurDataSetIndices().SRV;
+				SortInfo.GPUParticleCountOffset = 1;
 				const int32 IndexBufferOffset = SceneProxy->GetBatcher()->AddSortedGPUSimulation(SortInfo);
 				if (IndexBufferOffset != INDEX_NONE)
 				{
 					OutVertexFactory.SetSortedIndices(SceneProxy->GetBatcher()->GetGPUSortedBuffer().VertexBufferSRV, IndexBufferOffset);
 				}
-			}
-			else
-			{
-				FGlobalDynamicReadBuffer::FAllocation SortedIndices;
-				SortedIndices = CPUSimParticleDataAllocation.DynamicReadBuffer.AllocateInt32(NumInstances);
-				SortIndices(SortInfo.SortMode, SortInfo.SortAttributeOffset, DynamicDataSprites->RTParticleData, SceneProxy->GetLocalToWorld(), View, SortedIndices);
-				OutVertexFactory.SetSortedIndices(SortedIndices.ReadBuffer->SRV, SortedIndices.FirstIndex / sizeof(float));
-			}
-		}
-		OutVertexFactory.SetParticleData(CPUSimParticleDataAllocation.ParticleData.ReadBuffer->SRV, CPUSimParticleDataAllocation.ParticleData.FirstIndex / sizeof(float), DynamicDataSprites->RTParticleData.GetFloatStride() / sizeof(float));
-	}
-	else
-	{
-		if (SortInfo.SortMode != ENiagaraSortMode::None && SortInfo.SortAttributeOffset != INDEX_NONE && GNiagaraGPUSorting && SceneProxy->GetBatcher())
-		{
-			SortInfo.ParticleDataFloatSRV = DynamicDataSprites->DataSet->CurrData().GetGPUBufferFloat()->SRV;
-			SortInfo.FloatDataOffset = 0;
-			SortInfo.FloatDataStride = DynamicDataSprites->RTParticleData.GetFloatStride() / sizeof(float);
-			SortInfo.GPUParticleCountSRV = DynamicDataSprites->DataSet->GetCurDataSetIndices().SRV;
-			SortInfo.GPUParticleCountOffset = 1;
-			const int32 IndexBufferOffset = SceneProxy->GetBatcher()->AddSortedGPUSimulation(SortInfo);
-			if (IndexBufferOffset != INDEX_NONE)
-			{
-				OutVertexFactory.SetSortedIndices(SceneProxy->GetBatcher()->GetGPUSortedBuffer().VertexBufferSRV, IndexBufferOffset);
+
 			}
 
+			OutVertexFactory.SetParticleData(DynamicDataSprites->DataSet->CurrData().GetGPUBufferFloat()->SRV, 0, DynamicDataSprites->DataSet->CurrData().GetFloatStride() / sizeof(float));
 		}
-
-		OutVertexFactory.SetParticleData(DynamicDataSprites->DataSet->CurrData().GetGPUBufferFloat()->SRV, 0, DynamicDataSprites->DataSet->CurrData().GetFloatStride() / sizeof(float));
 	}
 }
 
@@ -407,6 +449,8 @@ void NiagaraRendererSprites::CreateMeshBatchForView(
 		MeshElement.NumPrimitives = 6;
 		MeshElement.IndexBuffer = &GSixTriangleParticleIndexBuffer;
 	}
+	
+	INC_DWORD_STAT_BY(STAT_NiagaraNumSprites, NumInstances);
 }
 
 void NiagaraRendererSprites::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const
@@ -425,10 +469,15 @@ void NiagaraRendererSprites::GetDynamicMeshElements(const TArray<const FSceneVie
 		|| DynamicDataSprites->RTParticleData.GetNumInstances() == 0
 		|| nullptr == Properties
 		|| !GSupportsResourceView // Current shader requires SRV to draw properly in all cases.
+		|| GbEnableNiagaraSpriteRendering == 0
 		)
 	{
 		return;
 	}
+	
+#if STATS
+	FScopeCycleCounter EmitterStatsCounter(EmitterStatID);
+#endif
 	
 	FCPUSimParticleDataAllocation CPUSimParticleDataAllocation = ConditionalAllocateCPUSimParticleData(DynamicDataSprites, Collector.GetDynamicReadBuffer());
 

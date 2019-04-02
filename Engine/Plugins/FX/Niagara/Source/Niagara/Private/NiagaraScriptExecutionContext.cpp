@@ -6,6 +6,8 @@
 #include "NiagaraDataInterface.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraWorldManager.h"
+#include "NiagaraSystemInstance.h"
+#include "NiagaraEmitterInstance.h"
 
 DECLARE_CYCLE_STAT(TEXT("Register Setup"), STAT_NiagaraSimRegisterSetup, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Context Ticking"), STAT_NiagaraScriptExecContextTick, STATGROUP_Niagara);
@@ -217,4 +219,108 @@ void FNiagaraScriptExecutionContext::DirtyDataInterfaces()
 bool FNiagaraScriptExecutionContext::CanExecute()const
 {
 	return Script && Script->GetVMExecutableData().IsValid() && Script->GetVMExecutableData().ByteCode.Num() > 0;
+}
+
+struct H2
+{
+	FNiagaraDataInterfaceProxy* Proxy;
+};
+
+void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
+{
+	ensure(InSystemInstance != nullptr);
+	ensure(!InSystemInstance->IsComplete());
+	SystemInstanceID = InSystemInstance->GetId();
+	bRequiredDistanceFieldData = InSystemInstance->RequiresDistanceFieldData();
+	uint32 DataSizeForGPU = InSystemInstance->GPUDataInterfaceInstanceDataSize;
+
+	if (DataSizeForGPU > 0)
+	{
+		uint32 AllocationSize = DataSizeForGPU;
+
+		DIInstanceData = new FNiagaraDataInterfaceInstanceData;
+		DIInstanceData->PerInstanceDataSize = AllocationSize;
+		DIInstanceData->PerInstanceDataForRT = FMemory::Malloc(AllocationSize);
+		DIInstanceData->Instances = InSystemInstance->DataInterfaceInstanceDataOffsets.Num();
+
+		uint8* InstanceDataBase = (uint8*) DIInstanceData->PerInstanceDataForRT;
+		for (auto& Pair : InSystemInstance->DataInterfaceInstanceDataOffsets)
+		{
+			UNiagaraDataInterface* Interface = Pair.Key.Get();
+
+			FNiagaraDataInterfaceProxy* Proxy = Interface->GetProxy();
+			int32 Offset = Pair.Value;
+
+			uint32 RunningOffset = 0;
+			if (Interface->PerInstanceDataPassedToRenderThreadSize() > 0)
+			{
+				check(Proxy);
+				void* PerInstanceData = &InSystemInstance->DataInterfaceInstanceData[Offset];
+
+				Interface->ProvidePerInstanceDataForRenderThread(InstanceDataBase, PerInstanceData, SystemInstanceID);
+
+				// @todo rethink this. So ugly.
+				DIInstanceData->InterfaceProxiesToOffsets.Add(Proxy, RunningOffset);
+
+				InstanceDataBase += Interface->PerInstanceDataPassedToRenderThreadSize();
+				RunningOffset += Interface->PerInstanceDataPassedToRenderThreadSize();
+			}
+		}
+	}
+
+	check(MAX_uint32 > InSystemInstance->ActiveGPUEmitterCount);
+
+	// Layout our packet.
+	const uint32 PackedDispatchesSize = InSystemInstance->ActiveGPUEmitterCount * sizeof(FNiagaraComputeInstanceData);
+	// We want the Params after the instance data to be aligned so we can upload to the gpu.
+	uint32 PackedDispatchesSizeAligned = Align(PackedDispatchesSize, SHADER_PARAMETER_STRUCT_ALIGNMENT);
+	uint32 TotalParamSize = InSystemInstance->TotalParamSize;
+
+	uint32 TotalPackedBufferSize = PackedDispatchesSizeAligned + TotalParamSize;
+
+	InstanceData_ParamData_Packed = (uint8*)FMemory::Malloc(TotalPackedBufferSize);
+
+	FNiagaraComputeInstanceData* Instances = (FNiagaraComputeInstanceData*)(InstanceData_ParamData_Packed);
+	uint8* ParamDataBufferPtr = InstanceData_ParamData_Packed + PackedDispatchesSizeAligned;
+
+	// Now we will generate instance data for every GPU simulation we want to run on the render thread.
+	// This is spawn rate as well as DataInterface per instance data and the ParameterData for the emitter.
+	// @todo Ideally we would only update DataInterface and ParameterData bits if they have changed.
+	uint32 InstanceIndex = 0;
+	for (int32 i = 0; i < InSystemInstance->GetEmitters().Num(); i++)
+	{
+		FNiagaraEmitterInstance* Emitter = &InSystemInstance->GetEmitters()[i].Get();
+
+		if (Emitter->GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Emitter->GetGPUContext() != nullptr)
+		{
+			FNiagaraComputeInstanceData* InstanceData = new (&Instances[InstanceIndex]) FNiagaraComputeInstanceData;
+			InstanceIndex++;
+
+			InstanceData->Context = Emitter->GetGPUContext();
+			check(InstanceData->Context->MainDataSet);
+			InstanceData->SpawnRateInstances = Emitter->GetGPUContext()->SpawnRateInstances_GT;
+			InstanceData->EventSpawnTotal = Emitter->GetGPUContext()->EventSpawnTotal_GT;
+
+			int32 ParmSize = Emitter->GetGPUContext()->CombinedParamStore.GetPaddedParameterSizeInBytes();
+
+			Emitter->GetGPUContext()->CombinedParamStore.CopyParameterDataToPaddedBuffer(ParamDataBufferPtr, ParmSize);
+
+			InstanceData->ParamData = ParamDataBufferPtr;
+
+			ParamDataBufferPtr += ParmSize;
+
+			// @todo-threadsafety Think of a better way to do this!
+			FNiagaraComputeExecutionContext* GPUContext = Emitter->GetGPUContext();
+			const TArray<UNiagaraDataInterface*>& DataInterfaces = GPUContext->CombinedParamStore.GetDataInterfaces();
+			InstanceData->DataInterfaceProxies.Reserve(DataInterfaces.Num());
+			for (UNiagaraDataInterface* DI : DataInterfaces)
+			{
+				check(DI->GetProxy());
+				InstanceData->DataInterfaceProxies.Add(DI->GetProxy());
+			}			
+		}
+	}
+
+	check(InSystemInstance->ActiveGPUEmitterCount == InstanceIndex);
+	Count = InstanceIndex;
 }

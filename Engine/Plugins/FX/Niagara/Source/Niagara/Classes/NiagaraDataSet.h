@@ -25,6 +25,7 @@ struct FNiagaraVariableLayoutInfo
 };
 
 class FNiagaraDataSet;
+class FNiagaraShader;
 
 /** Buffer containing one frame of Niagara simulation data. */
 class NIAGARA_API FNiagaraDataBuffer
@@ -204,6 +205,11 @@ class NIAGARA_API FNiagaraDataSet
 	}
 
 public:
+
+	// Hold the number of added instances for the current frame GPU tick.
+	// Used to resize buffers and get an upper bound on the number of instances before the draw.
+	mutable int32 NumOfSpawnedInstances_RT = 0;
+
 	FNiagaraDataSet()
 	{
 		Reset();
@@ -211,11 +217,12 @@ public:
 	
 	~FNiagaraDataSet();
 
-	void Init(FNiagaraDataSetID InID, ENiagaraSimTarget InSimTarget)
+	void Init(FNiagaraDataSetID InID, ENiagaraSimTarget InSimTarget, const FString& InDebugName)
 	{
 		Reset();
 		ID = InID;
 		SimTarget = InSimTarget;
+		DebugName = InDebugName;
 	}
 
 
@@ -309,6 +316,7 @@ public:
 		}
 	}
 
+	template<bool bDoResourceTransitions>
 	void SetShaderParams(class FNiagaraShader *Shader, FRHICommandList &CommandList, uint32& WriteBufferIdx, uint32& ReadBufferIdx);
 	void UnsetShaderParams(class FNiagaraShader *Shader, FRHICommandList &CommandList);
 	void Allocate(int32 NumInstances, bool bMaintainExisting=false)
@@ -507,6 +515,11 @@ public:
 		IDToIndexTable[0].Reset();
 		IDToIndexTable[1].Reset();
 		IDToIndexTable[2].Reset();
+
+		DataSetIndices[0].Release();
+		DataSetIndices[1].Release();
+		DataSetIndices[2].Release();
+
 		MaxUsedID = INDEX_NONE;
 	}
 
@@ -719,6 +732,8 @@ private:
 
 	FNiagaraDataBuffer Data[3];
 	FRWBuffer DataSetIndices[3]; 
+
+	FString DebugName;
 };
 
 /**
@@ -941,7 +956,14 @@ struct FNiagaraDataSetAccessor<int32> : public FNiagaraDataSetAccessorBase
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;
@@ -999,7 +1021,14 @@ struct FNiagaraDataSetAccessor<float> : public FNiagaraDataSetAccessorBase
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;
@@ -1062,7 +1091,14 @@ struct FNiagaraDataSetAccessor<FVector2D> : public FNiagaraDataSetAccessorBase
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;
@@ -1132,7 +1168,14 @@ struct FNiagaraDataSetAccessor<FVector> : public FNiagaraDataSetAccessorBase
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;
@@ -1206,7 +1249,14 @@ struct FNiagaraDataSetAccessor<FVector4> : public FNiagaraDataSetAccessorBase
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;
@@ -1284,7 +1334,14 @@ struct FNiagaraDataSetAccessor<FQuat> : public FNiagaraDataSetAccessorBase
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;
@@ -1361,7 +1418,14 @@ struct FNiagaraDataSetAccessor<FLinearColor> : public FNiagaraDataSetAccessorBas
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;
@@ -1438,7 +1502,14 @@ struct FNiagaraDataSetAccessor<FNiagaraSpawnInfo> : public FNiagaraDataSetAccess
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;
@@ -1512,7 +1583,14 @@ struct FNiagaraDataSetAccessor<FNiagaraID> : public FNiagaraDataSetAccessorBase
 	{
 		if (IsValid())
 		{
-			return Get(Index);
+			if (DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances())
+			{
+				return Get(Index);
+			}
+			else
+			{
+				ensure(DataBuffer && Index >= 0 && (uint32)Index < DataBuffer->GetNumInstances()); // just to capture the badness in the logs or debugger if attached.
+			}
 		}
 
 		return Default;

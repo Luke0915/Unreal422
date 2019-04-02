@@ -303,6 +303,8 @@ public:
 
 	const FNiagaraParameterStore& GetOverrideParameters() const { return OverrideParameters; }
 
+	bool IsWorldReadyToRun() const;
+
 	//~ End UObject Interface.
 
 	// Called when the particle system is done
@@ -473,4 +475,8 @@ private:
 	TArray<class NiagaraRenderer*>EmitterRenderers;
 	bool bRenderingEnabled;
 	NiagaraEmitterInstanceBatcher* Batcher = nullptr;
+
+#if STATS
+	TStatId SystemStatID;
+#endif
 };

@@ -21,7 +21,7 @@ class NIAGARAEDITOR_API UNiagaraNode : public UEdGraphNode
 	GENERATED_UCLASS_BODY()
 protected:
 
-	bool ReallocatePins();
+	bool ReallocatePins(bool bMarkNeedsResynchronizeOnChange = true);
 
 	bool CompileInputPins(class FHlslNiagaraTranslator *Translator, TArray<int32>& OutCompiledInputs);
 
@@ -63,8 +63,10 @@ public:
 
 	UEdGraphPin* GetInputPin(int32 InputIndex) const;
 	void GetInputPins(TArray<class UEdGraphPin*>& OutInputPins) const;
+	void GetInputPins(TArray<const class UEdGraphPin*>& OutInputPins) const;
 	UEdGraphPin* GetOutputPin(int32 OutputIndex) const;
 	void GetOutputPins(TArray<class UEdGraphPin*>& OutOutputPins) const;
+	void GetOutputPins(TArray<const class UEdGraphPin*>& OutOutputPins) const;
 	UEdGraphPin* GetPinByPersistentGuid(const FGuid& InGuid) const;
 	virtual void ResolveNumerics(const UEdGraphSchema_Niagara* Schema, bool bSetInline, TMap<TPair<FGuid, UEdGraphNode*>, FNiagaraTypeDefinition>* PinCache);
 
@@ -94,7 +96,7 @@ public:
 	/** Notify the rename was cancelled.*/
 	virtual bool CancelEditablePinName(const FText& InName, UEdGraphPin* InGraphPinObj) { return false; }
 
-	virtual void BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive = true);
+	virtual void BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive = true) const;
 	
 	/** Go through all the external dependencies of this node in isolation and add them to the reference id list.*/
 	virtual void GatherExternalDependencyIDs(ENiagaraScriptUsage InMasterUsage, const FGuid& InMasterUsageId, TArray<FGuid>& InReferencedIDs, TArray<UObject*>& InReferencedObjs) const {};
@@ -128,7 +130,7 @@ protected:
 
 	/** Route input parameter map to output parameter map if it exists. Note that before calling this function,
 		the input pins should have been visited already.*/
-	virtual void RouteParameterMapAroundMe(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive);
+	virtual void RouteParameterMapAroundMe(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive) const;
 	
 	/** The current change identifier for this node. Used to sync status with UNiagaraScripts.*/
 	UPROPERTY()

@@ -12,6 +12,11 @@
 DECLARE_CYCLE_STAT(TEXT("Generate Particle Lights"), STAT_NiagaraGenLights, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Sort Particles"), STAT_NiagaraSortParticles, STATGROUP_Niagara);
 
+DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - All"), STAT_NiagaraAllocateGlobalFloatAll, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - InsideLock"), STAT_NiagaraAllocateGlobalFloatInsideLock, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - Alloc New Buffer"), STAT_NiagaraAllocateGlobalFloatAllocNew, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - Map Buffer"), STAT_NiagaraAllocateGlobalFloatMapBuffer, STATGROUP_Niagara);
+
 
 /** Enable/disable parallelized System renderers */
 int32 GbNiagaraParallelEmitterRenderers = 1;
@@ -23,30 +28,85 @@ static FAutoConsoleVariableRef CVarParallelEmitterRenderers(
 	);
 
 
-
-void FNiagaraDummyRWBufferFloat::InitRHI() 
+class FNiagaraDummyRWBufferFloat : public FRenderResource
 {
-	UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat InitRHI %s"), *DebugId);
-	Buffer.Initialize(sizeof(float), 1, EPixelFormat::PF_R32_FLOAT, BUF_Static);
-}
+public:
+	FNiagaraDummyRWBufferFloat(const FString InDebugId) : DebugId(InDebugId) {}
+	FString DebugId;
+	FRWBuffer Buffer;
 
-void FNiagaraDummyRWBufferFloat::ReleaseRHI() 
-{
-	UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat ReleaseRHI %s"), *DebugId);
-	Buffer.Release();
-}
+	virtual void InitRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat InitRHI %s"), *DebugId);
+		Buffer.Initialize(sizeof(float), 1, EPixelFormat::PF_R32_FLOAT, BUF_Static, *DebugId);
+	}
 
-void FNiagaraDummyRWBufferInt::InitRHI() 
-{
-	UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferInt InitRHI %s"), *DebugId);
-	Buffer.Initialize(sizeof(int32), 1, EPixelFormat::PF_R32_SINT, BUF_Static);
-}
-void FNiagaraDummyRWBufferInt::ReleaseRHI() 
-{
-	UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferInt ReleaseRHI %s"), *DebugId);
-	Buffer.Release();
-}
+	virtual void ReleaseRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat ReleaseRHI %s"), *DebugId);
+		Buffer.Release();
+	}
+};
 
+class FNiagaraDummyRWBufferMatrix : public FRenderResource
+{
+public:
+	FNiagaraDummyRWBufferMatrix(const FString InDebugId) : DebugId(InDebugId) {}
+	FString DebugId;
+	FRWBufferStructured Buffer;
+
+	virtual void InitRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferMatrix InitRHI %s"), *DebugId);
+		Buffer.Initialize(64, 1, BUF_Static, *DebugId);
+	}
+
+	virtual void ReleaseRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferMatrix ReleaseRHI %s"), *DebugId);
+		Buffer.Release();
+	}
+};
+
+class FNiagaraDummyRWBufferInt : public FRenderResource
+{
+public:
+	FNiagaraDummyRWBufferInt(const FString InDebugId) : DebugId(InDebugId) {}
+	FString DebugId;
+	FRWBuffer Buffer;
+
+	virtual void InitRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferInt InitRHI %s"), *DebugId);
+		Buffer.Initialize(sizeof(int32), 1, EPixelFormat::PF_R32_SINT, BUF_Static, *DebugId);
+	}
+
+	virtual void ReleaseRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferInt ReleaseRHI %s"), *DebugId);
+		Buffer.Release();
+	}
+};
+
+class FNiagaraDummyRWBufferUInt : public FRenderResource
+{
+public:
+	FNiagaraDummyRWBufferUInt(const FString InDebugId) : DebugId(InDebugId) {}
+	FString DebugId;
+	FRWBuffer Buffer;
+
+	virtual void InitRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferUInt InitRHI %s"), *DebugId);
+		Buffer.Initialize(sizeof(uint32), 1, EPixelFormat::PF_R32_UINT, BUF_Static, *DebugId);
+	}
+
+	virtual void ReleaseRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferUInt ReleaseRHI %s"), *DebugId);
+		Buffer.Release();
+	}
+};
 
 FRWBuffer& NiagaraRenderer::GetDummyFloatBuffer()
 {
@@ -55,11 +115,25 @@ FRWBuffer& NiagaraRenderer::GetDummyFloatBuffer()
 	return DummyFloatBuffer.Buffer;
 }
 
+FRWBufferStructured& NiagaraRenderer::GetDummyMatrixBuffer()
+{
+	check(IsInRenderingThread());
+	static TGlobalResource<FNiagaraDummyRWBufferMatrix> DummyMatrixBuffer(TEXT("NiagaraRenderer::DummyMatrix"));
+	return DummyMatrixBuffer.Buffer;
+}
+
 FRWBuffer& NiagaraRenderer::GetDummyIntBuffer()
 {
 	check(IsInRenderingThread());
 	static TGlobalResource<FNiagaraDummyRWBufferInt> DummyIntBuffer(TEXT("NiagaraRenderer::DummyInt"));
 	return DummyIntBuffer.Buffer;
+}
+
+FRWBuffer& NiagaraRenderer::GetDummyUIntBuffer()
+{
+	check(IsInRenderingThread());
+	static TGlobalResource<FNiagaraDummyRWBufferUInt> DummyUIntBuffer(TEXT("NiagaraRenderer::DummyUInt"));
+	return DummyUIntBuffer.Buffer;
 }
 
 NiagaraRenderer::NiagaraRenderer()
@@ -201,6 +275,13 @@ NiagaraRendererLights::NiagaraRendererLights(ERHIFeatureLevel::Type FeatureLevel
 	NiagaraRenderer()
 {
 	Properties = Cast<UNiagaraLightRendererProperties>(InProps);
+
+#if STATS
+	if (UNiagaraEmitter* Emitter = InProps->GetTypedOuter<UNiagaraEmitter>())
+	{
+		EmitterStatID = Emitter->GetStatID(false, false);
+	}
+#endif
 }
 
 

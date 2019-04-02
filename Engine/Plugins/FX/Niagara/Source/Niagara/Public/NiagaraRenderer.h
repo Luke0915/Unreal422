@@ -54,26 +54,6 @@ private:
 	double StartTime;
 };
 
-class FNiagaraDummyRWBufferInt : public FRenderResource
-{
-public:
-	FNiagaraDummyRWBufferInt(const FString InDebugId) : DebugId(InDebugId) {}
-	FString DebugId;
-	FRWBuffer Buffer;
-	virtual void InitRHI() override;
-	virtual void ReleaseRHI() override;
-};
-
-class FNiagaraDummyRWBufferFloat : public FRenderResource
-{
-public:
-	FNiagaraDummyRWBufferFloat(const FString InDebugId) : DebugId(InDebugId) {}
-	FString DebugId;
-	FRWBuffer Buffer;
-	virtual void InitRHI() override;
-	virtual void ReleaseRHI() override;
-};
-
 /**
 * Base class for Niagara System renderers. System renderers handle generating vertex data for and
 * drawing of simulation data coming out of FNiagaraEmitterInstance instances.
@@ -160,7 +140,9 @@ public:
 	void SortIndices(ENiagaraSortMode SortMode, int32 SortAttributeOffset, const FNiagaraDataBuffer& Buffer, const FMatrix& LocalToWorld, const FSceneView* View, FGlobalDynamicReadBuffer::FAllocation& OutIndices)const;
 
 	static FRWBuffer& GetDummyFloatBuffer(); 
+	static FRWBufferStructured& GetDummyMatrixBuffer();
 	static FRWBuffer& GetDummyIntBuffer();
+	static FRWBuffer& GetDummyUIntBuffer();
 	
 protected:
 	NiagaraRenderer();
@@ -181,9 +163,11 @@ protected:
 	FRWBuffer RayTracingDynamicVertexBuffer;
 	FRayTracingGeometry RayTracingGeometry;
 #endif
+
+#if STATS
+	TStatId EmitterStatID;
+#endif
 };
-
-
 
 struct FNiagaraDynamicDataSprites;
 

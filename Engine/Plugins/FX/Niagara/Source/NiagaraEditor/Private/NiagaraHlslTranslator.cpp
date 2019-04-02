@@ -85,6 +85,8 @@ FNiagaraShaderProcessorTickable NiagaraShaderProcessor;
 // because editor tickables aren't ticked during cooking
 void FNiagaraShaderQueueTickable::ProcessQueue()
 {
+	check(IsInGameThread());
+
 	for (FNiagaraCompilationQueue::NiagaraCompilationQueueItem &Item : FNiagaraCompilationQueue::Get()->GetQueue())
 	{
 		FNiagaraShaderScript* ShaderScript = Item.Script;
@@ -993,6 +995,23 @@ const FNiagaraTranslateResults &FHlslNiagaraTranslator::Translate(const FNiagara
 	if (FunctionCtx())
 		return TranslateResults;
 
+	// MASSIVE HACK - Tracked in JIRA UE-69298
+	// Hardcoded random function accessible from inner part of node implementation.
+	// It works for now at least and avoids exposing every random needed in the UI. 
+	// Temporary solution, it will be replaced when a design is validated.
+	if (CompilationTarget == ENiagaraSimTarget::GPUComputeSim)
+	{
+		HlslOutput += TEXT(R"(
+		float NiagaraInternalNoise(uint u, uint v, uint s)
+		{
+			static uint RandomSeedOffset = 0;
+			uint Seed = (u * 1664525u + v) + s + RandomSeedOffset;
+			RandomSeedOffset += Seed;
+			return float(Rand3DPCG32(int3(u,v,Seed)).x) / 4294967296.0f;
+		}
+		)");
+	}
+
 	//Now evaluate all the code chunks to generate the shader code.
 	//FString HlslOutput;
 	if (TranslateResults.bHLSLGenSucceeded)
@@ -1697,6 +1716,12 @@ void FHlslNiagaraTranslator::DefineMain(FString &OutHlslOutput,
 	if (CompilationTarget == ENiagaraSimTarget::GPUComputeSim)
 	{
 		OutHlslOutput += TEXT("void SimulateMain(in int InstanceIdx, in int InEventIndex, in int Phase)\n{\n");
+
+		// MASSIVE HACK
+		HlslOutput += TEXT(R"(
+			float RandomSeedInitialisation = NiagaraInternalNoise(InstanceIdx*16384, InEventIndex*8196, Phase*4096 + EmitterTickCounter);	// initialise the random state seed
+		)");
+		
 	}
 	else
 	{
@@ -1940,42 +1965,44 @@ void FHlslNiagaraTranslator::DefineDataSetVariableWrites(FString &OutHlslOutput,
 		for (int32 i = 0; i < ParamMapHistories.Num(); i++)
 		{
 			const UNiagaraNodeOutput* OutputNode = ParamMapHistories[i].GetFinalOutputNode();
-			bool bFound = (INDEX_NONE != ParamMapHistories[i].FindVariable(*(DataSetName + TEXT(".Alive")), FNiagaraTypeDefinition::GetBoolDef()));
-			if (bFound && OutputNode && (OutputNode->GetUsage() == ENiagaraScriptUsage::ParticleSpawnScript || OutputNode->GetUsage() == ENiagaraScriptUsage::ParticleSpawnScriptInterpolated))
+			if (!OutputNode)
 			{
+				continue;
+			}
+
+			if (INDEX_NONE == ParamMapHistories[i].FindVariable(*(DataSetName + TEXT(".Alive")), FNiagaraTypeDefinition::GetBoolDef()))
+			{
+				continue;
+			}
+
+			switch (OutputNode->GetUsage())
+			{
+			case ENiagaraScriptUsage::ParticleSpawnScript:
+			case ENiagaraScriptUsage::ParticleSpawnScriptInterpolated:
 				bHasPerParticleAliveSpawn = true;
-			}
-			else if (bFound && OutputNode && OutputNode->GetUsage() == ENiagaraScriptUsage::ParticleUpdateScript)
-			{
+				break;
+			case ENiagaraScriptUsage::ParticleUpdateScript:
 				bHasPerParticleAliveUpdate = true;
-			}
-			else if (bFound && OutputNode && OutputNode->GetUsage() == ENiagaraScriptUsage::ParticleEventScript)
-			{
+				break;
+			case ENiagaraScriptUsage::ParticleEventScript:
 				bHasPerParticleAliveEvent = true;
+				break;
 			}
 		}
 
 		if ((bHasPerParticleAliveSpawn || bHasPerParticleAliveUpdate) && TranslationStages.Num() > 1)
 		{
-			if (bHasPerParticleAliveSpawn && bHasPerParticleAliveUpdate)
-			{
-				OutHlslOutput += TEXT("\tbool bValid = Context.MapUpdate.") + DataSetName + TEXT(".Alive && Context.MapSpawn.DataInstance.Alive;\n");
-			}
-			else if (bHasPerParticleAliveSpawn)
-			{
-				OutHlslOutput += TEXT("\tbool bValid = Context.MapSpawn.") + DataSetName + TEXT(".Alive;\n");
-			}
-			else if (bHasPerParticleAliveUpdate)
-			{
-				OutHlslOutput += TEXT("\tbool bValid = Context.MapUpdate.") + DataSetName + TEXT(".Alive;\n");
-			}
+			// NOTE: TranslationStages.Num() > 1 for GPU Script or CPU Interpolated Spawn CPU scripts
+
+			// NOTE: Context.MapSpawn is copied to Context.MapUpdate before this point in the script, so we might
+			//       as well just keep it simple and check against MapUpdate only instead of redundantly branch.
+			OutHlslOutput += TEXT("\tbool bValid = Context.MapUpdate.") + DataSetName + TEXT(".Alive;\n");
 		}
-		else if ((UNiagaraScript::IsParticleSpawnScript(CompileOptions.TargetUsage) && bHasPerParticleAliveSpawn)
-			|| (UNiagaraScript::IsGPUScript(CompileOptions.TargetUsage) && bHasPerParticleAliveSpawn)
+		else if ((UNiagaraScript::IsParticleSpawnScript(CompileOptions.TargetUsage) && bHasPerParticleAliveSpawn) 
 			|| (UNiagaraScript::IsParticleUpdateScript(CompileOptions.TargetUsage) && bHasPerParticleAliveUpdate)
-			|| (UNiagaraScript::IsParticleEventScript(CompileOptions.TargetUsage) && bHasPerParticleAliveEvent)
-			|| (UNiagaraScript::IsGPUScript(CompileOptions.TargetUsage) && bHasPerParticleAliveUpdate && CompilationTarget == ENiagaraSimTarget::GPUComputeSim))
+			|| (UNiagaraScript::IsParticleEventScript(CompileOptions.TargetUsage) && bHasPerParticleAliveEvent))
 		{
+			// Non-interpolated CPU spawn script
 			OutHlslOutput += TEXT("\tbool bValid = Context.Map.") + DataSetName + TEXT(".Alive;\n");
 		}
 		else
@@ -1983,10 +2010,6 @@ void FHlslNiagaraTranslator::DefineDataSetVariableWrites(FString &OutHlslOutput,
 			OutHlslOutput += "\tbool bValid = true;\n";
 		}
 	}
-	int32 WriteOffsetInt = 0;
-	int32 WriteOffsetFloat = 0;
-	int32 &FloatCounter = WriteOffsetFloat;
-	int32 &IntCounter = CompilationTarget == ENiagaraSimTarget::GPUComputeSim ? WriteOffsetInt : WriteOffsetFloat;
 
 	// grab the current ouput index; currently pass true, but should use an arbitrary bool to determine whether write should happen or not
 	OutHlslOutput += "\tTmpWriteIndex = AcquireIndex(0, bValid);\n";
@@ -1998,22 +2021,23 @@ void FHlslNiagaraTranslator::DefineDataSetVariableWrites(FString &OutHlslOutput,
 		OutHlslOutput += FString::Printf(TEXT("\tUpdateID(0, %s.Particles.ID.Index, TmpWriteIndex);\n"), *MapName);
 	}
 
+	int32 WriteOffsetInt = 0;
+	int32 WriteOffsetFloat = 0;
+	int32 &FloatCounter = WriteOffsetFloat;
+	int32 &IntCounter = CompilationTarget == ENiagaraSimTarget::GPUComputeSim ? WriteOffsetInt : WriteOffsetFloat;
 	for (FNiagaraVariable &Var : WriteVars)
 	{
 		// If coming from a parameter map, use the one on the context, otherwise use the output.
 		FString Fmt;
-
+		if (TranslationStages.Num() > 1)
 		{
-			if (TranslationStages.Num() > 1)
-			{
-				Fmt = TEXT("\tOutputData{1}(0, {2}, {3}, Context.") + TranslationStages[TranslationStages.Num() - 1].PassNamespace + TEXT(".") + GetSanitizedSymbolName(Var.GetName().ToString()) + TEXT("{0});\n");
-			}
-			else
-			{
-				Fmt = TEXT("\tOutputData{1}(0, {2}, {3}, Context.Map.") + GetSanitizedSymbolName(Var.GetName().ToString()) + TEXT("{0});\n");
-			}
-			GatherVariableForDataSetAccess(Var, Fmt, IntCounter, FloatCounter, -1, TEXT("TmpWriteIndex"), OutHlslOutput);
+			Fmt = TEXT("\tOutputData{1}(0, {2}, {3}, Context.") + TranslationStages[TranslationStages.Num() - 1].PassNamespace + TEXT(".") + GetSanitizedSymbolName(Var.GetName().ToString()) + TEXT("{0});\n");
 		}
+		else
+		{
+			Fmt = TEXT("\tOutputData{1}(0, {2}, {3}, Context.Map.") + GetSanitizedSymbolName(Var.GetName().ToString()) + TEXT("{0});\n");
+		}
+		GatherVariableForDataSetAccess(Var, Fmt, IntCounter, FloatCounter, -1, TEXT("TmpWriteIndex"), OutHlslOutput);
 	}
 	OutHlslOutput += "\t}\n";
 }

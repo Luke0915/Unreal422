@@ -534,7 +534,7 @@ bool UNiagaraNodeFunctionCall::RefreshFromExternalChanges()
 	if (bReload)
 	{
 		// TODO - Leverage code in reallocate pins to determine if any pins have changed...
-		ReallocatePins();
+		ReallocatePins(false);
 		return true;
 	}
 	else
@@ -598,7 +598,7 @@ bool UNiagaraNodeFunctionCall::ScriptIsValid() const
 	return false;
 }
 
-void UNiagaraNodeFunctionCall::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive)
+void UNiagaraNodeFunctionCall::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive) const
 {
 	Super::BuildParameterMapHistory(OutHistory, bRecursive);
 	if (!IsNodeEnabled() && OutHistory.GetIgnoreDisabled())

@@ -257,14 +257,15 @@ UNiagaraNodeFunctionCall* FNiagaraStackGraphUtilities::GetNextModuleNode(UNiagar
 	return nullptr;
 }
 
-UNiagaraNodeOutput* FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(UNiagaraNode& StackNode)
+template<typename OutputNodeType, typename InputNodeType>
+OutputNodeType* GetEmitterOutputNodeForStackNodeInternal(InputNodeType& StackNode)
 {
-	TArray<UNiagaraNode*> NodesToCheck;
-	TSet<UNiagaraNode*> NodesChecked;
+	TArray<InputNodeType*> NodesToCheck;
+	TSet<InputNodeType*> NodesChecked;
 	NodesToCheck.Add(&StackNode);
 	while (NodesToCheck.Num() > 0)
 	{
-		UNiagaraNode* NodeToCheck = NodesToCheck[0];
+		InputNodeType* NodeToCheck = NodesToCheck[0];
 		NodesToCheck.RemoveAt(0);
 		NodesChecked.Add(NodeToCheck);
 
@@ -273,13 +274,13 @@ UNiagaraNodeOutput* FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNod
 			return CastChecked<UNiagaraNodeOutput>(NodeToCheck);
 		}
 		
-		TArray<UEdGraphPin*> OutputPins;
+		TArray<const UEdGraphPin*> OutputPins;
 		NodeToCheck->GetOutputPins(OutputPins);
-		for (UEdGraphPin* OutputPin : OutputPins)
+		for (const UEdGraphPin* OutputPin : OutputPins)
 		{
 			for (UEdGraphPin* LinkedPin : OutputPin->LinkedTo)
 			{
-				UNiagaraNode* LinkedNiagaraNode = Cast<UNiagaraNode>(LinkedPin->GetOwningNode());
+				InputNodeType* LinkedNiagaraNode = Cast<UNiagaraNode>(LinkedPin->GetOwningNode());
 				if (LinkedNiagaraNode != nullptr && NodesChecked.Contains(LinkedNiagaraNode) == false)
 				{
 					NodesToCheck.Add(LinkedNiagaraNode);
@@ -288,6 +289,16 @@ UNiagaraNodeOutput* FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNod
 		}
 	}
 	return nullptr;
+}
+
+UNiagaraNodeOutput* FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(UNiagaraNode& StackNode)
+{
+	return GetEmitterOutputNodeForStackNodeInternal<UNiagaraNodeOutput, UNiagaraNode>(StackNode);
+}
+
+const UNiagaraNodeOutput* FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(const UNiagaraNode& StackNode)
+{
+	return GetEmitterOutputNodeForStackNodeInternal<const UNiagaraNodeOutput, const UNiagaraNode>(StackNode);
 }
 
 UNiagaraNodeInput* FNiagaraStackGraphUtilities::GetEmitterInputNodeForStackNode(UNiagaraNode& StackNode)

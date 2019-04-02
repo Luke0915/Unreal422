@@ -11,6 +11,13 @@ DECLARE_CYCLE_STAT(TEXT("Render Ribbons [RT]"), STAT_NiagaraRenderRibbons, STATG
 
 DECLARE_CYCLE_STAT(TEXT("Genereate GPU Buffers"), STAT_NiagaraGenRibbonGpuBuffers, STATGROUP_Niagara);
 
+static int32 GbEnableNiagaraRibbonRendering = 1;
+static FAutoConsoleVariableRef CVarEnableNiagaraRibbonRendering(
+	TEXT("fx.EnableNiagaraRibbonRendering"),
+	GbEnableNiagaraRibbonRendering,
+	TEXT("If == 0, Niagara Ribbon Renderers are disabled. \n"),
+	ECVF_Default
+);
 
 struct FNiagaraDynamicDataRibbon : public FNiagaraDynamicDataBase
 {
@@ -66,6 +73,13 @@ NiagaraRendererRibbons::NiagaraRendererRibbons(ERHIFeatureLevel::Type FeatureLev
 {
 	VertexFactory = new FNiagaraRibbonVertexFactory(NVFT_Ribbon, FeatureLevel);
 	Properties = Cast<UNiagaraRibbonRendererProperties>(InProps);
+
+#if STATS
+	if (UNiagaraEmitter* Emitter = InProps->GetTypedOuter<UNiagaraEmitter>())
+	{
+		EmitterStatID = Emitter->GetStatID(false, false);
+	}
+#endif
 }
 
 
@@ -95,10 +109,15 @@ void NiagaraRendererRibbons::GetDynamicMeshElements(const TArray<const FSceneVie
 		|| DynamicDataRibbon->IndexData.Num() == 0
 		|| nullptr == Properties
 		|| !GSupportsResourceView // Current shader requires SRV to draw properly in all cases.
+		|| GbEnableNiagaraRibbonRendering == 0
 		)
 	{
 		return;
 	}
+
+#if STATS
+	FScopeCycleCounter EmitterStatsCounter(EmitterStatID);
+#endif
 
 	const bool bIsWireframe = ViewFamily.EngineShowFlags.Wireframe;
 	FMaterialRenderProxy* MaterialRenderProxy = Material->GetRenderProxy();

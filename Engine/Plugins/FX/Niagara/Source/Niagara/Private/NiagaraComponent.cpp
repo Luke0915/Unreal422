@@ -20,6 +20,7 @@
 #include "NiagaraWorldManager.h"
 #include "EngineUtils.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "NiagaraEmitterInstanceBatcher.h"
 
 DECLARE_CYCLE_STAT(TEXT("Sceneproxy create (GT)"), STAT_NiagaraCreateSceneProxy, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Component Tick (GT)"), STAT_NiagaraComponentTick, STATGROUP_Niagara);
@@ -73,7 +74,7 @@ void DumpNiagaraComponents(UWorld* World)
 
 					if (!SysInst->IsComplete())
 					{
-						for (TSharedRef<FNiagaraEmitterInstance> Emitter : SysInst->GetEmitters())
+						for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> Emitter : SysInst->GetEmitters())
 						{
 							UE_LOG(LogNiagara, Log, TEXT("    Emitter: \"%s\" | ExecState: %d | NumParticles: %d | CPUTime: %f"), *Emitter->GetEmitterHandle().GetUniqueInstanceName(),
 								(int32)Emitter->GetExecutionState(), Emitter->GetNumParticles(), Emitter->GetTotalCPUTime());
@@ -93,17 +94,23 @@ FAutoConsoleCommandWithWorld DumpNiagaraComponentsCommand(
 
 
 FNiagaraSceneProxy::FNiagaraSceneProxy(const UNiagaraComponent* InComponent)
-		: FPrimitiveSceneProxy(InComponent)
+		: FPrimitiveSceneProxy(InComponent, InComponent->GetAsset() ? InComponent->GetAsset()->GetFName() : FName())
 		, bRenderingEnabled(true)
 {
 	// In this case only, update the System renderers on the game thread.
 	check(IsInGameThread());
+
+#if STATS
+	SystemStatID = InComponent->GetAsset() ? InComponent->GetAsset()->GetStatID(false, false) : TStatId();
+	FScopeCycleCounter SystemStatCounter(SystemStatID);
+#endif
+
 	FNiagaraSystemInstance* SystemInst = InComponent->GetSystemInstance();
 	if (SystemInst)
 	{
-		TArray<TSharedRef<FNiagaraEmitterInstance> > &Sims = SystemInst->GetEmitters();
+		TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> > &Sims = SystemInst->GetEmitters();
 		TArray<NiagaraRenderer*> RenderersFromSims;
-		for (TSharedRef<FNiagaraEmitterInstance> Sim : Sims)
+		for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> Sim : Sims)
 		{
 			for (int32 i = 0; i < Sim->GetEmitterRendererNum(); i++)
 			{
@@ -126,6 +133,7 @@ SIZE_T FNiagaraSceneProxy::GetTypeHash() const
 
 void FNiagaraSceneProxy::UpdateEmitterRenderers(const TArray<NiagaraRenderer*>& InRenderers)
 {
+	//UE_LOG(LogNiagara, Log, TEXT("FNiagaraSceneProxy::UpdateEmitterRenderers %p"), this);
 	EmitterRenderers.Empty();
 	for (NiagaraRenderer* EmitterRenderer : InRenderers)
 	{
@@ -256,6 +264,7 @@ void FNiagaraSceneProxy::SetRenderingEnabled(bool bInRenderingEnabled)
 
 void FNiagaraSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const
 {
+	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_RT);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraComponentGetDynamicMeshElements);
 	for (NiagaraRenderer* Renderer : EmitterRenderers)
 	{
@@ -356,6 +365,8 @@ UNiagaraComponent::UNiagaraComponent(const FObjectInitializer& ObjectInitializer
 	bAutoActivate = true;
 	bRenderingEnabled = true;
 	SavedAutoAttachRelativeScale3D = FVector(1.f, 1.f, 1.f);
+
+	SetGenerateOverlapEvents(false);
 }
 
 
@@ -363,6 +374,8 @@ void UNiagaraComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickTy
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraComponentTick);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Particles);
+
+	FScopeCycleCounter SystemStatCounter(Asset ? Asset->GetStatID(true, false) : TStatId());
 
 	if (bAwaitingActivationDueToNotReady)
 	{
@@ -501,12 +514,43 @@ bool UNiagaraComponent::IsPaused()const
 	return false;
 }
 
+bool UNiagaraComponent::IsWorldReadyToRun() const
+{
+	// The niagara system instance assumes that a batcher exists when it is created. We need to wait until this has happened before successfully activating this system.
+	bool FXSystemExists = false;
+	bool WorldManagerExists = false;
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		if (World->Scene)
+		{
+			FFXSystemInterface*  FXSystemInterface = World->Scene->GetFXSystem();
+			if (FXSystemInterface)
+			{
+				NiagaraEmitterInstanceBatcher* FoundBatcher = static_cast<NiagaraEmitterInstanceBatcher*>(FXSystemInterface->GetInterface(NiagaraEmitterInstanceBatcher::Name));
+				if (FoundBatcher != nullptr)
+				{
+					FXSystemExists = true;
+				}
+			}
+		}
+
+		FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World);
+		if (WorldManager)
+		{
+			WorldManagerExists = true;
+		}
+	}
+
+	return WorldManagerExists && FXSystemExists;
+}
+
 bool UNiagaraComponent::InitializeSystem()
 {
 	if (SystemInstance.IsValid() == false)
 	{
-		//UE_LOG(LogNiagara, Warning, TEXT("Create System: %0X | %s\n"), this, *GetAsset()->GetFullName());
-		SystemInstance = MakeUnique<FNiagaraSystemInstance>(this);
+		FNiagaraSystemInstance::AllocateSystemInstance(this, SystemInstance);
+		//UE_LOG(LogNiagara, Log, TEXT("Create System: %p | %s\n"), SystemInstance.Get(), *GetAsset()->GetFullName());
 #if WITH_EDITORONLY_DATA
 		OnSystemInstanceChangedDelegate.Broadcast();
 #endif
@@ -571,8 +615,8 @@ void UNiagaraComponent::Activate(bool bReset /* = false */)
 		Asset->PollForCompilationComplete();
 	}
 #endif
-
-	if (!Asset->IsReadyToRun())
+	
+	if (!Asset->IsReadyToRun() || !IsWorldReadyToRun())
 	{
 		bAwaitingActivationDueToNotReady = true;
 		bActivateShouldResetWhenReady = bReset;
@@ -666,18 +710,22 @@ void UNiagaraComponent::DeactivateImmediate()
 
 void UNiagaraComponent::OnSystemComplete()
 {
-	//UE_LOG(LogNiagara, Log, TEXT("OnSystemComplete: %u - %s"), this, *Asset->GetName());
+	//UE_LOG(LogNiagara, Log, TEXT("OnSystemComplete: %p - %s"), SystemInstance.Get(), *Asset->GetName());
 
 	SetComponentTickEnabled(false);
 	bIsActive = false;
 
 	MarkRenderDynamicDataDirty();
 		
+	//UE_LOG(LogNiagara, Log, TEXT("OnSystemFinished.Broadcast(this);: { %p - %s"), SystemInstance.Get(), *Asset->GetName());
 	OnSystemFinished.Broadcast(this);
+	//UE_LOG(LogNiagara, Log, TEXT("OnSystemFinished.Broadcast(this);: } %p - %s"), SystemInstance.Get(), *Asset->GetName());
 
 	if (bAutoDestroy)
 	{
+		//UE_LOG(LogNiagara, Log, TEXT("OnSystemComplete DestroyComponent();: { %p - %s"), SystemInstance.Get(), *Asset->GetName());
 		DestroyComponent();
+		//UE_LOG(LogNiagara, Log, TEXT("OnSystemComplete DestroyComponent();: } %p - %s"), SystemInstance.Get(), *Asset->GetName());
 	}
 	else if (bAutoManageAttachment)
 	{
@@ -687,10 +735,16 @@ void UNiagaraComponent::OnSystemComplete()
 
 void UNiagaraComponent::DestroyInstance()
 {
-	//UE_LOG(LogNiagara, Warning, TEXT("Destroy System: %s\n"), *GetAsset()->GetFullName());
+	//UE_LOG(LogNiagara, Log, TEXT("UNiagaraComponent::DestroyInstance: %p  %s\n"), SystemInstance.Get(), *GetAsset()->GetFullName());
 	//UE_LOG(LogNiagara, Log, TEXT("DestroyInstance: %u - %s"), this, *Asset->GetName());
 	bIsActive = false;
-	SystemInstance = nullptr;
+	
+	// Rather than setting the unique ptr to null here, we allow it to transition ownership to the system's deferred deletion queue. This allows us to safely
+	// get rid of the system interface should we be doing this in response to a callback invoked during the system interface's lifetime completion cycle.
+	FNiagaraSystemInstance::DeallocateSystemInstance(SystemInstance); // System Instance will be nullptr after this.
+	check(SystemInstance.Get() == nullptr);
+
+
 #if WITH_EDITORONLY_DATA
 	OnSystemInstanceChangedDelegate.Broadcast();
 #endif
@@ -754,13 +808,20 @@ void UNiagaraComponent::OnUnregister()
 
 	if (SystemInstance)
 	{
+		//UE_LOG(LogNiagara, Log, TEXT("UNiagaraComponent::OnUnregister: %p  %s\n"), SystemInstance.Get(), *GetAsset()->GetFullName());
+
 		SystemInstance->Deactivate(true);
-		SystemInstance = nullptr;
+
+		// Rather than setting the unique ptr to null here, we allow it to transition ownership to the system's deferred deletion queue. This allows us to safely
+		// get rid of the system interface should we be doing this in response to a callback invoked during the system interface's lifetime completion cycle.
+		FNiagaraSystemInstance::DeallocateSystemInstance(SystemInstance); // System Instance will be nullptr after this.
+		check(SystemInstance.Get() == nullptr);
 	}
 }
 
 void UNiagaraComponent::BeginDestroy()
 {
+	//UE_LOG(LogNiagara, Log, TEXT("~UNiagaraComponent: %p  %s\n"), SystemInstance.Get(), *GetAsset()->GetFullName());
 	DestroyInstance();
 
 	Super::BeginDestroy();
@@ -796,14 +857,26 @@ void UNiagaraComponent::CreateRenderState_Concurrent()
 
 void UNiagaraComponent::SendRenderDynamicData_Concurrent()
 {
+	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_GT_CNC);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraComponentSendRenderData);
 	if (SystemInstance.IsValid() && SceneProxy)
 	{
 		FNiagaraSceneProxy* NiagaraProxy = static_cast<FNiagaraSceneProxy*>(SceneProxy);
 
+#if STATS
+		TStatId SystemStatID = GetAsset() ? GetAsset()->GetStatID(true, true) : TStatId();
+		FScopeCycleCounter SystemStatCounter(SystemStatID);
+#endif
+
 		for (int32 i = 0; i < SystemInstance->GetEmitters().Num(); i++)
 		{
 			FNiagaraEmitterInstance* Emitter = &SystemInstance->GetEmitters()[i].Get();
+
+#if STATS
+			TStatId EmitterStatID = Emitter->GetCachedEmitter()->GetStatID(true, true);
+			FScopeCycleCounter EmitterStatCounter(EmitterStatID);
+#endif
+
 			for (int32 EmitterIdx = 0; EmitterIdx < Emitter->GetEmitterRendererNum(); EmitterIdx++)
 			{
 				NiagaraRenderer* Renderer = Emitter->GetEmitterRenderer(EmitterIdx);
@@ -881,8 +954,11 @@ FBoxSphereBounds UNiagaraComponent::CalcBounds(const FTransform& LocalToWorld) c
 FPrimitiveSceneProxy* UNiagaraComponent::CreateSceneProxy()
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraCreateSceneProxy);
+	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_GT);
+	
 	// The constructor will set up the System renderers from the component.
 	FNiagaraSceneProxy* Proxy = new FNiagaraSceneProxy(this);
+
 	return Proxy;
 }
 
@@ -893,7 +969,7 @@ void UNiagaraComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMateria
 		return;
 	}
 
-	for (TSharedRef<FNiagaraEmitterInstance> Sim : SystemInstance->GetEmitters())	
+	for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> Sim : SystemInstance->GetEmitters())
 	{
 		if (UNiagaraEmitter* Props = Sim->GetEmitterHandle().GetInstance())
 		{	
@@ -980,7 +1056,7 @@ TArray<FVector> UNiagaraComponent::GetNiagaraParticleValueVec3_DebugOnly(const F
 	FName EmitterName = FName(*InEmitterName);
 	if (SystemInstance.IsValid())
 	{
-		for (TSharedRef<FNiagaraEmitterInstance>& Sim : SystemInstance->GetEmitters())
+		for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& Sim : SystemInstance->GetEmitters())
 		{
 			if (Sim->GetEmitterHandle().GetName() == EmitterName)
 			{
@@ -1010,7 +1086,7 @@ TArray<float> UNiagaraComponent::GetNiagaraParticleValues_DebugOnly(const FStrin
 	FName EmitterName = FName(*InEmitterName);
 	if (SystemInstance.IsValid())
 	{
-		for (TSharedRef<FNiagaraEmitterInstance>& Sim : SystemInstance->GetEmitters())
+		for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& Sim : SystemInstance->GetEmitters())
 		{
 			if (Sim->GetEmitterHandle().GetName() == EmitterName)
 			{

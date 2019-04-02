@@ -26,6 +26,7 @@
 	#include "Interfaces/ITargetPlatform.h"
 #endif
 
+
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/RenderingObjectVersion.h"
 
@@ -530,22 +531,28 @@ bool UNiagaraScript::AreScriptAndSourceSynchronized() const
 		{
 			if (NewId != LastReportedVMId)
 			{
-				if (NewId.BaseScriptID != CachedScriptVMId.BaseScriptID)
+				if (GEnableVerboseNiagaraChangeIdLogging)
 				{
-					UE_LOG(LogNiagara, Log, TEXT("AreScriptAndSourceSynchronized base script id's don't match. %s != %s"), *NewId.BaseScriptID.ToString(), *CachedScriptVMId.BaseScriptID.ToString());
-				}
-				if (NewId.ReferencedDependencyIds.Num() != CachedScriptVMId.ReferencedDependencyIds.Num())
-				{
-					UE_LOG(LogNiagara, Log, TEXT("AreScriptAndSourceSynchronized num dependencies don't match. %d != %d"), NewId.ReferencedDependencyIds.Num(), CachedScriptVMId.ReferencedDependencyIds.Num());
-				}
-				else
-				{
-					for (int32 i = 0; i < NewId.ReferencedDependencyIds.Num(); i++)
+					if (NewId.BaseScriptID != CachedScriptVMId.BaseScriptID)
 					{
-						if (NewId.ReferencedDependencyIds[i] != CachedScriptVMId.ReferencedDependencyIds[i])
+						UE_LOG(LogNiagara, Log, TEXT("AreScriptAndSourceSynchronized base script id's don't match. %s != %s, script %s"),
+							*NewId.BaseScriptID.ToString(), *CachedScriptVMId.BaseScriptID.ToString(), *GetPathName());
+					}
+					if (NewId.ReferencedDependencyIds.Num() != CachedScriptVMId.ReferencedDependencyIds.Num())
+					{
+						UE_LOG(LogNiagara, Log, TEXT("AreScriptAndSourceSynchronized num dependencies don't match. %d != %d, script %s"),
+							NewId.ReferencedDependencyIds.Num(), CachedScriptVMId.ReferencedDependencyIds.Num(), *GetPathName());
+					}
+					else
+					{
+						for (int32 i = 0; i < NewId.ReferencedDependencyIds.Num(); i++)
 						{
-							UE_LOG(LogNiagara, Log, TEXT("AreScriptAndSourceSynchronized reference id %d doesn't match. %s != %s, source %s"), i, *NewId.ReferencedDependencyIds[i].ToString(), *CachedScriptVMId.ReferencedDependencyIds[i].ToString(),
-								NewId.ReferencedObjects[i] != nullptr ? *NewId.ReferencedObjects[i]->GetPathName() : TEXT("nullptr"));
+							if (NewId.ReferencedDependencyIds[i] != CachedScriptVMId.ReferencedDependencyIds[i])
+							{
+								UE_LOG(LogNiagara, Log, TEXT("AreScriptAndSourceSynchronized reference id %d doesn't match. %s != %s, script %s, source %s"),
+									i, *NewId.ReferencedDependencyIds[i].ToString(), *CachedScriptVMId.ReferencedDependencyIds[i].ToString(), *GetPathName(),
+									NewId.ReferencedObjects[i] != nullptr ? *NewId.ReferencedObjects[i]->GetPathName() : TEXT("nullptr"));
+							}
 						}
 					}
 				}

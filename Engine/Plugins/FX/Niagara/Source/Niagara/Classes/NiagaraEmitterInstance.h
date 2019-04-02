@@ -107,6 +107,13 @@ public:
 
 	bool WaitForDebugInfo();
 
+	FNiagaraComputeExecutionContext* GetGPUContext()
+	{
+		return GPUExecContext;
+	}
+
+	void SetSystemFixedBoundsOverride(FBox SystemFixedBounds);
+
 private:
 
 	void CheckForErrors();
@@ -193,6 +200,10 @@ private:
 	TArray<bool> SpawnEventGeneratorIsSharedByIndex;
 
 	FName OwnerSystemInstanceName;
+
+	/** Cached fixed bounds of the parent system which override this Emitter Instances bounds if set. Whenever we initialize the owning SystemInstance we will reconstruct this
+	 ** EmitterInstance and the cached bounds will be unset. */
+	TOptional<FBox> CachedSystemFixedBounds;
 
 #if WITH_EDITORONLY_DATA
 	bool CheckAttributesForRenderer(int32 Index);

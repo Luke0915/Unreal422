@@ -378,7 +378,12 @@ public:
 
 	int32 GetNumRefs() const { return NumRefs; }
 	uint32 GetCompilingId()  { return CompilingId; }
-	static TMap<TRefCountPtr<FNiagaraShaderMap>, TArray<FNiagaraShaderScript*> > &GetInFlightShaderMaps() { return NiagaraShaderMapsBeingCompiled; }
+	static TMap<TRefCountPtr<FNiagaraShaderMap>, TArray<FNiagaraShaderScript*> > &GetInFlightShaderMaps() 
+	{
+		//All access to NiagaraShaderMapsBeingCompiled must be done on the game thread!
+		check(IsInGameThread());
+		return NiagaraShaderMapsBeingCompiled; 
+	}
 
 	void SetCompiledSuccessfully(bool bSuccess) { bCompiledSuccessfully = bSuccess; }
 private:
@@ -569,6 +574,7 @@ public:
 
 	void AddCompileId(uint32 Id) 
 	{
+		check(IsInGameThread());
 		OutstandingCompileShaderMapIds.Add(Id);
 	}
 

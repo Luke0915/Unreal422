@@ -32,26 +32,12 @@ public:
 		ViewUniformBuffer = Params.ViewUniformBuffer;
 		SceneNormalTexture = Params.NormalTexture;
 		SceneTexturesUniformParams = Params.SceneTexturesUniformParams;
-		GlobalDistanceFieldParams = Params.GlobalDistanceFieldParams;
-
-		PreSceneRenderValues = FPreSceneRenderValues();
-	}
-
-	void OnPreSceneRenderCalled(FPreSceneRenderValues& OutValues) const
-	{
-		OutValues.bUsesGlobalDistanceField |= PreSceneRenderValues.bUsesGlobalDistanceField;
-	}
-
-	void SetGlobalDistanceFieldUsage()
-	{
-		PreSceneRenderValues.bUsesGlobalDistanceField = true;
 	}
 
 	FTexture2DRHIParamRef GetSceneDepthTexture() { return SceneDepthTexture; }
 	FTexture2DRHIParamRef GetSceneNormalTexture() { return SceneNormalTexture; }
 	FUniformBufferRHIParamRef GetViewUniformBuffer() { return ViewUniformBuffer; }
 	TUniformBufferRef<FSceneTexturesUniformParameters> GetSceneTextureUniformParameters() { return SceneTexturesUniformParams; }
-	const FGlobalDistanceFieldParameterData* GetGlobalDistanceFieldParameters() { return GlobalDistanceFieldParams; }
 
 	virtual void InitDynamicRHI() override;
 
@@ -61,10 +47,8 @@ private:
 	FTexture2DRHIParamRef SceneDepthTexture;
 	FTexture2DRHIParamRef SceneNormalTexture;
 	FUniformBufferRHIParamRef ViewUniformBuffer;
-	FPreSceneRenderValues PreSceneRenderValues;	
 
 	TUniformBufferRef<FSceneTexturesUniformParameters> SceneTexturesUniformParams;
-	const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParams;
 	FPostOpaqueRenderDelegate PostOpaqueDelegate;
 };
 

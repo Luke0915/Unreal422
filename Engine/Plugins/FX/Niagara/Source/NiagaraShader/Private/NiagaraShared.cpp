@@ -26,10 +26,8 @@
 FNiagaraShaderScript::~FNiagaraShaderScript()
 {
 #if WITH_EDITOR
-	if (IsInGameThread())
-	{
-		FNiagaraCompilationQueue::Get()->RemovePending(this);
-	}
+	check(IsInGameThread());
+	CancelCompilation();
 #endif
 }
 
@@ -57,19 +55,18 @@ NIAGARASHADER_API void FNiagaraShaderScript::NotifyCompilationFinished()
 NIAGARASHADER_API void FNiagaraShaderScript::CancelCompilation()
 {
 #if WITH_EDITOR
-	if (IsInGameThread())
-	{
-		FNiagaraShaderMap::RemovePendingScript(this);
-		FNiagaraCompilationQueue::Get()->RemovePending(this);
+	check(IsInGameThread());
+	FNiagaraShaderMap::RemovePendingScript(this);
+	FNiagaraCompilationQueue::Get()->RemovePending(this);
 
-		UE_LOG(LogShaders, Log, TEXT("CancelCompilation %p."), this);
-		OutstandingCompileShaderMapIds.Empty();
-	}
+	UE_LOG(LogShaders, Log, TEXT("CancelCompilation %p."), this);
+	OutstandingCompileShaderMapIds.Empty();
 #endif
 }
 
 NIAGARASHADER_API void FNiagaraShaderScript::RemoveOutstandingCompileId(const int32 OldOutstandingCompileShaderMapId)
 {
+	check(IsInGameThread());
 	if (0 <= OutstandingCompileShaderMapIds.Remove(OldOutstandingCompileShaderMapId))
 	{
 		UE_LOG(LogShaders, Log, TEXT("RemoveOutstandingCompileId %p %d"), this, OldOutstandingCompileShaderMapId);
@@ -237,6 +234,7 @@ NIAGARASHADER_API  void FNiagaraShaderScript::SetRenderingThreadShaderMap(FNiaga
 
 NIAGARASHADER_API  bool FNiagaraShaderScript::IsCompilationFinished() const
 {
+	check(IsInGameThread());
 	bool bRet = GameThreadShaderMap && GameThreadShaderMap.IsValid() && GameThreadShaderMap->IsCompilationFinalized();
 	if (OutstandingCompileShaderMapIds.Num() == 0)
 	{
@@ -263,6 +261,8 @@ bool FNiagaraShaderScript::CacheShaders(EShaderPlatform Platform, bool bApplyCom
 bool FNiagaraShaderScript::CacheShaders(const FNiagaraShaderMapId& ShaderMapId, EShaderPlatform Platform, bool bApplyCompletedShaderMapForRendering, bool bForceRecompile, bool bSynchronous)
 {
 	bool bSucceeded = false;
+
+	check(IsInGameThread());
 
 	{
 		// Find the script's cached shader map.
@@ -404,6 +404,7 @@ NIAGARASHADER_API  FNiagaraShader* FNiagaraShaderScript::GetShaderGameThread() c
 
 void FNiagaraShaderScript::GetShaderMapIDsWithUnfinishedCompilation(TArray<int32>& ShaderMapIds)
 {
+	check(IsInGameThread());
 	// Build an array of the shader map Id's are not finished compiling.
 	if (GameThreadShaderMap && GameThreadShaderMap.IsValid() && !GameThreadShaderMap->IsCompilationFinalized())
 	{
@@ -432,6 +433,7 @@ bool FNiagaraShaderScript::BeginCompileShaderMap(
 	bool bApplyCompletedShaderMapForRendering,
 	bool bSynchronous)
 {
+	check(IsInGameThread());
 #if WITH_EDITORONLY_DATA
 	bool bSuccess = false;
 
