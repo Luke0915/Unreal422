@@ -829,6 +829,8 @@ struct FNiagaraDataSetAccessor : public FNiagaraDataSetAccessorBase
 
 	FORCEINLINE void Set(int32 Index, const T& InValue)
 	{
+		check((uint32)Index < DataBuffer->GetNumInstances());
+
 		uint8* ValuePtr = (uint8*)&InValue;
 
 		for (uint32 CompIdx = 0; CompIdx < VarLayout->GetNumFloatComponents(); ++CompIdx)
@@ -902,6 +904,8 @@ struct FNiagaraDataSetAccessor<FNiagaraBool> : public FNiagaraDataSetAccessorBas
 
 	FORCEINLINE void Set(int32 Index, const FNiagaraBool& InValue)
 	{
+		check(Base != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
 		Base[Index] = InValue.GetRawValue();
 	}
 
@@ -978,6 +982,7 @@ struct FNiagaraDataSetAccessor<int32> : public FNiagaraDataSetAccessorBase
 	FORCEINLINE void Set(int32 Index, const int32& InValue)
 	{
 		check(Base != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
 		Base[Index] = InValue;
 	}
 
@@ -1048,6 +1053,8 @@ struct FNiagaraDataSetAccessor<float> : public FNiagaraDataSetAccessorBase
 
 	FORCEINLINE void Set(int32 Index, const float& InValue)
 	{
+		check(Base != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
 		Base[Index] = InValue;
 	}
 	FORCEINLINE bool BaseIsValid() const { return Base != nullptr; }
@@ -1119,6 +1126,8 @@ struct FNiagaraDataSetAccessor<FVector2D> : public FNiagaraDataSetAccessorBase
 
 	FORCEINLINE void Set(int32 Index, const FVector2D& InValue)
 	{
+		check(XBase != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
 		XBase[Index] = InValue.X;
 		YBase[Index] = InValue.Y;
 	}	
@@ -1197,6 +1206,9 @@ struct FNiagaraDataSetAccessor<FVector> : public FNiagaraDataSetAccessorBase
 
 	FORCEINLINE void Set(int32 Index, const FVector& InValue)
 	{
+		check(XBase != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
+
 		XBase[Index] = InValue.X;
 		YBase[Index] = InValue.Y;
 		ZBase[Index] = InValue.Z;
@@ -1279,6 +1291,9 @@ struct FNiagaraDataSetAccessor<FVector4> : public FNiagaraDataSetAccessorBase
 
 	FORCEINLINE void Set(int32 Index, const FVector4& InValue)
 	{
+		check(XBase != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
+
 		XBase[Index] = InValue.X;
 		YBase[Index] = InValue.Y;
 		ZBase[Index] = InValue.Z;
@@ -1364,6 +1379,9 @@ struct FNiagaraDataSetAccessor<FQuat> : public FNiagaraDataSetAccessorBase
 
 	FORCEINLINE void Set(int32 Index, const FQuat& InValue)
 	{
+		check(XBase != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
+
 		XBase[Index] = InValue.X;
 		YBase[Index] = InValue.Y;
 		ZBase[Index] = InValue.Z;
@@ -1448,6 +1466,9 @@ struct FNiagaraDataSetAccessor<FLinearColor> : public FNiagaraDataSetAccessorBas
 
 	FORCEINLINE void Set(int32 Index, const FLinearColor& InValue)
 	{
+		check(RBase != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
+
 		RBase[Index] = InValue.R;
 		GBase[Index] = InValue.G;
 		BBase[Index] = InValue.B;
@@ -1532,6 +1553,9 @@ struct FNiagaraDataSetAccessor<FNiagaraSpawnInfo> : public FNiagaraDataSetAccess
 
 	FORCEINLINE void Set(int32 Index, const FNiagaraSpawnInfo& InValue)
 	{
+		check(CountBase != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
+
 		CountBase[Index] = InValue.Count;
 		InterpStartDtBase[Index] = InValue.InterpStartDt;
 		IntervalDtBase[Index] = InValue.IntervalDt;
@@ -1611,6 +1635,9 @@ struct FNiagaraDataSetAccessor<FNiagaraID> : public FNiagaraDataSetAccessorBase
 
 	FORCEINLINE void Set(int32 Index, const FNiagaraID& InValue)
 	{
+		check(IndexBase != nullptr);
+		check((uint32)Index < DataBuffer->GetNumInstances());
+
 		IndexBase[Index] = InValue.Index;
 		TagBase[Index] = InValue.AcquireTag;
 	}
@@ -1723,6 +1750,7 @@ struct FNiagaraDataSetVariableIterator
 
 	void Set()
 	{
+		check(CurrIdx < DataBuffer.GetNumInstances());
 		for (int32 VarIdx = 0; VarIdx < Variables.Num(); ++VarIdx)
 		{
 			FNiagaraVariable* Var = Variables[VarIdx];
