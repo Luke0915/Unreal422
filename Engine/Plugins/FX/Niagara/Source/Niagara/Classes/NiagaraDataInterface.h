@@ -186,21 +186,7 @@ class NIAGARA_API UNiagaraDataInterface : public UNiagaraDataInterfaceBase
 		 
 public: 
 
-	virtual ~UNiagaraDataInterface()
-	{
-		// @todo-threadsafety Can there be a UNiagaraDataInterface class itself created? Perhaps by the system?
-		if (Proxy)
-		{
-			FNiagaraDataInterfaceProxy* RT_Proxy = Proxy;
-			ENQUEUE_RENDER_COMMAND(FDeleteProxyRT) (
-				[RT_Proxy](FRHICommandListImmediate& CmdList)
-			{
-				delete RT_Proxy;
-			}
-			);
-		}
-	}
-
+	virtual ~UNiagaraDataInterface();
 
 	// UObject Interface
 	virtual void PostLoad()override;

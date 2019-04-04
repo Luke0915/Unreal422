@@ -14,6 +14,21 @@ UNiagaraDataInterface::UNiagaraDataInterface(FObjectInitializer const& ObjectIni
 {
 }
 
+UNiagaraDataInterface::~UNiagaraDataInterface()
+{
+	// @todo-threadsafety Can there be a UNiagaraDataInterface class itself created? Perhaps by the system?
+	if (Proxy)
+	{
+		FNiagaraDataInterfaceProxy* RT_Proxy = Proxy;
+		ENQUEUE_RENDER_COMMAND(FDeleteProxyRT) (
+			[RT_Proxy](FRHICommandListImmediate& CmdList)
+		{
+			delete RT_Proxy;
+		}
+		);
+	}
+}
+
 void UNiagaraDataInterface::PostLoad()
 {
 	Super::PostLoad();
