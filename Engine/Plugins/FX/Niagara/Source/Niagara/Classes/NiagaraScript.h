@@ -139,6 +139,16 @@ public:
 	UPROPERTY()
 	FGuid BaseScriptID;
 
+	/**
+	* The hash of the subgraph this shader primarily represents.
+	*/
+	UPROPERTY()
+	FNiagaraCompileHash BaseScriptCompileHash;
+
+	/** Compile hashes of any top level scripts the script was dependent on that might trigger a recompile if they change. */
+	UPROPERTY()
+	TArray<FNiagaraCompileHash> ReferencedCompileHashes;
+
 	/** Guids of any functions, module scripts, parameter collections, or other assets the script was dependent on that might trigger a recompile if they change. */
 	UPROPERTY()
 	TArray<FGuid> ReferencedDependencyIds;

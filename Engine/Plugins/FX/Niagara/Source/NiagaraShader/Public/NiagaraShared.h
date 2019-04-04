@@ -22,6 +22,7 @@
 #include "SceneTypes.h"
 #include "StaticParameterSet.h"
 #include "Misc/Optional.h"
+#include "NiagaraCompileHash.h"
 #include "NiagaraShared.generated.h"
 
 class FNiagaraShaderScript;
@@ -112,17 +113,24 @@ public:
 	ERHIFeatureLevel::Type FeatureLevel;
 
 	/**
-	* The GUID of the subgraph this shader primarily represents.
+	* The base id of the subgraph this shader primarily represents.
 	*/
 	FGuid BaseScriptID;
+
+	/**
+	* The hash of the subgraph this shader primarily represents.
+	*/
+	FNiagaraCompileHash BaseCompileHash;
+
+	/** The compile hashes of the top level scripts the script is dependent on. */
+	TArray<FNiagaraCompileHash> ReferencedCompileHashes;
 
 	/** Guids of any functions or module scripts the script was dependent on. */
 	TArray<FGuid> ReferencedDependencyIds;
 
 	FNiagaraShaderMapId()
 		: CompilerVersionID()
-		, FeatureLevel(GMaxRHIFeatureLevel) 
-		, BaseScriptID(0, 0, 0, 0)
+		, FeatureLevel(GMaxRHIFeatureLevel)
 	{ }
 
 	~FNiagaraShaderMapId()
@@ -614,7 +622,8 @@ public:
 	const FString& GetFriendlyName()	const { return FriendlyName; }
 
 
-	NIAGARASHADER_API void SetScript(UNiagaraScript *InScript, ERHIFeatureLevel::Type InFeatureLevel, const FGuid& InCompilerVersion, const FGuid& InBaseScriptID, const TArray<FGuid>& InReferencedDependencyIds, FString InFriendlyName);
+	NIAGARASHADER_API void SetScript(UNiagaraScript *InScript, ERHIFeatureLevel::Type InFeatureLevel, const FGuid& InCompilerVersion, const FGuid& InBaseScriptID,
+		const FNiagaraCompileHash& InBaseCompileHash, const TArray<FNiagaraCompileHash>& InReferencedCompileHashes, const TArray<FGuid>& InReferencedDependencyIds, FString InFriendlyName);
 
 	UNiagaraScript *GetBaseVMScript()
 	{
@@ -689,8 +698,14 @@ private:
 	/** Guid id for base script*/
 	FGuid BaseScriptId;
 
+	/** Compile hash for the base script. */
+	FNiagaraCompileHash BaseCompileHash;
+
 	/** The compiler version the script was generated with.*/
 	FGuid CompilerVersionId;
+
+	/** The compile hashes for the top level scripts referenced by the script. */
+	TArray<FNiagaraCompileHash> ReferencedCompileHashes;
 
 	/** Dependencies of the script*/
 	TArray<FGuid> ReferencedDependencyIds;

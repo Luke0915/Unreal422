@@ -462,7 +462,7 @@ bool UNiagaraSystem::ReferencesInstanceEmitter(UNiagaraEmitter& Emitter)
 	return false;
 }
 
-void UNiagaraSystem::UpdateFromEmitterChanges(UNiagaraEmitter& ChangedSourceEmitter)
+void UNiagaraSystem::UpdateFromEmitterChanges(UNiagaraEmitter& ChangedSourceEmitter, bool bRecompileOnChange)
 {
 	bool bNeedsCompile = false;
 	for(FNiagaraEmitterHandle& EmitterHandle : EmitterHandles)
@@ -474,7 +474,7 @@ void UNiagaraSystem::UpdateFromEmitterChanges(UNiagaraEmitter& ChangedSourceEmit
 		}
 	}
 
-	if (bNeedsCompile)
+	if (bNeedsCompile && bRecompileOnChange)
 	{
 		RequestCompile(false);
 	}

@@ -50,9 +50,15 @@ void UNiagaraScriptSource::ComputeVMCompilationId(FNiagaraVMExecutableDataId& Id
 	Id.CompilerVersionID = FNiagaraCustomVersion::LatestScriptCompileVersion;
 	if (NodeGraph)
 	{
-		Id.BaseScriptID = NodeGraph->GetCompileID(InUsage, InUsageId);
-		NodeGraph->GatherExternalDependencyIDs(InUsage, InUsageId, Id.ReferencedDependencyIds, Id.ReferencedObjects);
+		Id.BaseScriptID = NodeGraph->ComputeBaseId(InUsage, InUsageId);
+		Id.BaseScriptCompileHash = FNiagaraCompileHash(NodeGraph->ComputeCompileDataHash(InUsage, InUsageId));
+		NodeGraph->GatherExternalDependencyIDs(InUsage, InUsageId, Id.ReferencedCompileHashes, Id.ReferencedDependencyIds, Id.ReferencedObjects);
 	}
+}
+
+FNiagaraCompileHash UNiagaraScriptSource::GetCompileHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
+{
+	return NodeGraph->GetCompileDataHash(InUsage, InUsageId);
 }
 
 void UNiagaraScriptSource::InvalidateCachedCompileIds() 

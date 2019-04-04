@@ -37,6 +37,8 @@ class UNiagaraScriptSource : public UNiagaraScriptSourceBase
 
 	virtual void ComputeVMCompilationId(struct FNiagaraVMExecutableDataId& Id, ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const override;
 
+	virtual FNiagaraCompileHash GetCompileHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const override;
+
 	virtual void PostLoadFromEmitter(UNiagaraEmitter& OwningEmitter) override;
 
 	NIAGARAEDITOR_API virtual bool AddModuleIfMissing(FString ModulePath, ENiagaraScriptUsage Usage, bool& bOutFoundModule)override;

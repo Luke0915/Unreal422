@@ -315,7 +315,7 @@ void FNiagaraSystemViewModel::AddEmitter(UNiagaraEmitter& Emitter)
 	}
 
 	check(SystemScriptViewModel.IsValid());
-	SystemScriptViewModel->RebuildEmitterNodes();
+	FNiagaraStackGraphUtilities::RebuildEmitterNodes(System);
 
 	if (EditMode == ENiagaraSystemViewModelEditMode::SystemAsset)
 	{
@@ -401,8 +401,7 @@ void FNiagaraSystemViewModel::DuplicateEmitters(TArray<FEmitterHandleToDuplicate
 		}
 	}
 
-	check(SystemScriptViewModel.IsValid());
-	SystemScriptViewModel->RebuildEmitterNodes();
+	FNiagaraStackGraphUtilities::RebuildEmitterNodes(System);
 	RefreshAll();
 	bForceAutoCompileOnce = true;
 }
@@ -430,7 +429,7 @@ void FNiagaraSystemViewModel::DeleteEmitters(TSet<FGuid> EmitterHandleIdsToDelet
 		System.RemoveEmitterHandlesById(EmitterHandleIdsToDelete);
 
 		check(SystemScriptViewModel.IsValid());
-		SystemScriptViewModel->RebuildEmitterNodes();
+		FNiagaraStackGraphUtilities::RebuildEmitterNodes(System);
 
 		RefreshAll();
 		bForceAutoCompileOnce = true;

@@ -195,7 +195,7 @@ void UNiagaraEmitter::PostLoad()
 #endif
 
 	TArray<UNiagaraScript*> AllScripts;
-	GetScripts(AllScripts, true);
+	GetScripts(AllScripts, false);
 
 	// Post load scripts for use below.
 	for (UNiagaraScript* Script : AllScripts)
@@ -356,7 +356,7 @@ void UNiagaraEmitter::PostEditChangeProperty(struct FPropertyChangedEvent& Prope
 	}
 
 	ThumbnailImageOutOfDate = true;
-	ChangeId = FGuid::NewGuid();
+	UpdateChangeId();
 	OnPropertiesChangedDelegate.Broadcast();
 }
 

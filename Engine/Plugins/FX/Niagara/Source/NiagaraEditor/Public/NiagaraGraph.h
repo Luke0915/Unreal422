@@ -54,6 +54,10 @@ struct FNiagaraGraphScriptUsageInfo
 public:
 	FNiagaraGraphScriptUsageInfo();
 
+	/** A guid which is generated when this usage info is created.  Allows for forced recompiling when the cached ids are invalidated. */
+	UPROPERTY()
+	FGuid BaseId;
+
 	/** The context in which this sub-graph traversal will be used.*/
 	UPROPERTY()
 	ENiagaraScriptUsage UsageType;
@@ -66,13 +70,19 @@ public:
 	UPROPERTY()
 	FGuid GeneratedCompileId;
 
-	/** The SHA1 hash that we calculated last traversal. If all zeroes, it is invalid.*/
+	/** The hash that we calculated last traversal. */
 	UPROPERTY()
-	TArray<uint8> DataHash;
+	FNiagaraCompileHash CompileHash;
 
 	/** The traversal of output to input nodes for this graph. This is not a recursive traversal, it just includes nodes from this graph.*/
 	UPROPERTY()
 	TArray<UNiagaraNode*> Traversal;
+
+	void PostLoad(UObject* Owner);
+
+private:
+	UPROPERTY()
+	TArray<uint8> DataHash_DEPRECATED;
 };
 
 struct FNiagaraGraphFunctionAliasContext
@@ -171,7 +181,7 @@ class UNiagaraGraph : public UEdGraph
 	void GetAllReferencedGraphs(TArray<const UNiagaraGraph*>& Graphs) const;
 
 	/** Gather all the change ids of external references for this specific graph traversal.*/
-	void GatherExternalDependencyIDs(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FGuid>& InReferencedIDs, TArray<UObject*>& InReferencedObjs);
+	void GatherExternalDependencyIDs(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FGuid>& InReferencedIDs, TArray<UObject*>& InReferencedObjs);
 
 	/** Determine if there are any external dependencies wrt to scripts and ensure that those dependencies are sucked into the existing package.*/
 	void SubsumeExternalDependencies(TMap<const UObject*, UObject*>& ExistingConversions);
@@ -190,8 +200,23 @@ class UNiagaraGraph : public UEdGraph
 	the changes that were produced during the traversal of each output node, which are referred to as the CompileID.*/
 	FGuid GetChangeID() { return ChangeId; }
 
-	/** The compile id associated with the output node traversal specified by InUsage and InUsageId. If not found, an invalid Guid is returned.*/
-	FGuid GetCompileID(ENiagaraScriptUsage InUsage, const FGuid& InUsageId);
+	/** Recomputes the current compile id associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid Guid is returned.*/
+	FGuid ComputeCompileID(ENiagaraScriptUsage InUsage, const FGuid& InUsageId);
+
+	/** Recomputes the current compile data hash associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid hash is returned.*/
+	FNiagaraCompileHash ComputeCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId);
+
+	/** Gets the current compile data hash associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid hash is returned.*/
+	FNiagaraCompileHash GetCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const;
+
+	/** Recomputes the current base id associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid guid is returned. */
+	FGuid ComputeBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId);
+
+	/** Gets the current base id associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid guid is returned. */
+	FGuid GetBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const;
+
+	/** Forces the base compile id for the supplied script.  This should only be used to keep things consistent after an emitter merge. */
+	void ForceBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, const FGuid InForcedBaseId);
 
 	/** Walk through the graph for an ParameterMapGet nodes and see if any of them specify a default for VariableName.*/
 	UEdGraphPin* FindParameterMapDefaultValuePin(const FName VariableName, ENiagaraScriptUsage InUsage, ENiagaraScriptUsage InParentUsage) const;

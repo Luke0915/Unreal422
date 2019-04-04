@@ -54,7 +54,22 @@ bool FNiagaraGraphParameterReferenceCollection::WasCreated() const
 
 FNiagaraGraphScriptUsageInfo::FNiagaraGraphScriptUsageInfo() : UsageType(ENiagaraScriptUsage::Function)
 {
-	DataHash.AddZeroed(sizeof(FSHAHash));
+	BaseId = FGuid::NewGuid();
+}
+
+void FNiagaraGraphScriptUsageInfo::PostLoad(UObject* Owner)
+{
+	const int32 NiagaraVer = Owner->GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
+	if (NiagaraVer < FNiagaraCustomVersion::UseHashesToIdentifyCompileStateOfTopLevelScripts)
+	{
+		// When loading old data use the last generated compile id as the base id to prevent recompiles on load for existing scripts.
+		BaseId = GeneratedCompileId;
+
+		if (CompileHash.IsValid() == false && DataHash_DEPRECATED.Num() == FNiagaraCompileHash::HashSize)
+		{
+			CompileHash = FNiagaraCompileHash(DataHash_DEPRECATED);
+		}
+	}
 }
 
 UNiagaraGraph::UNiagaraGraph(const FObjectInitializer& ObjectInitializer)
@@ -103,6 +118,11 @@ void UNiagaraGraph::NotifyGraphChanged()
 void UNiagaraGraph::PostLoad()
 {
 	Super::PostLoad();
+
+	for (FNiagaraGraphScriptUsageInfo& CachedUsageInfoItem : CachedUsageInfo)
+	{
+		CachedUsageInfoItem.PostLoad(this);
+	}
 
 	// In the past, we didn't bother setting the CallSortPriority and just used lexicographic ordering.
 	// In the event that we have multiple non-matching nodes with a zero call sort priority, this will
@@ -245,7 +265,7 @@ class UNiagaraScriptSource* UNiagaraGraph::GetSource() const
 	return CastChecked<UNiagaraScriptSource>(GetOuter());
 }
 
-FGuid UNiagaraGraph::GetCompileID(ENiagaraScriptUsage InUsage, const FGuid& InUsageId)
+FGuid UNiagaraGraph::ComputeCompileID(ENiagaraScriptUsage InUsage, const FGuid& InUsageId)
 {
 	RebuildCachedData();
 
@@ -259,6 +279,58 @@ FGuid UNiagaraGraph::GetCompileID(ENiagaraScriptUsage InUsage, const FGuid& InUs
 
 	return FGuid();
 
+}
+
+FNiagaraCompileHash UNiagaraGraph::ComputeCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId)
+{
+	RebuildCachedData();
+	return GetCompileDataHash(InUsage, InUsageId);
+}
+
+FNiagaraCompileHash UNiagaraGraph::GetCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
+{
+	for (int32 i = 0; i < CachedUsageInfo.Num(); i++)
+	{
+		if (UNiagaraScript::IsEquivalentUsage(CachedUsageInfo[i].UsageType, InUsage) && CachedUsageInfo[i].UsageId == InUsageId)
+		{
+			return CachedUsageInfo[i].CompileHash;
+		}
+	}
+	return FNiagaraCompileHash();
+}
+
+FGuid UNiagaraGraph::ComputeBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId)
+{
+	RebuildCachedData();
+	return GetBaseId(InUsage, InUsageId);
+}
+
+FGuid UNiagaraGraph::GetBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
+{
+	for (int32 i = 0; i < CachedUsageInfo.Num(); i++)
+	{
+		if (UNiagaraScript::IsEquivalentUsage(CachedUsageInfo[i].UsageType, InUsage) && CachedUsageInfo[i].UsageId == InUsageId)
+		{
+			return CachedUsageInfo[i].BaseId;
+		}
+	}
+	return FGuid();
+}
+
+void UNiagaraGraph::ForceBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, const FGuid InForcedBaseId)
+{
+	FNiagaraGraphScriptUsageInfo* MatchingCachedUsageInfo = CachedUsageInfo.FindByPredicate([InUsage, InUsageId](const FNiagaraGraphScriptUsageInfo& CachedUsageInfoItem)
+	{ 
+		return CachedUsageInfoItem.UsageType == InUsage && CachedUsageInfoItem.UsageId == InUsageId; 
+	});
+
+	if (MatchingCachedUsageInfo == nullptr)
+	{
+		MatchingCachedUsageInfo = &CachedUsageInfo.AddDefaulted_GetRef();
+		MatchingCachedUsageInfo->UsageType = InUsage;
+		MatchingCachedUsageInfo->UsageId = InUsageId;
+	}
+	MatchingCachedUsageInfo->BaseId = InForcedBaseId;
 }
 
 UEdGraphPin* UNiagaraGraph::FindParameterMapDefaultValuePin(const FName VariableName, ENiagaraScriptUsage InUsage, ENiagaraScriptUsage InParentUsage) const
@@ -834,6 +906,12 @@ void UNiagaraGraph::RebuildCachedData(bool bForce)
 			}
 		}
 
+		// Copy the old base id if available
+		if (FoundMatchIdx != INDEX_NONE)
+		{
+			NewUsageCache[i].BaseId = CachedUsageInfo[FoundMatchIdx].BaseId;
+		}
+
 		// Now compare the change id's of all the nodes in the traversal by hashing them up and comparing the hash
 		// now with the hash from previous runs.
 		FSHA1 HashState;
@@ -845,15 +923,17 @@ void UNiagaraGraph::RebuildCachedData(bool bForce)
 		HashState.Final();
 
 		// We can't store in a FShaHash struct directly because you can't UProperty it. Using a standin of the same size.
-		check(sizeof(uint8)*NewUsageCache[i].DataHash.Num() == sizeof(FSHAHash));
-		HashState.GetHash(&NewUsageCache[i].DataHash[0]);
+		TArray<uint8> DataHash;
+		DataHash.AddUninitialized(20);
+		HashState.GetHash(DataHash.GetData());
+		NewUsageCache[i].CompileHash = FNiagaraCompileHash(DataHash);
 
 		bool bNeedsNewCompileId = true;
 
 		// Now compare the hashed data. If it is the same as before, then leave the compile ID as-is. If it is different, generate a new guid.
 		if (FoundMatchIdx != INDEX_NONE)
 		{
-			if (NewUsageCache[i].DataHash == CachedUsageInfo[FoundMatchIdx].DataHash)
+			if (NewUsageCache[i].CompileHash == CachedUsageInfo[FoundMatchIdx].CompileHash)
 			{
 				NewUsageCache[i].GeneratedCompileId = CachedUsageInfo[FoundMatchIdx].GeneratedCompileId;
 				bNeedsNewCompileId = false;
@@ -907,6 +987,15 @@ void UNiagaraGraph::RebuildCachedData(bool bForce)
 		FNiagaraGraphScriptUsageInfo GpuUsageInfo;
 		GpuUsageInfo.UsageType = ENiagaraScriptUsage::ParticleGPUComputeScript;
 		GpuUsageInfo.UsageId = FGuid();
+
+		// Copy the old base id if available
+		FNiagaraGraphScriptUsageInfo* OldGpuInfo = CachedUsageInfo.FindByPredicate(
+			[](const FNiagaraGraphScriptUsageInfo& OldInfo) { return OldInfo.UsageType == ENiagaraScriptUsage::ParticleGPUComputeScript && OldInfo.UsageId == FGuid(); });
+		if (OldGpuInfo != nullptr)
+		{
+			GpuUsageInfo.BaseId = OldGpuInfo->BaseId;
+		}
+
 		GpuUsageInfo.Traversal.Append(ParticleSpawnUsageInfo->Traversal);
 		GpuUsageInfo.Traversal.Append(ParticleUpdateUsageInfo->Traversal);
 
@@ -918,11 +1007,13 @@ void UNiagaraGraph::RebuildCachedData(bool bForce)
 		}
 		HashState.Final();
 
-		check(sizeof(uint8) * GpuUsageInfo.DataHash.Num() == sizeof(FSHAHash));
-		HashState.GetHash(GpuUsageInfo.DataHash.GetData());
+		TArray<uint8> DataHash;
+		DataHash.AddUninitialized(20);
+		HashState.GetHash(DataHash.GetData());
+		GpuUsageInfo.CompileHash = FNiagaraCompileHash(DataHash);
 
 		FNiagaraGraphScriptUsageInfo* OldGpuUsageInfo = CachedUsageInfo.FindByPredicate([](const FNiagaraGraphScriptUsageInfo& UsageInfo) { return UsageInfo.UsageType == ENiagaraScriptUsage::ParticleGPUComputeScript && UsageInfo.UsageId == FGuid(); });
-		if (OldGpuUsageInfo != nullptr && OldGpuUsageInfo->DataHash == GpuUsageInfo.DataHash)
+		if (OldGpuUsageInfo != nullptr && OldGpuUsageInfo->CompileHash == GpuUsageInfo.CompileHash)
 		{
 			GpuUsageInfo.GeneratedCompileId = OldGpuUsageInfo->GeneratedCompileId;
 		}
@@ -1034,7 +1125,7 @@ void UNiagaraGraph::SynchronizeInternalCacheWithGraph(UNiagaraGraph* Other)
 
 		if (FoundMatchIdx != INDEX_NONE)
 		{
-			if (CachedUsageInfo[i].DataHash == Other->CachedUsageInfo[FoundMatchIdx].DataHash)
+			if (CachedUsageInfo[i].CompileHash == Other->CachedUsageInfo[FoundMatchIdx].CompileHash)
 			{
 				CachedUsageInfo[i].GeneratedCompileId = Other->CachedUsageInfo[FoundMatchIdx].GeneratedCompileId;		
 
@@ -1074,7 +1165,7 @@ void UNiagaraGraph::InvalidateCachedCompileIds()
 	MarkGraphRequiresSynchronization(__FUNCTION__);
 }
 
-void UNiagaraGraph::GatherExternalDependencyIDs(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FGuid>& InReferencedIDs, TArray<UObject*>& InReferencedObjs)
+void UNiagaraGraph::GatherExternalDependencyIDs(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FGuid>& InReferencedIDs, TArray<UObject*>& InReferencedObjs)
 {
 	RebuildCachedData();
 	
@@ -1086,12 +1177,12 @@ void UNiagaraGraph::GatherExternalDependencyIDs(ENiagaraScriptUsage InUsage, con
 			// Add all chains that we depend on.
 			if (UNiagaraScript::IsUsageDependentOn(InUsage, CachedUsageInfo[i].UsageType)) 
 			{
-				InReferencedIDs.Add(CachedUsageInfo[i].GeneratedCompileId);
+				InReferencedCompileHashes.Add(CachedUsageInfo[i].CompileHash);
 				InReferencedObjs.Add(CachedUsageInfo[i].Traversal.Last());
 
 				for (UNiagaraNode* Node : CachedUsageInfo[i].Traversal)
 				{
-					Node->GatherExternalDependencyIDs(InUsage, InUsageId, InReferencedIDs, InReferencedObjs);
+					Node->GatherExternalDependencyIDs(InUsage, InUsageId, InReferencedCompileHashes, InReferencedIDs, InReferencedObjs);
 				}
 			}
 		}
@@ -1107,18 +1198,18 @@ void UNiagaraGraph::GatherExternalDependencyIDs(ENiagaraScriptUsage InUsage, con
 				// Skip adding to list because we already did it in GetCompileId above.
 				for (UNiagaraNode* Node : CachedUsageInfo[i].Traversal)
 				{
-					Node->GatherExternalDependencyIDs(InUsage, InUsageId, InReferencedIDs, InReferencedObjs);
+					Node->GatherExternalDependencyIDs(InUsage, InUsageId, InReferencedCompileHashes, InReferencedIDs, InReferencedObjs);
 				}
 			}
 			// Now add any other dependency chains that we might have...
 			else if (UNiagaraScript::IsUsageDependentOn(InUsage, CachedUsageInfo[i].UsageType))
 			{
-				InReferencedIDs.Add(CachedUsageInfo[i].GeneratedCompileId);
+				InReferencedCompileHashes.Add(CachedUsageInfo[i].CompileHash);
 				InReferencedObjs.Add(CachedUsageInfo[i].Traversal.Last());
 
 				for (UNiagaraNode* Node : CachedUsageInfo[i].Traversal)
 				{
-					Node->GatherExternalDependencyIDs(InUsage, InUsageId, InReferencedIDs, InReferencedObjs);
+					Node->GatherExternalDependencyIDs(InUsage, InUsageId, InReferencedCompileHashes, InReferencedIDs, InReferencedObjs);
 				}
 			}
 		}
@@ -1181,7 +1272,10 @@ void UNiagaraGraph::MarkGraphRequiresSynchronization(FString Reason)
 {
 	Modify();
 	ChangeId = FGuid::NewGuid();
-	//UE_LOG(LogNiagaraEditor, Verbose, TEXT("Graph %s was marked requires synchronization.  Reason: %s"), *GetPathName(), *Reason);
+	if (GEnableVerboseNiagaraChangeIdLogging)
+	{
+		UE_LOG(LogNiagaraEditor, Verbose, TEXT("Graph %s was marked requires synchronization.  Reason: %s"), *GetPathName(), *Reason);
+	}
 }
 
 /** Get the meta-data associated with this variable, if it exists.*/
