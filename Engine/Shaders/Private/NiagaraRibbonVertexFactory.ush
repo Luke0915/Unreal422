@@ -599,7 +599,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	float U1ForSegment;
 	if(NiagaraRibbonVF.UV1TilingDistance != 0.0f)
 	{
-		U1ForSegment = SegmentDistances[Input.VertexId / 2] / NiagaraRibbonVF.UV0TilingDistance;
+		U1ForSegment = SegmentDistances[Input.VertexId / 2] / NiagaraRibbonVF.UV1TilingDistance;
 	}
 	else
 	{
