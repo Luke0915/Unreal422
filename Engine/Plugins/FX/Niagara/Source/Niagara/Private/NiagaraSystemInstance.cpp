@@ -421,16 +421,19 @@ void FNiagaraSystemInstance::SetPaused(bool bInPaused)
 		return;
 	}
 	
-	FNiagaraSystemSimulation* SystemSim = GetSystemSimulation().Get();
-	if (SystemSim)
+	if (SystemInstanceIndex != INDEX_NONE)
 	{
-		if (bInPaused)
+		FNiagaraSystemSimulation* SystemSim = GetSystemSimulation().Get();
+		if (SystemSim)
 		{
-			SystemSim->PauseInstance(this);
-		}
-		else
-		{
-			SystemSim->UnpauseInstance(this);
+			if (bInPaused)
+			{
+				SystemSim->PauseInstance(this);
+			}
+			else
+			{
+				SystemSim->UnpauseInstance(this);
+			}
 		}
 	}
 
