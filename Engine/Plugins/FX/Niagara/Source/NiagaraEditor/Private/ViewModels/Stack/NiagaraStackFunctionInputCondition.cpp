@@ -123,7 +123,7 @@ FNiagaraTypeDefinition FNiagaraStackFunctionInputCondition::GetConditionInputTyp
 	return InputBinder.GetInputType();
 }
 
-FNiagaraVariableMetaData* FNiagaraStackFunctionInputCondition::GetConditionInputMetaData() const
+TOptional<FNiagaraVariableMetaData> FNiagaraStackFunctionInputCondition::GetConditionInputMetaData() const
 {
 	checkf(IsValid(), TEXT("Can not get the input metadata for an invalid input condition"));
 	FNiagaraVariable InputVariable(InputBinder.GetInputType(), InputBinder.GetInputName());

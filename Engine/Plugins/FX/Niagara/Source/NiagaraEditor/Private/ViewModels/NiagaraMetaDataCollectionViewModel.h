@@ -46,11 +46,10 @@ private:
 	void CleanupMetadata();
 	/** Called when one of the metadata in the viewmodel array has changed */
 	void ChildMetadataChanged();
-	TSharedPtr<FNiagaraMetaDataViewModel> GetMetadataViewModelForVariable(FNiagaraVariable InVariable);
 
 private:
 	/** The variables */
-	TArray <TSharedRef<FNiagaraMetaDataViewModel>> MetaDataViewModels;
+	TArray<TSharedRef<FNiagaraMetaDataViewModel>> MetaDataViewModels;
 
 	/** The actual graph of the module we're editing */
 	UNiagaraGraph* ModuleGraph;

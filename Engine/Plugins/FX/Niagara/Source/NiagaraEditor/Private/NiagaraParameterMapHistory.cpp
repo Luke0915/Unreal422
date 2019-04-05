@@ -479,48 +479,6 @@ FNiagaraVariable FNiagaraParameterMapHistory::GetSourceForInitialValue(const FNi
 	return Var;
 }
 
-const FNiagaraVariableMetaData* FNiagaraParameterMapHistory::GetMetaData(int32 VarIdx) const
-{
-	if (PerVariableWriteHistory[VarIdx].Num() > 0)
-	{
-		const UEdGraphPin* Pin = PerVariableWriteHistory[VarIdx][0];
-		if (Pin != nullptr)
-		{
-			return CastChecked<UNiagaraNode>(Pin->GetOwningNode())->GetNiagaraGraph()->GetMetaData(Variables[VarIdx]);
-		}
-	}
-	else if (PerVariableReadHistory[VarIdx].Num() > 0)
-	{
-		const UEdGraphPin* Pin = PerVariableReadHistory[VarIdx][0].Key;
-		if (Pin != nullptr)
-		{
-			return CastChecked<UNiagaraNode>(Pin->GetOwningNode())->GetNiagaraGraph()->GetMetaData(Variables[VarIdx]);
-		}
-	}
-	return nullptr;
-}
-
-FNiagaraVariableMetaData* FNiagaraParameterMapHistory::GetMetaData(int32 VarIdx)
-{
-	if (PerVariableWriteHistory[VarIdx].Num() > 0)
-	{
-		const UEdGraphPin* Pin = PerVariableWriteHistory[VarIdx][0];
-		if (Pin != nullptr)
-		{
-			return CastChecked<UNiagaraNode>(Pin->GetOwningNode())->GetNiagaraGraph()->GetMetaData(Variables[VarIdx]);
-		}
-	}
-	else if (PerVariableReadHistory[VarIdx].Num() > 0)
-	{
-		const UEdGraphPin* Pin = PerVariableReadHistory[VarIdx][0].Key;
-		if (Pin != nullptr)
-		{
-			return CastChecked<UNiagaraNode>(Pin->GetOwningNode())->GetNiagaraGraph()->GetMetaData(Variables[VarIdx]);
-		}
-	}
-	return nullptr;
-}
-
 bool FNiagaraParameterMapHistory::IsPrimaryDataSetOutput(const FNiagaraVariable& InVar, const UNiagaraScript* InScript, bool bAllowDataInterfaces) const
 {
 	return IsPrimaryDataSetOutput(InVar, InScript->GetUsage(), bAllowDataInterfaces);

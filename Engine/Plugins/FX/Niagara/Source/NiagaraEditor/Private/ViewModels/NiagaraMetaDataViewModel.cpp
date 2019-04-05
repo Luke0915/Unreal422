@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraMetaDataViewModel.h"
 #include "NiagaraEditorUtilities.h"
@@ -13,18 +13,15 @@
 
 #define LOCTEXT_NAMESPACE "NiagaraMetaDataViewModel"
 
-FNiagaraMetaDataViewModel::FNiagaraMetaDataViewModel(FNiagaraVariable& InGraphVariable, UNiagaraGraph& InGraph)
+FNiagaraMetaDataViewModel::FNiagaraMetaDataViewModel(const FNiagaraVariable& InGraphVariable, UNiagaraGraph& InGraph)
 	: GraphVariable(InGraphVariable)
 	, CurrentGraph(&InGraph)
 {
-	GraphMetaData = nullptr;
 	RefreshMetaDataValue();
 }
 
 FNiagaraMetaDataViewModel::~FNiagaraMetaDataViewModel()
 {
-	//UE_LOG(LogNiagaraEditor, Log, TEXT("Delete %p Var %s"), this, *DebugName);
-	GraphMetaData = nullptr;
 	CurrentGraph = nullptr;
 }
 
@@ -33,18 +30,14 @@ FName FNiagaraMetaDataViewModel::GetName() const
 	return GraphVariable.GetName();
 }
 
-void FNiagaraMetaDataViewModel::AssociateNode(UEdGraphNode* InNode)
+const FText& FNiagaraMetaDataViewModel::GetCategoryName() const
 {
-	AssociatedNodes.AddUnique(TWeakObjectPtr<UObject>(InNode));
+	return GetMetaData().CategoryName;
 }
 
-int32 FNiagaraMetaDataViewModel::GetEditorSortPriority()
+int32 FNiagaraMetaDataViewModel::GetEditorSortPriority() const
 {
-	if (GraphMetaData != nullptr)
-	{
-		return GraphMetaData->EditorSortPriority;
-	}
-	return 0;
+	return GetMetaData().CallSortPriority;
 }
 
 void FNiagaraMetaDataViewModel::NotifyMetaDataChanged()
@@ -53,23 +46,14 @@ void FNiagaraMetaDataViewModel::NotifyMetaDataChanged()
 	CurrentGraph->Modify();
 	
 	FNiagaraVariableMetaData* ValueData = (FNiagaraVariableMetaData*)ValueStruct->GetStructMemory();
-	if (GraphMetaData == nullptr)
-	{
-		GraphMetaData = &CurrentGraph->FindOrAddMetaData(GraphVariable);
-	}
-	*GraphMetaData = *ValueData; // deep copy
-	for (TWeakObjectPtr<UObject> RefNode : AssociatedNodes)
-	{
-		if (RefNode.IsValid())
-			GraphMetaData->ReferencerNodes.AddUnique(RefNode);
-	}
+	CurrentGraph->SetMetaData(GraphVariable, *ValueData);
 	
 	OnMetadataChangedDelegate.Broadcast();
 }
 
-FNiagaraVariableMetaData*  FNiagaraMetaDataViewModel::GetGraphMetaData()
+const FNiagaraVariableMetaData& FNiagaraMetaDataViewModel::GetMetaData() const
 {
-	return GraphMetaData;
+	return *(FNiagaraVariableMetaData*)ValueStruct->GetStructMemory();
 }
 
 FNiagaraVariable FNiagaraMetaDataViewModel::GetVariable() const
@@ -79,13 +63,12 @@ FNiagaraVariable FNiagaraMetaDataViewModel::GetVariable() const
 
 void FNiagaraMetaDataViewModel::RefreshMetaDataValue()
 {
-	GraphMetaData = CurrentGraph->GetMetaData(GraphVariable); 
 	ValueStruct = MakeShareable(new FStructOnScope(FNiagaraVariableMetaData::StaticStruct()));
-	FNiagaraVariableMetaData* ValueData = (FNiagaraVariableMetaData*)ValueStruct->GetStructMemory();
-	if (GraphMetaData != nullptr)
+	TOptional<FNiagaraVariableMetaData> GraphMetaData = CurrentGraph->GetMetaData(GraphVariable); 
+	if(GraphMetaData.IsSet())
 	{
-		// this will create a deep copy due to the nature of the structure members. it will be owned and managed by ValueStruct
-		*ValueData = *GraphMetaData; 
+		FNiagaraVariableMetaData* MetaData = (FNiagaraVariableMetaData*)ValueStruct->GetStructMemory();
+		*MetaData = GraphMetaData.GetValue(); 
 	}
 }
 

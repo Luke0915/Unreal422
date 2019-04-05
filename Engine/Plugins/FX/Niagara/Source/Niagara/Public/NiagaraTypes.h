@@ -356,9 +356,6 @@ public:
 
 	UPROPERTY()
 	int32 CallSortPriority;
-
-	UPROPERTY()
-	TArray<TWeakObjectPtr<UObject>> ReferencerNodes;
 };
 
 USTRUCT()

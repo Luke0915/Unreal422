@@ -45,7 +45,6 @@
 UNiagaraStackFunctionInput::UNiagaraStackFunctionInput()
 	: OwningModuleNode(nullptr)
 	, OwningFunctionCallNode(nullptr)
-	, InputMetaData(nullptr)
 	, bUpdatingGraphDirectly(false)
 	, bUpdatingLocalValueDirectly(false)
 	, bShowEditConditionInline(false)
@@ -279,10 +278,10 @@ FText UNiagaraStackFunctionInput::GetTooltipText(EValueMode InValueMode) const
 		}
 	}
 
-	const FNiagaraVariableMetaData* MetaData = nullptr;
+	TOptional<FNiagaraVariableMetaData> MetaData;
 	if (FNiagaraConstants::IsNiagaraConstant(ValueVariable))
 	{
-		MetaData = FNiagaraConstants::GetConstantMetaData(ValueVariable);
+		MetaData = *FNiagaraConstants::GetConstantMetaData(ValueVariable);
 	}
 	else if (NodeGraph != nullptr)
 	{
@@ -290,7 +289,7 @@ FText UNiagaraStackFunctionInput::GetTooltipText(EValueMode InValueMode) const
 	}
 
 	FText Description = FText::GetEmpty();
-	if (MetaData != nullptr)
+	if (MetaData.IsSet())
 	{
 		Description = MetaData->Description;
 	}
@@ -602,7 +601,7 @@ void UNiagaraStackFunctionInput::RefreshFromMetaData()
 		FNiagaraVariable InputVariable(InputType, InputParameterHandle.GetParameterHandleString());
 		InputMetaData = FunctionGraph->GetMetaData(InputVariable);
 
-		if (InputMetaData != nullptr)
+		if (InputMetaData.IsSet())
 		{
 			SetIsAdvanced(InputMetaData->bAdvancedDisplay);
 
@@ -610,8 +609,8 @@ void UNiagaraStackFunctionInput::RefreshFromMetaData()
 			EditCondition.Refresh(InputMetaData->EditCondition, EditConditionError);
 			if (EditCondition.IsValid() && EditCondition.GetConditionInputType() == FNiagaraTypeDefinition::GetBoolDef())
 			{
-				FNiagaraVariableMetaData* EditConditionInputMetadata = EditCondition.GetConditionInputMetaData();
-				if (EditConditionInputMetadata != nullptr)
+				TOptional<FNiagaraVariableMetaData> EditConditionInputMetadata = EditCondition.GetConditionInputMetaData();
+				if (EditConditionInputMetadata.IsSet())
 				{
 					bShowEditConditionInline = EditConditionInputMetadata->bInlineEditConditionToggle;
 				}

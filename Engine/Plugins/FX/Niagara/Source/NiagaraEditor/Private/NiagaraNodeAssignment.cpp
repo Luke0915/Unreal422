@@ -239,7 +239,7 @@ void UNiagaraNodeAssignment::BuildCreateParameterMenu(FMenuBuilder& MenuBuilder,
 		TSet<FName> Names;
 		for (const UNiagaraGraph* Graph : Graphs)
 		{
-			for (const TPair<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& ParameterElement : Graph->GetParameterMap())
+			for (const TPair<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& ParameterElement : Graph->GetParameterReferenceMap())
 			{
 				Names.Add(ParameterElement.Key.GetName());
 			}
@@ -501,16 +501,18 @@ void UNiagaraNodeAssignment::InitializeScript(UNiagaraScript* NewScript)
 					const FNiagaraVariableMetaData* FoundMetaData = FNiagaraConstants::GetConstantMetaData(AssignmentTargets[i]);
 					if (FoundMetaData)
 					{
-						FNiagaraVariableMetaData& MetaData = CreatedGraph->FindOrAddMetaData(TargetVar);
-						MetaData.Description = FoundMetaData->Description;
-						MetaData.ReferencerNodes.Empty();
-						MetaData.ReferencerNodes.Add(GetNodes[0]);
+						FNiagaraVariableMetaData NewMetaData;
+						TOptional<FNiagaraVariableMetaData> ExistingMetaData = CreatedGraph->GetMetaData(TargetVar);
+						if (ExistingMetaData.IsSet())
+						{
+							NewMetaData = ExistingMetaData.GetValue();
+						}
+						NewMetaData.Description = FoundMetaData->Description;
+						CreatedGraph->SetMetaData(TargetVar, NewMetaData);
 					}
 				}
 			}
 		}
-
-		CreatedGraph->PurgeUnreferencedMetaData();
 	}
 }
 

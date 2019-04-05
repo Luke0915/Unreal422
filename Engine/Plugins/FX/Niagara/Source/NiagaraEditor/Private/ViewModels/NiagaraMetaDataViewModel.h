@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -23,16 +23,17 @@ public:
 	 * @param InGraphVariable The variable which is owned by the graph which connects to this metadata.
 	 * @param InGraph The graph where the metadata lives.
 	 */
-	FNiagaraMetaDataViewModel(FNiagaraVariable& InGraphVariable, UNiagaraGraph& InGraph);
+	FNiagaraMetaDataViewModel(const FNiagaraVariable& InGraphVariable, UNiagaraGraph& InGraph);
 	
 	virtual ~FNiagaraMetaDataViewModel();
 
-	virtual FName GetName() const;
+	FName GetName() const;
+
+	const FText& GetCategoryName() const;
+
+	int32 GetEditorSortPriority() const;
 
 	FNiagaraVariable GetVariable() const;
-	
-	/** Gets a pointer to the actual metadata on the graph */
-	FNiagaraVariableMetaData* GetGraphMetaData();
 	
 	/** Callback for when a change in the value structure needs to be copied into the graph*/
 	void NotifyMetaDataChanged();
@@ -42,28 +43,19 @@ public:
 
 	/** Gets a multicast delegate which is called whenever the metadata changes. */
 	FOnMetadataChanged& OnMetadataChanged() { return OnMetadataChangedDelegate; }
-
-	/** associates a node to this metadata*/
-	void AssociateNode(UEdGraphNode* InNode);
-
-	/** gets the sort order prioriy from metadata */
-	int32 GetEditorSortPriority();
 	
 	/** Refreshes the parameter value struct from the variable data. */
 	void RefreshMetaDataValue();
 
 private:
+	const FNiagaraVariableMetaData& GetMetaData() const;
+
+private:
 	/** The graph variable which corresponds to the metadata in our viewmodel */
 	FNiagaraVariable GraphVariable;
 	
-	/** The metadata which is being displayed and edited by this view model. */
-	FNiagaraVariableMetaData* GraphMetaData;
-	
 	/** graph who owns the metadata*/
 	UNiagaraGraph* CurrentGraph;
-
-	/** graph nodes associated with this metadata*/
-	TArray<TWeakObjectPtr<UObject>> AssociatedNodes;
 	
 	/** actual value being edited*/
 	TSharedPtr<FStructOnScope> ValueStruct;

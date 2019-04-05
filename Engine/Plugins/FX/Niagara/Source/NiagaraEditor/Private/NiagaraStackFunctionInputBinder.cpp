@@ -33,8 +33,8 @@ bool FNiagaraStackFunctionInputBinder::TryBind(
 	FInputMatchesPredicate InputMatches;
 	InputMatches.BindLambda([=](FNiagaraVariable InputVariable)
 	{
-		FNiagaraVariableMetaData* InputMetadata = FunctionGraph->GetMetaData(InputVariable);
-		if (InputMetadata != nullptr)
+		TOptional<FNiagaraVariableMetaData> InputMetadata = FunctionGraph->GetMetaData(InputVariable);
+		if (InputMetadata.IsSet())
 		{
 			FString* ValueString = InputMetadata->PropertyMetaData.Find(InMetaDataKey);
 			if (ValueString != nullptr && *ValueString == InMetaDataValue)

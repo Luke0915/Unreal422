@@ -372,7 +372,7 @@ private:
 	FNiagaraTypeDefinition InputType;
 
 	/** The meta data for this input, defined in the owning function's script. */
-	FNiagaraVariableMetaData* InputMetaData;
+	TOptional<FNiagaraVariableMetaData> InputMetaData;
 
 	/** A unique key for this input for looking up editor only UI data. */
 	FString StackEditorDataKey;

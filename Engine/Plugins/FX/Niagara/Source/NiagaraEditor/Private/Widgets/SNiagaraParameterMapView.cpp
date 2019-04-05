@@ -241,7 +241,7 @@ void SNiagaraParameterMapView::AddParameter(FNiagaraVariable NewVariable)
 	for (auto& GraphWeakPtr : Graphs)
 	{
 		UNiagaraGraph* Graph = GraphWeakPtr.Get();
-		for (const auto& ParameterElement : Graph->GetParameterMap())
+		for (const auto& ParameterElement : Graph->GetParameterReferenceMap())
 		{
 			Names.Add(ParameterElement.Key.GetName());
 		}
@@ -312,7 +312,7 @@ void SNiagaraParameterMapView::CollectAllActions(FGraphActionListBuilderBase& Ou
 	for (auto& GraphWeakPtr : Graphs)
 	{
 		UNiagaraGraph* Graph = GraphWeakPtr.Get();
-		for (const auto& ParameterElement : Graph->GetParameterMap())
+		for (const auto& ParameterElement : Graph->GetParameterReferenceMap())
 		{
 			TArray<FNiagaraGraphParameterReferenceCollection>* Found = ParameterEntries.Find(ParameterElement.Key);
 			if (Found)
@@ -596,7 +596,6 @@ void SNiagaraParameterMapView::OnDeleteEntry()
 	TArray<TSharedPtr<FEdGraphSchemaAction>> SelectedActions;
 	GraphActionMenu->GetSelectedActions(SelectedActions);
 	
-	TArray<UNiagaraGraph*> GraphsToNotifyChanged;
 	for (auto& Action : SelectedActions)
 	{
 		TSharedPtr<FNiagaraParameterAction> ParameterAction = StaticCastSharedPtr<FNiagaraParameterAction>(Action);
@@ -620,16 +619,10 @@ void SNiagaraParameterMapView::OnDeleteEntry()
 				if (GraphWeakPtr.IsValid())
 				{
 					UNiagaraGraph* Graph = GraphWeakPtr.Get();
-					Graph->RemoveParameter(ParameterAction->GetParameter(), false);
-					GraphsToNotifyChanged.Add(Graph);
+					Graph->RemoveParameter(ParameterAction->GetParameter());
 				}
 			}
 		}
-	}
-
-	for (UNiagaraGraph* Graph : GraphsToNotifyChanged)
-	{
-		Graph->NotifyGraphChanged();
 	}
 }
 
@@ -904,7 +897,7 @@ void SNiagaraAddParameterMenu::CollectAllActions(FGraphActionListBuilderBase& Ou
 	{
 		for (TWeakObjectPtr<UNiagaraGraph>& Graph : Graphs)
 		{
-			TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection> ParameterEntries = Graph.Get()->GetParameterMap();
+			TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection> ParameterEntries = Graph.Get()->GetParameterReferenceMap();
 			ParameterEntries.KeySort([](const FNiagaraVariable& A, const FNiagaraVariable& B) { return (A.GetName() < B.GetName()); });
 
 			for (const auto& ParameterEntry : ParameterEntries)

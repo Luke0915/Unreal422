@@ -61,16 +61,6 @@ void FNiagaraMetaDataCollectionViewModel::SetGraph(UNiagaraGraph* InGraph)
 	OnRecompileHandle = ModuleGraph->AddOnGraphNeedsRecompileHandler(FOnGraphChanged::FDelegate::CreateRaw(this, &FNiagaraMetaDataCollectionViewModel::OnGraphChanged));
 }
 
-TSharedPtr<FNiagaraMetaDataViewModel> FNiagaraMetaDataCollectionViewModel::GetMetadataViewModelForVariable(FNiagaraVariable InVariable)
-{
-	for (TSharedPtr<FNiagaraMetaDataViewModel> Model : MetaDataViewModels)
-	{
-		if (InVariable == Model->GetVariable())
-			return Model;
-	}
-	return TSharedPtr<FNiagaraMetaDataViewModel>();
-}
-
 TArray<TSharedRef<FNiagaraMetaDataViewModel>>& FNiagaraMetaDataCollectionViewModel::GetVariableModels()
 {
 	return MetaDataViewModels;
@@ -100,34 +90,48 @@ void FNiagaraMetaDataCollectionViewModel::Refresh()
 {
 	if (!ModuleGraph)
 	{
+		CleanupMetadata();
 		return;
 	}
 
-	// Get the variable metadata from the graph
-	CleanupMetadata();
-	for (auto& MetadataElement : ModuleGraph->GetAllMetaData())
-	{
-		TSharedPtr<FNiagaraMetaDataViewModel> MetadataViewModel = GetMetadataViewModelForVariable(MetadataElement.Key);
-		if (!MetadataViewModel.IsValid())
-		{
-			MetadataViewModel = MakeShared<FNiagaraMetaDataViewModel>(MetadataElement.Key, *ModuleGraph);
-			MetadataViewModel->OnMetadataChanged().AddRaw(this, &FNiagaraMetaDataCollectionViewModel::ChildMetadataChanged);
-			MetaDataViewModels.Add(MetadataViewModel.ToSharedRef());
-		}
+	TArray<TSharedRef<FNiagaraMetaDataViewModel>> OldMetaDataViewModels = MetaDataViewModels;
+	MetaDataViewModels.Empty();
 
-		FNiagaraVariableMetaData& Metadata = MetadataElement.Value;
-		if (Metadata.ReferencerNodes.Num() > 0)
+	// We only store metadata information if it's actually set but we want to display metadata for all module parameters so
+	// we iterate over that collection here.
+	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& ParameterReferenceMap = ModuleGraph->GetParameterReferenceMap();
+	for (const auto& ParameterToReferences : ParameterReferenceMap)
+	{
+		const FNiagaraVariable& ParameterVariable = ParameterToReferences.Key;
+		FNiagaraParameterHandle VariableHandle(ParameterVariable.GetName());
+		if (VariableHandle.IsModuleHandle())
 		{
-			UNiagaraNode* Node = Cast<UNiagaraNode>(Metadata.ReferencerNodes[0].Get());
-			if (Node)
+			TSharedRef<FNiagaraMetaDataViewModel>* OldMetadataViewModelPtr = OldMetaDataViewModels.FindByPredicate(
+				[&ParameterVariable](const TSharedRef<FNiagaraMetaDataViewModel>& OldMetaDataViewModel) { return OldMetaDataViewModel->GetVariable() == ParameterVariable; });
+
+			if (OldMetadataViewModelPtr != nullptr)
 			{
-				MetadataViewModel->AssociateNode(Node);
+				TSharedRef<FNiagaraMetaDataViewModel> OldMetaDataViewModel = *OldMetadataViewModelPtr;
+				OldMetaDataViewModel->RefreshMetaDataValue();
+				MetaDataViewModels.Add(OldMetaDataViewModel);
+				OldMetaDataViewModels.Remove(OldMetaDataViewModel);
+			}
+			else
+			{
+				TSharedRef<FNiagaraMetaDataViewModel> MetadataViewModel = MakeShared<FNiagaraMetaDataViewModel>(ParameterVariable, *ModuleGraph);
+				MetadataViewModel->OnMetadataChanged().AddRaw(this, &FNiagaraMetaDataCollectionViewModel::ChildMetadataChanged);
+				MetaDataViewModels.Add(MetadataViewModel);
 			}
 		}
 	}
 
-	SortViewModels();
+	// Remove delegates for any metadata view models which weren't reused.
+	for (TSharedRef<FNiagaraMetaDataViewModel>& OldMetaDataViewModel : OldMetaDataViewModels)
+	{
+		OldMetaDataViewModel->OnMetadataChanged().RemoveAll(this);
+	}
 
+	SortViewModels();
 	OnCollectionChangedDelegate.Broadcast();
 }
 
@@ -137,7 +141,7 @@ void FNiagaraMetaDataCollectionViewModel::SortViewModels()
 	for (auto Metadata : MetaDataViewModels)
 	{
 		Metadata->RefreshMetaDataValue();
-		FString CategoryName = Metadata->GetGraphMetaData()->CategoryName.ToString();
+		FString CategoryName = Metadata->GetCategoryName().ToString();
 		if (!CategoryName.IsEmpty() && 
 			(!CategoryPriorityMap.Contains(CategoryName) || (CategoryPriorityMap.Contains(CategoryName) && CategoryPriorityMap[CategoryName] > Metadata->GetEditorSortPriority())))
 		{
@@ -146,8 +150,8 @@ void FNiagaraMetaDataCollectionViewModel::SortViewModels()
 	}
 	auto SortVars = [&](const TSharedRef<FNiagaraMetaDataViewModel>& A, const TSharedRef<FNiagaraMetaDataViewModel>& B)
 	{
-		int32 CategoryPriorityA = CategoryPriorityMap.Contains(A->GetGraphMetaData()->CategoryName.ToString()) ? CategoryPriorityMap[A->GetGraphMetaData()->CategoryName.ToString()] : MIN_int32;
-		int32 CategoryPriorityB = CategoryPriorityMap.Contains(B->GetGraphMetaData()->CategoryName.ToString()) ? CategoryPriorityMap[B->GetGraphMetaData()->CategoryName.ToString()] : MIN_int32;
+		int32 CategoryPriorityA = CategoryPriorityMap.Contains(A->GetCategoryName().ToString()) ? CategoryPriorityMap[A->GetCategoryName().ToString()] : MIN_int32;
+		int32 CategoryPriorityB = CategoryPriorityMap.Contains(B->GetCategoryName().ToString()) ? CategoryPriorityMap[B->GetCategoryName().ToString()] : MIN_int32;
 		if (CategoryPriorityA < CategoryPriorityB)
 		{
 			return true;

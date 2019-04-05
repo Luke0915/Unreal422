@@ -75,8 +75,9 @@ void FNiagaraGraphScriptUsageInfo::PostLoad(UObject* Owner)
 UNiagaraGraph::UNiagaraGraph(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bNeedNumericCacheRebuilt(true)
-	, bFindParametersAllowed(true)
 	, bIsRenamingParameter(false)
+	, bParameterReferenceRefreshPending(true)
+	, bUnreferencedMetaDataPurgePending(true)
 {
 	Schema = UEdGraphSchema_Niagara::StaticClass();
 	ChangeId = FGuid::NewGuid();
@@ -94,7 +95,7 @@ void UNiagaraGraph::RemoveOnGraphNeedsRecompileHandler(FDelegateHandle Handle)
 
 void UNiagaraGraph::NotifyGraphChanged(const FEdGraphEditAction& InAction)
 {
-	FindParameters();
+	InvalidateCachedParameterData();
 	if ((InAction.Action & GRAPHACTION_AddNode) != 0 || (InAction.Action & GRAPHACTION_RemoveNode) != 0 ||
 		(InAction.Action & GRAPHACTION_GenericNeedsRecompile) != 0)
 	{
@@ -110,8 +111,8 @@ void UNiagaraGraph::NotifyGraphChanged(const FEdGraphEditAction& InAction)
 
 void UNiagaraGraph::NotifyGraphChanged()
 {
-	FindParameters();
 	Super::NotifyGraphChanged();
+	InvalidateCachedParameterData();
 	InvalidateNumericCache();
 }
 
@@ -202,9 +203,6 @@ void UNiagaraGraph::PostLoad()
 		SetFlags(RF_Transactional);
 	}
 
-	Parameters.Empty();
-	FindParameters();
-
 	// Migrate input condition metadata
 	const int32 NiagaraVer = GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
 	if (NiagaraVer < FNiagaraCustomVersion::MoveCommonInputMetadataToProperties)
@@ -253,6 +251,8 @@ void UNiagaraGraph::PostLoad()
 			MigrateInputCondition(MetaData.PropertyMetaData, TEXT("VisibleCondition"), MetaData.VisibleCondition);
 		}
 	}
+
+	InvalidateCachedParameterData();
 }
 
 void UNiagaraGraph::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -635,30 +635,40 @@ void UNiagaraGraph::GetParameters(TArray<FNiagaraVariable>& Inputs, TArray<FNiag
 // 	Outputs.Sort(SortVars);
 }
 
-const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& UNiagaraGraph::GetParameterMap() const
+const TMap<FNiagaraVariable, FNiagaraVariableMetaData>& UNiagaraGraph::GetAllMetaData() const
 {
-	return Parameters;
+	if (bUnreferencedMetaDataPurgePending)
+	{
+		PurgeUnreferencedMetaData();
+	}
+	return VariableToMetaData;
+}
+
+const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& UNiagaraGraph::GetParameterReferenceMap() const
+{
+	if (bParameterReferenceRefreshPending)
+	{
+		RefreshParameterReferences();
+	}
+	return ParameterToReferencesMap;
 }
 
 void UNiagaraGraph::AddParameter(const FNiagaraVariable& Parameter)
 {
-	FNiagaraGraphParameterReferenceCollection* FoundParameterReferenceCollection = Parameters.Find(Parameter);
+	FNiagaraGraphParameterReferenceCollection* FoundParameterReferenceCollection = ParameterToReferencesMap.Find(Parameter);
 	if (!FoundParameterReferenceCollection)
 	{
 		FNiagaraGraphParameterReferenceCollection NewReferenceCollection = FNiagaraGraphParameterReferenceCollection(true /*bCreated*/);
 		NewReferenceCollection.Graph = this;
-		Parameters.Add(Parameter, NewReferenceCollection);
+		ParameterToReferencesMap.Add(Parameter, NewReferenceCollection);
 	}
 }
 
-void UNiagaraGraph::RemoveParameter(const FNiagaraVariable& Parameter, const bool bNotifyGraphChanged /*= true*/)
+void UNiagaraGraph::RemoveParameter(const FNiagaraVariable& Parameter)
 {
-	FNiagaraGraphParameterReferenceCollection* ReferenceCollection = Parameters.Find(Parameter);
+	FNiagaraGraphParameterReferenceCollection* ReferenceCollection = ParameterToReferencesMap.Find(Parameter);
 	if (ReferenceCollection)
 	{
-		// Prevent finding all parameters and metadata when renaming each pin.
-		SetFindParametersAllowed(false);
-
 		for (int32 Index = 0; Index < ReferenceCollection->ParameterReferences.Num(); Index++)
 		{
 			const FNiagaraGraphParameterReference& Reference = ReferenceCollection->ParameterReferences[Index];
@@ -673,18 +683,14 @@ void UNiagaraGraph::RemoveParameter(const FNiagaraVariable& Parameter, const boo
 			}
 		}
 
-		Parameters.Remove(Parameter);
-
-		SetFindParametersAllowed(true);
-
-		if (bNotifyGraphChanged)
-		{
-			NotifyGraphChanged();
-		}
+		// Remove it from the reference collection directly because it might have been user added and
+		// these aren't removed when the cached data is rebuilt.
+		ParameterToReferencesMap.Remove(Parameter);
+		NotifyGraphChanged();
 	}
 }
 
-bool UNiagaraGraph::RenameParameter(const FNiagaraVariable& Parameter, FName NewName, const bool bInNotifyGraphChanged /*= true*/)
+bool UNiagaraGraph::RenameParameter(const FNiagaraVariable& Parameter, FName NewName)
 {
 	// Block rename when already renaming. This prevents recursion when CommitEditablePinName is called on referenced nodes. 
 	if (bIsRenamingParameter)
@@ -693,14 +699,11 @@ bool UNiagaraGraph::RenameParameter(const FNiagaraVariable& Parameter, FName New
 	}
 	bIsRenamingParameter = true;
 
-	// Prevent finding all parameters and metadata when renaming each pin.
-	SetFindParametersAllowed(false);
-	
 	// Create the new parameter
 	FNiagaraVariable NewParameter = Parameter;
 	NewParameter.SetName(NewName);
 
-	FNiagaraGraphParameterReferenceCollection* ReferenceCollection = Parameters.Find(Parameter);
+	FNiagaraGraphParameterReferenceCollection* ReferenceCollection = ParameterToReferencesMap.Find(Parameter);
 	if (ReferenceCollection)
 	{
 		const FText NewNameText = FText::FromName(NewName);
@@ -718,26 +721,22 @@ bool UNiagaraGraph::RenameParameter(const FNiagaraVariable& Parameter, FName New
 			}
 		}
 
-		Parameters.Remove(Parameter);
-		Parameters.Add(NewParameter, NewReferences);
+		ParameterToReferencesMap.Remove(Parameter);
+		ParameterToReferencesMap.Add(NewParameter, NewReferences);
 	}
 
 	// Swap metadata to the new parameter
-	FNiagaraVariableMetaData* Metadata = GetMetaData(Parameter);
-	if (Metadata)
+	FNiagaraVariableMetaData* Metadata = VariableToMetaData.Find(Parameter);
+	if (Metadata != nullptr)
 	{
 		FNiagaraVariableMetaData MetadataCopy = *Metadata;
 		VariableToMetaData.Remove(Parameter);
 		VariableToMetaData.Add(NewParameter, MetadataCopy);
 	}
 
-	SetFindParametersAllowed(true);
 	bIsRenamingParameter = false;
 
-	if (bInNotifyGraphChanged)
-	{
-		NotifyGraphChanged();
-	}
+	NotifyGraphChanged();
 	return true;
 }
 
@@ -1278,148 +1277,31 @@ void UNiagaraGraph::MarkGraphRequiresSynchronization(FString Reason)
 	}
 }
 
-/** Get the meta-data associated with this variable, if it exists.*/
-FNiagaraVariableMetaData* UNiagaraGraph::GetMetaData(const FNiagaraVariable& InVar)
+TOptional<FNiagaraVariableMetaData> UNiagaraGraph::GetMetaData(const FNiagaraVariable& InVar) const
 {
-	return VariableToMetaData.Find(InVar);
-}
-
-const FNiagaraVariableMetaData* UNiagaraGraph::GetMetaData(const FNiagaraVariable& InVar) const
-{
-	return VariableToMetaData.Find(InVar);
-}
-
-/** Return the meta-data associated with this variable. This should only be called on variables defined within this Graph, otherwise meta-data may leak.*/
-FNiagaraVariableMetaData& UNiagaraGraph::FindOrAddMetaData(const FNiagaraVariable& InVar)
-{
-	FNiagaraVariableMetaData* FoundMetaData = VariableToMetaData.Find(InVar);
-	if (FoundMetaData)
+	if (bUnreferencedMetaDataPurgePending)
 	{
-		return *FoundMetaData;
+		PurgeUnreferencedMetaData();
 	}
-	// We shouldn't add constants to the graph's meta-data list. Those are stored globally.
+	const FNiagaraVariableMetaData* MetaData = VariableToMetaData.Find(InVar);
+	if (MetaData != nullptr)
+	{
+		return *MetaData;
+	}
+	return TOptional<FNiagaraVariableMetaData>();
+}
+
+void UNiagaraGraph::SetMetaData(const FNiagaraVariable& InVar, const FNiagaraVariableMetaData& InMetaData)
+{
 	ensure(FNiagaraConstants::IsNiagaraConstant(InVar) == false);
-	return VariableToMetaData.Add(InVar);
+	FNiagaraVariableMetaData& MetaData = VariableToMetaData.FindOrAdd(InVar);
+	MetaData = InMetaData;
+	ensure(FNiagaraConstants::IsNiagaraConstant(InVar) == false);
 }
 
-void UNiagaraGraph::PurgeUnreferencedMetaData()
+void UNiagaraGraph::PurgeUnreferencedMetaData() const
 {
-	TArray<FNiagaraVariable> VarsToRemove;
-	for (auto It = VariableToMetaData.CreateConstIterator(); It; ++It)
-	{
-		int32 NumValid = 0;
-		for (TWeakObjectPtr<UObject> WeakPtr : It.Value().ReferencerNodes)
-		{
-			if (WeakPtr.IsValid())
-			{
-				NumValid++;
-			}
-		}
-
-		if (NumValid == 0)
-		{
-			VarsToRemove.Add(It.Key());
-		}
-	}
-
-	for (FNiagaraVariable& Var : VarsToRemove)
-	{
-		VariableToMetaData.Remove(Var);
-	}
-}
-
-void UNiagaraGraph::PurgeUnreferencedParameters()
-{
-	TArray<FNiagaraVariable> VarsToRemove;
-	for (auto& ParameterEntry : Parameters)
-	{
-		if (!ParameterEntry.Value.WasCreated() && ParameterEntry.Value.ParameterReferences.Num() == 0)
-		{
-			VarsToRemove.Add(ParameterEntry.Key);
-		}
-	}
-
-	for (FNiagaraVariable& Var : VarsToRemove)
-	{
-		Parameters.Remove(Var);
-	}
-}
-
-UNiagaraGraph::FOnDataInterfaceChanged& UNiagaraGraph::OnDataInterfaceChanged()
-{
-	return OnDataInterfaceChangedDelegate;
-}
-
-void UNiagaraGraph::FindParameters()
-{
-	if (!bFindParametersAllowed)
-	{
-		return;
-	}
-
-	for (auto& ParameterEntry : Parameters)
-	{
-		ParameterEntry.Value.ParameterReferences.Empty();
-	}
-
-	for (auto& MetadataEntry : VariableToMetaData)
-	{
-		MetadataEntry.Value.ReferencerNodes.Empty();
-	}
-
-	auto AddParameterReference = [&](const FNiagaraVariable& Parameter, const UEdGraphPin* Pin, FNiagaraGraphParameterReferenceCollection*& ReferenceCollection)
-	{
-		if (Pin->PinType.PinSubCategory == UNiagaraNodeParameterMapBase::ParameterPinSubCategory)
-		{
-			const FNiagaraGraphParameterReference Reference(Pin->PersistentGuid, Cast<UNiagaraNode>(Pin->GetOwningNode()));
-			bool bNewReference = true;
-			if (ReferenceCollection)
-			{
-				ReferenceCollection->ParameterReferences.AddUnique(Reference);
-				bNewReference = false;
-			}
-			else
-			{
-				FNiagaraGraphParameterReferenceCollection* FoundReferenceCollection = Parameters.Find(Parameter);
-				if (FoundReferenceCollection)
-				{
-					ReferenceCollection = FoundReferenceCollection;
-					FoundReferenceCollection->ParameterReferences.AddUnique(Reference);
-					bNewReference = false;
-				}
-			}
-
-			if (bNewReference)
-			{
-				FNiagaraGraphParameterReferenceCollection NewReferenceCollection;
-				NewReferenceCollection.ParameterReferences.Add(Reference);
-				NewReferenceCollection.Graph = this;
-				Parameters.Add(Parameter, NewReferenceCollection);
-			}
-		}
-	};
-
-	const TArray<FNiagaraParameterMapHistory> Histories = UNiagaraNodeParameterMapBase::GetParameterMaps(this);
-	for (const FNiagaraParameterMapHistory& History : Histories)
-	{
-		for (int32 Index = 0; Index < History.VariablesWithOriginalAliasesIntact.Num(); Index++)
-		{
-			const FNiagaraVariable& Parameter = History.VariablesWithOriginalAliasesIntact[Index];
-
-			FNiagaraGraphParameterReferenceCollection* FoundReferences = nullptr;
-			for (const UEdGraphPin* WritePin : History.PerVariableWriteHistory[Index])
-			{
-				AddParameterReference(Parameter, WritePin, FoundReferences);
-			}
-
-			for (const TTuple<const UEdGraphPin*, const UEdGraphPin*>& ReadPinTuple : History.PerVariableReadHistory[Index])
-			{
-				AddParameterReference(Parameter, ReadPinTuple.Key, FoundReferences);
-			}
-		}
-	}
-
-	// Find all the parameters in the graph that have no connection and won't be picked up by the parameter map history.
+	TSet<FNiagaraVariable> ReferencedParameters;
 	const UEdGraphSchema_Niagara* NiagaraSchema = Cast<UEdGraphSchema_Niagara>(Schema);
 	for (UEdGraphNode* Node : Nodes)
 	{
@@ -1429,48 +1311,123 @@ void UNiagaraGraph::FindParameters()
 			{
 				const FNiagaraVariable Parameter = NiagaraSchema->PinToNiagaraVariable(Pin, false);
 				const FNiagaraParameterHandle Handle = FNiagaraParameterHandle(Parameter.GetName());
-
 				if (Handle.IsModuleHandle() && !FNiagaraConstants::IsNiagaraConstant(Parameter))
 				{
-					FNiagaraVariableMetaData* MetaData = VariableToMetaData.Find(Parameter);
-					if (MetaData)
-					{
-						MetaData->ReferencerNodes.AddUnique(Node);
-					}
-					else
-					{
-						FNiagaraVariableMetaData NewVariableMetadata;
-						NewVariableMetadata.ReferencerNodes.Add(Node);
-						VariableToMetaData.Add(Parameter, NewVariableMetadata);
-					}
-				}
-			
-				const FNiagaraGraphParameterReference Reference(Pin->PersistentGuid, Cast<UNiagaraNode>(Pin->GetOwningNode()));
-				FNiagaraGraphParameterReferenceCollection* FoundParameterReferenceCollection = Parameters.Find(Parameter);
-				if (FoundParameterReferenceCollection)
-				{
-					FoundParameterReferenceCollection->ParameterReferences.AddUnique(Reference);
-				}
-				else
-				{
-					FNiagaraGraphParameterReferenceCollection NewReferenceCollection;
-					NewReferenceCollection.ParameterReferences.Add(Reference);
-					NewReferenceCollection.Graph = this;
-					Parameters.Add(Parameter, NewReferenceCollection);
+					ReferencedParameters.Add(Parameter);
 				}
 			}
 		}
 	}
 
-	// Clean up all parameters and metadata that do not have a reference
-	PurgeUnreferencedParameters();
-	PurgeUnreferencedMetaData();
+	TArray<FNiagaraVariable> VarsToRemove;
+	for (auto It = VariableToMetaData.CreateConstIterator(); It; ++It)
+	{
+		if (ReferencedParameters.Contains(It.Key()) == false)
+		{
+			VarsToRemove.Add(It.Key());
+		}
+	}
+
+	for (FNiagaraVariable& Var : VarsToRemove)
+	{
+		VariableToMetaData.Remove(Var);
+	}
+
+	bUnreferencedMetaDataPurgePending = false;
 }
 
-
-void UNiagaraGraph::SetFindParametersAllowed(const bool bAllowed)
+UNiagaraGraph::FOnDataInterfaceChanged& UNiagaraGraph::OnDataInterfaceChanged()
 {
-	bFindParametersAllowed = bAllowed;
+	return OnDataInterfaceChangedDelegate;
+}
+
+void UNiagaraGraph::RefreshParameterReferences() const
+{
+	// A set of variables to track which parameters are used so that unused parameters can be removed after the reference tracking.
+	TSet<FNiagaraVariable> CandidateUnreferencedParametersToRemove;
+
+	// The set of pins which has already been handled by add parameters.
+	TSet<const UEdGraphPin*> HandledPins;
+
+	// Purge existing parameter references and collect candidate unreferenced parameters.
+	for (auto& ParameterToReferences : ParameterToReferencesMap)
+	{
+		ParameterToReferences.Value.ParameterReferences.Empty();
+		if (ParameterToReferences.Value.WasCreated() == false)
+		{
+			// Collect all parameters not created for the user so that they can be removed later if no references are found for them.
+			CandidateUnreferencedParametersToRemove.Add(ParameterToReferences.Key);
+		}
+	}
+
+	auto AddParameterReference = [&](const FNiagaraVariable& Parameter, const UEdGraphPin* Pin)
+	{
+		if (Pin->PinType.PinSubCategory == UNiagaraNodeParameterMapBase::ParameterPinSubCategory)
+		{
+			FNiagaraGraphParameterReferenceCollection* ReferenceCollection = ParameterToReferencesMap.Find(Parameter);
+			if (ReferenceCollection == nullptr)
+			{
+				FNiagaraGraphParameterReferenceCollection& NewReferenceCollection = ParameterToReferencesMap.Add(Parameter);
+				NewReferenceCollection.Graph = this;
+				ReferenceCollection = &NewReferenceCollection;
+			}
+			ReferenceCollection->ParameterReferences.AddUnique(FNiagaraGraphParameterReference(Pin->PersistentGuid, Cast<UNiagaraNode>(Pin->GetOwningNode())));
+
+			// If we're adding a parameter reference then it needs to be removed from the list of candidate variables to remove since it's been referenced.
+			CandidateUnreferencedParametersToRemove.Remove(Parameter);
+		}
+
+		HandledPins.Add(Pin);
+	};
+
+	// Add parameter references from parameter map traversals.
+	const TArray<FNiagaraParameterMapHistory> Histories = UNiagaraNodeParameterMapBase::GetParameterMaps(this);
+	for (const FNiagaraParameterMapHistory& History : Histories)
+	{
+		for (int32 Index = 0; Index < History.VariablesWithOriginalAliasesIntact.Num(); Index++)
+		{
+			const FNiagaraVariable& Parameter = History.VariablesWithOriginalAliasesIntact[Index];
+
+			for (const UEdGraphPin* WritePin : History.PerVariableWriteHistory[Index])
+			{
+				AddParameterReference(Parameter, WritePin);
+			}
+
+			for (const TTuple<const UEdGraphPin*, const UEdGraphPin*>& ReadPinTuple : History.PerVariableReadHistory[Index])
+			{
+				AddParameterReference(Parameter, ReadPinTuple.Key);
+			}
+		}
+	}
+
+	// Check all pins on all nodes in the graph to find parameter pins which may have been missed in the parameter map traversal.  This
+	// can happen for nodes which are not fully connected and therefore don't show up in the traversal.
+	const UEdGraphSchema_Niagara* NiagaraSchema = Cast<UEdGraphSchema_Niagara>(Schema);
+	for (UEdGraphNode* Node : Nodes)
+	{
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (HandledPins.Contains(Pin) == false)
+			{
+				const FNiagaraVariable Parameter = NiagaraSchema->PinToNiagaraVariable(Pin, false);
+				AddParameterReference(Parameter, Pin);
+			}
+		}
+	}
+
+	// If there were any previous parameters which didn't have any references added, remove them here.
+	for (const FNiagaraVariable& UnreferencedParameterToRemove : CandidateUnreferencedParametersToRemove)
+	{
+		ParameterToReferencesMap.Remove(UnreferencedParameterToRemove);
+	}
+
+	bParameterReferenceRefreshPending = false;
+}
+
+void UNiagaraGraph::InvalidateCachedParameterData()
+{
+	bParameterReferenceRefreshPending = true;
+	bUnreferencedMetaDataPurgePending = true;
 }
 
 #undef LOCTEXT_NAMESPACE

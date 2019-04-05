@@ -18,31 +18,26 @@ enum ENiagaraGraphActionType
 };
 
 class UNiagaraNode;
+class UNiagaraGraph;
 
 typedef TPair<FGuid, TWeakObjectPtr<UNiagaraNode>> FNiagaraGraphParameterReference;
 
-USTRUCT()
 struct FNiagaraGraphParameterReferenceCollection
 {
-	GENERATED_USTRUCT_BODY()
-
 public:
 	FNiagaraGraphParameterReferenceCollection(const bool bInCreated = false);
 
 	/** All the references in the graph. */
 	TArray<FNiagaraGraphParameterReference> ParameterReferences;
 
-	UPROPERTY()
-	class UNiagaraGraph* Graph;
+	const UNiagaraGraph* Graph;
 
 	/** Returns true if this parameter was initially created by the user. */
 	bool WasCreated() const;
 
 private:
 	/** Whether this parameter was initially created by the user. */
-	UPROPERTY()
 	bool bCreated;
-
 };
 
 /** Container for UNiagaraGraph cached data for managing CompileIds and Traversals.*/
@@ -221,32 +216,24 @@ class UNiagaraGraph : public UEdGraph
 	/** Walk through the graph for an ParameterMapGet nodes and see if any of them specify a default for VariableName.*/
 	UEdGraphPin* FindParameterMapDefaultValuePin(const FName VariableName, ENiagaraScriptUsage InUsage, ENiagaraScriptUsage InParentUsage) const;
 
-	/** Get the meta-data associated with this variable, if it exists.*/
-	FNiagaraVariableMetaData* GetMetaData(const FNiagaraVariable& InVar);
-	const FNiagaraVariableMetaData* GetMetaData(const FNiagaraVariable& InVar) const;
+	/** Gets the meta-data associated with this variable, if it exists.*/
+	TOptional<FNiagaraVariableMetaData> GetMetaData(const FNiagaraVariable& InVar) const;
 
-	/** Return the meta-data associated with this variable. This should only be called on variables defined explicitly for this Graph, otherwise meta-data may leak.*/
-	FNiagaraVariableMetaData& FindOrAddMetaData(const FNiagaraVariable& InVar);
+	/** Sets the meta-data associated with this variable.*/
+	void SetMetaData(const FNiagaraVariable& InVar, const FNiagaraVariableMetaData& MetaData);
 
-	/** Remove any meta-data that is no longer being referenced within this graph.*/
-	void PurgeUnreferencedMetaData();
+	const TMap<FNiagaraVariable, FNiagaraVariableMetaData>& GetAllMetaData() const;
 
-	/** Remove any parameter that is no longer being referenced within this graph.*/
-	void PurgeUnreferencedParameters();
-
-	const TMap<FNiagaraVariable, FNiagaraVariableMetaData>& GetAllMetaData() const { return VariableToMetaData; }
-	TMap<FNiagaraVariable, FNiagaraVariableMetaData>& GetAllMetaData() { return VariableToMetaData; }
-
-	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& GetParameterMap() const;
+	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& GetParameterReferenceMap() const;
 
 	/** Adds parameter to parameters map setting it as created by the user.*/
 	void AddParameter(const FNiagaraVariable& Parameter);
 
 	/** Remove parameter from map and all the pins associated. */
-	void RemoveParameter(const FNiagaraVariable& Parameter, const bool bNotifyGraphChanged = true);
+	void RemoveParameter(const FNiagaraVariable& Parameter);
 
 	/** Rename parameter from map and all the pins associated. */
-	bool RenameParameter(const FNiagaraVariable& Parameter, FName NewName, const bool bInNotifyGraphChanged = true);
+	bool RenameParameter(const FNiagaraVariable& Parameter, FName NewName);
 
 	/** Gets a delegate which is called whenever a contained data interfaces changes. */
 	FOnDataInterfaceChanged& OnDataInterfaceChanged();
@@ -276,19 +263,16 @@ protected:
 	void ResolveNumerics(TMap<UNiagaraNode*, bool>& VisitedNodes, UEdGraphNode* Node);
 
 private:
+	/** Remove any meta-data that is no longer being referenced within this graph.*/
+	void PurgeUnreferencedMetaData() const;
+
 	virtual void NotifyGraphChanged(const FEdGraphEditAction& InAction) override;
 
 	/** Find parameters in the graph. */
-	void FindParameters();
+	void RefreshParameterReferences() const;
 
-	/** 
-	 Set whether finding parameters is allowed. 
-	 To block finding parameters every time NotifyGraphChanged is called whenever we know it will be called multiple times.
-	*/
-	void SetFindParametersAllowed(const bool bAllowed);
-
-	/** Finding parameters is blocked if false.*/
-	bool bFindParametersAllowed;
+	/** Marks the found parameter collections as invalid so they're rebuilt the next time they're requested. */
+	void InvalidateCachedParameterData();
 
 	/** A delegate that broadcasts a notification whenever the graph needs recompile due to structural change. */
 	FOnGraphChanged OnGraphNeedsRecompile;
@@ -305,15 +289,18 @@ private:
 
 	/** Storage of meta-data for variables defined for use explicitly with this graph.*/
 	UPROPERTY()
-	TMap<FNiagaraVariable, FNiagaraVariableMetaData> VariableToMetaData;
+	mutable TMap<FNiagaraVariable, FNiagaraVariableMetaData> VariableToMetaData;
 	
-	/** Parameters found within the graph. */
-	UPROPERTY()
-	TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection> Parameters;
+	/** A map of parameters in the graph to their referencers. */
+	mutable TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection> ParameterToReferencesMap;
 
 	FOnDataInterfaceChanged OnDataInterfaceChangedDelegate;
 
 	/** Whether currently renaming a parameter to prevent recursion. */
 	bool bIsRenamingParameter;
+
+	mutable bool bParameterReferenceRefreshPending;
+
+	mutable bool bUnreferencedMetaDataPurgePending;
 };
 

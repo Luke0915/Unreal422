@@ -191,9 +191,6 @@ public:
 	/** Get the default value for this variable.*/
 	const UEdGraphPin* GetDefaultValuePin(int32 VarIdx) const;
 
-	const FNiagaraVariableMetaData* GetMetaData(int32 VarIdx) const;
-	FNiagaraVariableMetaData* GetMetaData(int32 VarIdx);
-
 	static FNiagaraVariable ConvertVariableToRapidIterationConstantName(FNiagaraVariable InVar, const TCHAR* InEmitterName, ENiagaraScriptUsage InUsage);
 
 	/**

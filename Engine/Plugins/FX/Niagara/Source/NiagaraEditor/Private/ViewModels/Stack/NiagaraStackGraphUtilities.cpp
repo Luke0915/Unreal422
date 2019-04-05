@@ -1300,7 +1300,7 @@ void FNiagaraStackGraphUtilities::GetAvailableParametersForScript(UNiagaraNodeOu
 	TOptional<FName> UsageNamespace = FNiagaraStackGraphUtilities::GetNamespaceForScriptUsage(ScriptOutputNode.GetUsage());
 	if (UsageNamespace.IsSet())
 	{
-		for (const TPair<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& Entry : ScriptOutputNode.GetNiagaraGraph()->GetParameterMap())
+		for (const TPair<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& Entry : ScriptOutputNode.GetNiagaraGraph()->GetParameterReferenceMap())
 		{
 			// Pick up any params with 0 references from the Parameters window
 			bool bDoesParamHaveNoReferences = Entry.Value.ParameterReferences.Num() == 0;
