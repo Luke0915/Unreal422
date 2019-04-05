@@ -74,7 +74,7 @@ FNiagaraEmitterInstance::~FNiagaraEmitterInstance()
 	CachedBounds.Init();
 	UnbindParameters();
 
-	if (CachedEmitter != nullptr && CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim && Batcher)
+	if (CachedEmitter != nullptr && CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
 	{
 		/** We defer the deletion of the particle dataset and the compute context to the RT to be sure all in-flight RT commands have finished using it.*/
 

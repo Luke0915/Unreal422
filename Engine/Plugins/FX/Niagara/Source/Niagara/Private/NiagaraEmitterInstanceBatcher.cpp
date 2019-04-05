@@ -59,7 +59,10 @@ FFXSystemInterface* NiagaraEmitterInstanceBatcher::GetInterface(const FName& InN
 NiagaraEmitterInstanceBatcher::~NiagaraEmitterInstanceBatcher()
 {
 	ParticleSortBuffers.ReleaseRHI();
-	ReleaseTicks();
+	FinishDispatches();
+	check(ContextsToDestroy_RT.Num() == 0);
+	check(DataSetsToDestroy_RT.Num() == 0);
+	check(DIProxyDeferredDeletes_RT.Num() == 0);
 }
 
 void NiagaraEmitterInstanceBatcher::GiveSystemTick_RenderThread(FNiagaraGPUSystemTick& Tick)

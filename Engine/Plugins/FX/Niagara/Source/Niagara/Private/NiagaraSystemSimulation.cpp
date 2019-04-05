@@ -201,6 +201,9 @@ void FNiagaraSystemSimulation::Destroy()
 	check(WorldMan);
 	SpawnExecContext.Parameters.UnbindFromSourceStores();
 	UpdateExecContext.Parameters.UnbindFromSourceStores();
+	
+	bUseDeferredDeletion = false;
+	DeferredDeletionQueue.Empty();
 }
 
 UNiagaraParameterCollectionInstance* FNiagaraSystemSimulation::GetParameterCollectionInstance(UNiagaraParameterCollection* Collection)
@@ -281,6 +284,7 @@ bool FNiagaraSystemSimulation::Tick(float DeltaSeconds)
 	UNiagaraSystem* System = WeakSystem.Get();
 
 	// Clean up any system instances that were cleared out before we start simulation.
+	bUseDeferredDeletion = true;
 	DeferredDeletionQueue.Empty();
 
 	if (System == nullptr || bCanExecute == false)
@@ -731,6 +735,7 @@ bool FNiagaraSystemSimulation::Tick(float DeltaSeconds)
 #endif
 
 	// Clean up any system instances that need to go away after processing...
+	bUseDeferredDeletion = false;
 	DeferredDeletionQueue.Empty();
 
 	INC_DWORD_STAT_BY(STAT_NiagaraNumSystems, SystemInstances.Num());
@@ -740,8 +745,16 @@ bool FNiagaraSystemSimulation::Tick(float DeltaSeconds)
 
 void FNiagaraSystemSimulation::TransitionToDeferredDeletionQueue(TUniquePtr< FNiagaraSystemInstance>& InPtr)
 {
-	DeferredDeletionQueue.Emplace(MoveTemp(InPtr));
-	check(InPtr.Get() == nullptr);
+	check(IsInGameThread());
+	if (bUseDeferredDeletion)
+	{
+		DeferredDeletionQueue.Emplace(MoveTemp(InPtr));
+		check(InPtr.Get() == nullptr);
+	}
+	else
+	{
+		InPtr = nullptr;
+	}
 }
 
 void FNiagaraSystemSimulation::RemoveInstance(FNiagaraSystemInstance* Instance)

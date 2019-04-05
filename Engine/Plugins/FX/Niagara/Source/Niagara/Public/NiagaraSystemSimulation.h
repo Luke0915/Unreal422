@@ -225,5 +225,6 @@ protected:
 
 	TOptional<float> MaxDeltaTime;
 
+	bool bUseDeferredDeletion = false;
 	TArray<TUniquePtr< FNiagaraSystemInstance> > DeferredDeletionQueue;
 };
