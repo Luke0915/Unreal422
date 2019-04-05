@@ -722,7 +722,8 @@ void NiagaraEmitterInstanceBatcher::SortGPUParticles(FRHICommandListImmediate& R
 		INC_DWORD_STAT_BY(STAT_NiagaraGPUSortedBuffers, ParticleSortBuffers.GetSize());
 
 		// Make sure our outputs are safe to write to.
-		FUnorderedAccessViewRHIParamRef OutputUAVs[2] = { ParticleSortBuffers.GetKeyBufferUAV(), ParticleSortBuffers.GetVertexBufferUAV() };
+		const int32 InitialSortBufferIndex = 0;
+		FUnorderedAccessViewRHIParamRef OutputUAVs[2] = { ParticleSortBuffers.GetKeyBufferUAV(InitialSortBufferIndex), ParticleSortBuffers.GetVertexBufferUAV(InitialSortBufferIndex) };
 		RHICmdList.TransitionResources(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EGfxToCompute, OutputUAVs, 2);
 
 		// EmitterKey = (EmitterIndex & EmitterKeyMask) << EmitterKeyShift.
@@ -741,7 +742,7 @@ void NiagaraEmitterInstanceBatcher::SortGPUParticles(FRHICommandListImmediate& R
 			
 			TShaderMapRef<FNiagaraSortKeyGenCS> KeyGenCS(GetGlobalShaderMap(FeatureLevel), PermutationVector);
 			RHICmdList.SetComputeShader(KeyGenCS->GetComputeShader());
-			KeyGenCS->SetOutput(RHICmdList, ParticleSortBuffers.GetKeyBufferUAV(), ParticleSortBuffers.GetVertexBufferUAV());
+			KeyGenCS->SetOutput(RHICmdList, ParticleSortBuffers.GetKeyBufferUAV(InitialSortBufferIndex), ParticleSortBuffers.GetVertexBufferUAV(InitialSortBufferIndex));
 
 			// (SortKeyMask, SortKeyShift, SortKeySignBit)
 			FUintVector4 SortKeyParams(SortKeyMask, 0, 0x8000, 0); 
@@ -775,7 +776,7 @@ void NiagaraEmitterInstanceBatcher::SortGPUParticles(FRHICommandListImmediate& R
 		// Sort buffers and copy results to index buffers.
 		{
 			const uint32 KeyMask = (EmitterKeyMask << EmitterKeyShift) | SortKeyMask;
-			const int32 ResultBufferIndex = SortGPUBuffers(RHICmdList, ParticleSortBuffers.GetSortBuffers(), 0, KeyMask, SortedParticleCount, FeatureLevel);
+			const int32 ResultBufferIndex = SortGPUBuffers(RHICmdList, ParticleSortBuffers.GetSortBuffers(), InitialSortBufferIndex, KeyMask, SortedParticleCount, FeatureLevel);
 			ResolveParticleSortBuffers(RHICmdList, ResultBufferIndex);
 		}
 
