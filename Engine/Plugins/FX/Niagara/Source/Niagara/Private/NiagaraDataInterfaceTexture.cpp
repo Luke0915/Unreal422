@@ -424,7 +424,10 @@ void UNiagaraDataInterfaceTexture::PushToRenderThread()
 
 	if (Texture)
 	{
-		RT_Texture = Texture->TextureReference.TextureReferenceRHI->GetReferencedTexture();
+		if (Texture->TextureReference.TextureReferenceRHI)
+		{
+			RT_Texture = Texture->TextureReference.TextureReferenceRHI->GetReferencedTexture();
+		}
 		if (Texture->Resource)
 		{
 			RT_SamplerState = Texture->Resource->SamplerStateRHI;
