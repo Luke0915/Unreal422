@@ -370,25 +370,30 @@ void FNiagaraDataBuffer::Allocate(uint32 InNumInstances, bool bMaintainExisting)
 
 void FNiagaraDataBuffer::AllocateGPU(uint32 InNumInstances, FRHICommandList &RHICmdList)
 {
-	if (Owner == 0)
+	if (Owner == nullptr)
 	{
 		return;
 	}
 	check(IsInRenderingThread());
+
+	// ALLOC_CHUNKSIZE must be greater than zero and divisible by the thread group size
 	const uint32 ALLOC_CHUNKSIZE = 4096;
+	static_assert((ALLOC_CHUNKSIZE > 0) && ((ALLOC_CHUNKSIZE % NIAGARA_COMPUTE_THREADGROUP_SIZE) == 0), "ALLOC_CHUNKSIZE must be divisible by NIAGARA_COMPUTE_THREADGROUP_SIZE");
 
 	NumInstancesAllocated = InNumInstances;
 
-	uint32 PaddedNumInstances = ((InNumInstances + NIAGARA_COMPUTE_THREADGROUP_SIZE -1) / NIAGARA_COMPUTE_THREADGROUP_SIZE) * NIAGARA_COMPUTE_THREADGROUP_SIZE;
+	// Round the count up to the nearest threadgroup size
+	const uint32 PaddedNumInstances = FMath::DivideAndRoundUp(NumInstancesAllocated, NIAGARA_COMPUTE_THREADGROUP_SIZE) * NIAGARA_COMPUTE_THREADGROUP_SIZE;
+
+	// Pack the data so that the space between elements is the padded thread group size
 	FloatStride = PaddedNumInstances * sizeof(float);
 	Int32Stride = PaddedNumInstances * sizeof(int32);
 
-	if (NumInstancesAllocated > NumChunksAllocatedForGPU * ALLOC_CHUNKSIZE)
+	// When the number of elements that we are going to need is greater than the number we have reserved, we need to expand it.
+	if (PaddedNumInstances > NumChunksAllocatedForGPU * ALLOC_CHUNKSIZE)
 	{
-		uint32 PrevChunks = NumChunksAllocatedForGPU;
-		NumChunksAllocatedForGPU = ((InNumInstances + ALLOC_CHUNKSIZE - 1) / ALLOC_CHUNKSIZE);
-		uint32 NumElementsToAlloc = NumChunksAllocatedForGPU * ALLOC_CHUNKSIZE;
-
+		NumChunksAllocatedForGPU = FMath::DivideAndRoundUp(PaddedNumInstances, ALLOC_CHUNKSIZE);
+		const uint32 NumElementsToAlloc = NumChunksAllocatedForGPU * ALLOC_CHUNKSIZE;
 		if (NumElementsToAlloc == 0)
 		{
 			return;
