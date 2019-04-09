@@ -610,14 +610,10 @@ FNiagaraDynamicDataBase *NiagaraRendererSprites::GenerateVertexData(const FNiaga
 
 			LastSyncId = Properties->SyncId;
 		}
-		
-		if(Data.CurrData().GetNumInstances() > 0)
+
+		DynamicData = ConditionallyCreateDynamicData<FNiagaraDynamicDataSprites>(Data, Target);
+		if (DynamicData != nullptr)
 		{
-			DynamicData = new FNiagaraDynamicDataSprites;
-
-			//TODO: This buffer is far fatter than needed. Just pull out the data needed for rendering.
-			Data.CurrData().CopyTo(DynamicData->RTParticleData);
-
 			DynamicData->DataSet = &Data;
 		}
 

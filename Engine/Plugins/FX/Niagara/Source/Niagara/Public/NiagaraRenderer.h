@@ -139,6 +139,36 @@ public:
 
 	void SortIndices(ENiagaraSortMode SortMode, int32 SortAttributeOffset, const FNiagaraDataBuffer& Buffer, const FMatrix& LocalToWorld, const FSceneView* View, FGlobalDynamicReadBuffer::FAllocation& OutIndices)const;
 
+	template<typename TDynamicData>
+	static TDynamicData* ConditionallyCreateDynamicData(FNiagaraDataSet& DataSet, const ENiagaraSimTarget Target)
+	{
+		TDynamicData* DynamicData = nullptr;
+
+		// For GPU simulations we must enqueue a command to read back the data, we can also not check the number of instances active
+		// as the rendering thread could be writing to this data or have a command enqueued to modify the data.
+		if ( Target == ENiagaraSimTarget::GPUComputeSim )
+		{
+			DynamicData = new TDynamicData();
+			ENQUEUE_RENDER_COMMAND(NiagaraRenderDataCopyDataSet)(
+				[InDataSet = &DataSet, DynamicData](FRHICommandListImmediate& RHICmdList)
+				{
+					InDataSet->CurrData().CopyTo(DynamicData->RTParticleData);
+				}
+			);
+		}
+		else
+		{
+			if (DataSet.CurrData().GetNumInstances() > 0)
+			{
+				DynamicData = new TDynamicData();
+
+				//TODO: This buffer is far fatter than needed. Just pull out the data needed for rendering.
+				DataSet.CurrData().CopyTo(DynamicData->RTParticleData);
+			}
+		}
+		return DynamicData;
+	}
+
 	static FRWBuffer& GetDummyFloatBuffer(); 
 	static FRWBufferStructured& GetDummyMatrixBuffer();
 	static FRWBuffer& GetDummyIntBuffer();

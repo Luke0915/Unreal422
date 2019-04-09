@@ -500,15 +500,9 @@ FNiagaraDynamicDataBase *NiagaraRendererMeshes::GenerateVertexData(const FNiagar
 		return nullptr;
 	}
 
-	FNiagaraDynamicDataMesh *DynamicData = nullptr;
-
-	if (Data.CurrData().GetNumInstances() > 0)
+	FNiagaraDynamicDataMesh* DynamicData = ConditionallyCreateDynamicData< FNiagaraDynamicDataMesh>(Data, Target);
+	if (DynamicData != nullptr)
 	{
-		DynamicData = new FNiagaraDynamicDataMesh;
-
-		//TODO: This buffer is far fatter than needed. Just pull out the data needed for rendering.
-		Data.CurrData().CopyTo(DynamicData->RTParticleData);
-
 		DynamicData->DataSet = &Data;
 	}
 

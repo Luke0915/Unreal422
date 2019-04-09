@@ -248,17 +248,7 @@ FNiagaraDynamicDataBase *NiagaraRendererVolumes::GenerateVertexData(const FNiaga
 		return nullptr;
 	}
 
-	FNiagaraDynamicDataVolumes *DynamicData = nullptr;
-
-	if (Data.CurrData().GetNumInstances() > 0)
-	{
-		DynamicData = new FNiagaraDynamicDataVolumes;
-
-		//TODO: This buffer is far fatter than needed. Just pull out the data needed for rendering.
-		Data.CurrData().CopyTo(DynamicData->RTParticleData);
-
-		//DynamicData->DataSet = &Data;
-	}
+	FNiagaraDynamicDataVolumes *DynamicData = ConditionallyCreateDynamicData<FNiagaraDynamicDataVolumes>(Data, Target);
 
 	CPUTimeMS = VertexDataTimer.GetElapsedMilliseconds();
 	return DynamicData;  
