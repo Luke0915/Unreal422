@@ -317,22 +317,16 @@ bool FNiagaraSystemSimulation::Tick(float DeltaSeconds)
 		SCOPE_CYCLE_COUNTER(STAT_NiagaraSystemSim_PreSimulate);
 
 		{
-			int32 SystemIndex = 0;
-			while (SystemIndex < SystemInstances.Num())
+			for (int32 SystemIndex = 0; SystemIndex < SystemInstances.Num(); ++SystemIndex)
 			{
 				FNiagaraSystemInstance* Inst = SystemInstances[SystemIndex];
 
 				Inst->TickDataInterfaces(DeltaSeconds, false);
-				if (!Inst->IsComplete())
-				{
-					++SystemIndex;
-				}
-				else
+				if (Inst->IsComplete())
 				{
 					checkSlow(Inst->SystemInstanceIndex == INDEX_NONE);
 				}
 			}
-			OrigNum = SystemIndex;
 
 			//Pre tick and gather any still valid pending instances for spawn.
 			SystemInstances.Reserve(NewNum);
