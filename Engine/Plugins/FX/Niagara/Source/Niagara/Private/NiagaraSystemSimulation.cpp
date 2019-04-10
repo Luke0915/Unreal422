@@ -583,8 +583,7 @@ bool FNiagaraSystemSimulation::Tick(float DeltaSeconds)
 
 		{
 			SCOPE_CYCLE_COUNTER(STAT_NiagaraSystemSim_TransferParameters);
-			int32 SystemIndex = 0;
-			while (SystemIndex < SystemInstances.Num())
+			for (int32 SystemIndex = 0; SystemIndex < SystemInstances.Num(); ++SystemIndex)
 			{
 				ENiagaraExecutionState ExecutionState = (ENiagaraExecutionState)SystemExecutionStateAccessor.GetSafe(SystemIndex, (int32)ENiagaraExecutionState::Disabled);
 				FNiagaraSystemInstance* SystemInst = SystemInstances[SystemIndex];
@@ -646,9 +645,6 @@ bool FNiagaraSystemSimulation::Tick(float DeltaSeconds)
 							}
 						}
 					}
-
-					//System is still enabled. 
-					++SystemIndex;
 				}
 			}
 		}
