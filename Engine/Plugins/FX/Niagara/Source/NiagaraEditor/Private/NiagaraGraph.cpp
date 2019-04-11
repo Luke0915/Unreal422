@@ -1296,7 +1296,6 @@ void UNiagaraGraph::SetMetaData(const FNiagaraVariable& InVar, const FNiagaraVar
 	ensure(FNiagaraConstants::IsNiagaraConstant(InVar) == false);
 	FNiagaraVariableMetaData& MetaData = VariableToMetaData.FindOrAdd(InVar);
 	MetaData = InMetaData;
-	ensure(FNiagaraConstants::IsNiagaraConstant(InVar) == false);
 }
 
 void UNiagaraGraph::PurgeUnreferencedMetaData() const

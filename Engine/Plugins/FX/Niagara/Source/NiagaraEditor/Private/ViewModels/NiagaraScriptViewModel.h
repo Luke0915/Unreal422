@@ -38,12 +38,6 @@ public:
 	/** Gets the view model for the output parameter collection. */
 	TSharedRef<FNiagaraScriptOutputCollectionViewModel> GetOutputCollectionViewModel();
 
-	/** Gets the view model for the metadata collection. */
-	TSharedRef<FNiagaraMetaDataCollectionViewModel> GetMetadataCollectionViewModel();
-
-	/** Refreshes the metadata collection */
-	void RefreshMetadataCollection();
-
 	TSharedRef<INiagaraParameterCollectionViewModel> GetInputParameterMapViewModel();
 	TSharedRef<INiagaraParameterCollectionViewModel> GetOutputParameterMapViewModel();
 
@@ -108,9 +102,6 @@ protected:
 
 	/** The view model for the output parameter collection .*/
 	TSharedRef<FNiagaraScriptOutputCollectionViewModel> OutputCollectionViewModel;
-
-	/** The view model for the metadata collection .*/
-	TSharedRef<FNiagaraMetaDataCollectionViewModel> MetaDataCollectionViewModel;
 
 	/** The view model for the graph. */
 	TSharedRef<FNiagaraScriptGraphViewModel> GraphViewModel;

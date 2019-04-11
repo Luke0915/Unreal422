@@ -49,14 +49,9 @@
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - ScriptToolkit - OnApply"), STAT_NiagaraEditor_ScriptToolkit_OnApply, STATGROUP_NiagaraEditor);
 
-static TAutoConsoleVariable<int32> CVarDevDetails(
-	TEXT("fx.DevDetailsPanels"),
-	1,
-	TEXT("Whether to enable the development details panels inside Niagara."));
-
-
 const FName FNiagaraScriptToolkit::NodeGraphTabId(TEXT("NiagaraEditor_NodeGraph")); 
-const FName FNiagaraScriptToolkit::DetailsTabId(TEXT("NiagaraEditor_Details"));
+const FName FNiagaraScriptToolkit::ScriptDetailsTabId(TEXT("NiagaraEditor_ScriptDetails"));
+const FName FNiagaraScriptToolkit::SelectedDetailsTabId(TEXT("NiagaraEditor_SelectedDetails"));
 const FName FNiagaraScriptToolkit::ParametersTabId(TEXT("NiagaraEditor_Parameters"));
 const FName FNiagaraScriptToolkit::StatsTabId(TEXT("NiagaraEditor_Stats"));
 
@@ -82,8 +77,13 @@ void FNiagaraScriptToolkit::RegisterTabSpawners(const TSharedRef<class FTabManag
 		.SetDisplayName( LOCTEXT("NodeGraph", "Node Graph") )
 		.SetGroup(WorkspaceMenuCategoryRef); 
 
-	InTabManager->RegisterTabSpawner(DetailsTabId, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabNodeDetails))
-		.SetDisplayName(LOCTEXT("DetailsTab", "Details"))
+	InTabManager->RegisterTabSpawner(ScriptDetailsTabId, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabScriptDetails))
+		.SetDisplayName(LOCTEXT("ScriptDetailsTab", "Script Details"))
+		.SetGroup(WorkspaceMenuCategoryRef)
+		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+
+	InTabManager->RegisterTabSpawner(SelectedDetailsTabId, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabSelectedDetails))
+		.SetDisplayName(LOCTEXT("ScriptDetailsTab", "Selected Details"))
 		.SetGroup(WorkspaceMenuCategoryRef)
 		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
 
@@ -102,7 +102,8 @@ void FNiagaraScriptToolkit::UnregisterTabSpawners(const TSharedRef<class FTabMan
 	FAssetEditorToolkit::UnregisterTabSpawners(InTabManager);
 
 	InTabManager->UnregisterTabSpawner(NodeGraphTabId);
-	InTabManager->UnregisterTabSpawner(DetailsTabId);
+	InTabManager->UnregisterTabSpawner(ScriptDetailsTabId);
+	InTabManager->UnregisterTabSpawner(SelectedDetailsTabId);
 	InTabManager->UnregisterTabSpawner(ParametersTabId);
 	InTabManager->UnregisterTabSpawner(StatsTabId);
 }
@@ -149,7 +150,7 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 	StatsListing = MessageLogModule.CreateLogListing("MaterialEditorStats", LogOptions);
 	Stats = MessageLogModule.CreateLogListingWidget(StatsListing.ToSharedRef());
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_Layout_v7")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_Layout_v8")
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
@@ -166,13 +167,13 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 			->Split
 			(
 				FTabManager::NewSplitter()->SetOrientation(Orient_Vertical)
-				->SetSizeCoefficient(0.2f)
+				->SetSizeCoefficient(0.15f)
 				->Split
 				(
 					FTabManager::NewStack()
 					->SetSizeCoefficient(0.5f)
-					->AddTab(DetailsTabId, ETabState::OpenedTab)
-					->SetForegroundTab(DetailsTabId)
+					->AddTab(ScriptDetailsTabId, ETabState::OpenedTab)
+					->SetForegroundTab(ScriptDetailsTabId)
 				)
 				->Split
 				(
@@ -191,8 +192,14 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 			->Split
 			(
 				FTabManager::NewStack()
-				->SetSizeCoefficient(0.8f)
+				->SetSizeCoefficient(0.7f)
 				->AddTab(NodeGraphTabId, ETabState::OpenedTab)
+			)
+			->Split
+			(
+				FTabManager::NewStack()
+				->SetSizeCoefficient(0.15f)
+				->AddTab(SelectedDetailsTabId, ETabState::OpenedTab)
 			)
 		)
 	);
@@ -293,12 +300,10 @@ void FNiagaraScriptToolkit::OnVMScriptCompiled(UNiagaraScript* InScript)
 	UpdateModuleStats();
 }
 
-TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabNodeDetails(const FSpawnTabArgs& Args)
+TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabScriptDetails(const FSpawnTabArgs& Args)
 {
-	checkf(Args.GetTabId().TabType == DetailsTabId, TEXT("Wrong tab ID in NiagaraScriptToolkit"));
+	checkf(Args.GetTabId().TabType == ScriptDetailsTabId, TEXT("Wrong tab ID in NiagaraScriptToolkit"));
 	checkf(ScriptViewModel.IsValid(), TEXT("NiagaraScriptToolkit - Script editor view model is invalid"));
-
-	IConsoleVariable* DevDetailsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("fx.DevDetailsPanels"));
 
 	TWeakPtr<FNiagaraScriptViewModel> ScriptViewModelWeakPtr = ScriptViewModel;
 
@@ -314,34 +319,25 @@ TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabNodeDetails(const FSpawnTabA
 
 	DetailsView->SetObjects(DetailsSelection->GetSelectedObjects().Array());
 
-	if (DevDetailsCVar && DevDetailsCVar->GetInt() != 0)
-	{
-		return SNew(SDockTab)
-			.Label(LOCTEXT("ScriptNodeDetailsTabLabel", "Details"))
-			.TabColorScale(GetTabColorScale())
-			[
-				SNew(SScrollBox)
-				+ SScrollBox::Slot()
-				.Padding(0, 3, 0, 0)
-				[
-					DetailsView
-				]
-				+ SScrollBox::Slot()
-				.Padding(0, 3, 0, 0)
-				[
-					SNew(SNiagaraSelectedObjectsDetails, ScriptViewModel->GetGraphViewModel()->GetSelection())
-				]
-			];
-	}
-	else
-	{
-		return SNew(SDockTab)
-			.Label(LOCTEXT("ScriptNodeDetailsTabLabel", "Details"))
-			.TabColorScale(GetTabColorScale())
-			[
-				DetailsView
-			];
-	}
+	return SNew(SDockTab)
+		.Label(LOCTEXT("ScriptDetailsTabLabel", "Script Details"))
+		.TabColorScale(GetTabColorScale())
+		[
+			DetailsView
+		];
+}
+
+TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabSelectedDetails(const FSpawnTabArgs& Args)
+{
+	checkf(Args.GetTabId().TabType == SelectedDetailsTabId, TEXT("Wrong tab ID in NiagaraScriptToolkit"));
+	checkf(ScriptViewModel.IsValid(), TEXT("NiagaraScriptToolkit - Script editor view model is invalid"));
+
+	return SNew(SDockTab)
+		.Label(LOCTEXT("SelectedDetailsTabLabel", "Selected Details"))
+		.TabColorScale(GetTabColorScale())
+		[
+			SNew(SNiagaraSelectedObjectsDetails, ScriptViewModel->GetGraphViewModel()->GetSelection())
+		];
 }
 
 TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabScriptParameters(const FSpawnTabArgs& Args)
@@ -408,13 +404,12 @@ void FNiagaraScriptToolkit::ExtendToolbar()
 				TAttribute<FText>(ScriptToolkit, &FNiagaraScriptToolkit::GetCompileStatusTooltip),
 				TAttribute<FSlateIcon>(ScriptToolkit, &FNiagaraScriptToolkit::GetCompileStatusImage),
 				FName(TEXT("CompileNiagaraScript")));
-			// removed this for UE-58554 ahead of 4.20. Functionality code should also be removed if this becomes permanent.
-			/*ToolbarBuilder.AddToolBarButton(FNiagaraEditorCommands::Get().RefreshNodes,
+			ToolbarBuilder.AddToolBarButton(FNiagaraEditorCommands::Get().RefreshNodes,
 				NAME_None,
 				TAttribute<FText>(),
 				TAttribute<FText>(ScriptToolkit, &FNiagaraScriptToolkit::GetRefreshStatusTooltip),
 				TAttribute<FSlateIcon>(ScriptToolkit, &FNiagaraScriptToolkit::GetRefreshStatusImage),
-				FName(TEXT("RefreshScriptReferences")));*/
+				FName(TEXT("RefreshScriptReferences")));
 			ToolbarBuilder.EndSection();
 		}
 	};
@@ -471,7 +466,6 @@ FText FNiagaraScriptToolkit::GetRefreshStatusTooltip() const
 void FNiagaraScriptToolkit::CompileScript(bool bForce)
 {
 	ScriptViewModel->CompileStandaloneScript();
-	ScriptViewModel->RefreshMetadataCollection();
 }
 
 void FNiagaraScriptToolkit::RefreshNodes()
@@ -559,7 +553,6 @@ void FNiagaraScriptToolkit::UpdateOriginalNiagaraScript()
 
 	// Compile and then overwrite the original script in place by constructing a new one with the same name
 	ScriptViewModel->CompileStandaloneScript();
-	ScriptViewModel->RefreshMetadataCollection();
 	OriginalNiagaraScript = (UNiagaraScript*)StaticDuplicateObject(EditedNiagaraScript, OriginalNiagaraScript->GetOuter(), OriginalNiagaraScript->GetFName(),
 		RF_AllFlags,
 		OriginalNiagaraScript->GetClass());

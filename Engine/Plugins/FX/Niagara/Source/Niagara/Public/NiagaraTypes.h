@@ -318,28 +318,24 @@ struct NIAGARA_API FNiagaraVariableMetaData
 	GENERATED_USTRUCT_BODY()
 public:
 	FNiagaraVariableMetaData()
-		:EditorSortPriority(0)
-		, bAdvancedDisplay(false)
+		: bAdvancedDisplay(false)
+		, EditorSortPriority(0)
 		, bInlineEditConditionToggle(false)
-		, CallSortPriority(0)
 	{
 	}
 public:
-	UPROPERTY(EditAnywhere, Category = "Variable", DisplayName = "Property Metadata", meta = (ToolTip = "Property Metadata"))
-	TMap<FName, FString> PropertyMetaData;
-
 	UPROPERTY(EditAnywhere, Category = "Variable", meta = (MultiLine = true))
 	FText Description;
 
 	UPROPERTY(EditAnywhere, Category = "Variable")
 	FText CategoryName;
 
-	UPROPERTY(EditAnywhere, Category = "Variable", meta = (ToolTip = "Affects the sort order in the editor stacks. Use a smaller number to push it to the top. Defaults to zero."))
-	int32 EditorSortPriority;
-
 	/** Declares that this input is advanced and should only be visible if expanded inputs have been expanded. */
 	UPROPERTY(EditAnywhere, Category = "Variable")
 	bool bAdvancedDisplay;
+
+	UPROPERTY(EditAnywhere, Category = "Variable", meta = (ToolTip = "Affects the sort order in the editor stacks. Use a smaller number to push it to the top. Defaults to zero."))
+	int32 EditorSortPriority;
 
 	/** Declares the associated input is used as an inline edit condition toggle, so it should should be hidden and it should be edited as a 
 	checkbox inline with the input which has designated as its edit condition. */
@@ -354,8 +350,8 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Input Conditions")
 	FNiagaraInputConditionMetadata VisibleCondition;
 
-	UPROPERTY()
-	int32 CallSortPriority;
+	UPROPERTY(EditAnywhere, Category = "Variable", DisplayName = "Property Metadata", meta = (ToolTip = "Property Metadata"))
+	TMap<FName, FString> PropertyMetaData;
 };
 
 USTRUCT()

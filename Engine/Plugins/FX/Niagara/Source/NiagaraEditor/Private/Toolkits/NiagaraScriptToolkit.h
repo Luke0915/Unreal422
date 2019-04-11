@@ -71,7 +71,10 @@ private:
 	TSharedRef<SDockTab> SpawnTabNodeGraph(const FSpawnTabArgs& Args);
 
 	/** Spawns the tab with the script details inside. */
-	TSharedRef<SDockTab> SpawnTabNodeDetails(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTabScriptDetails(const FSpawnTabArgs& Args);
+
+	/** Spawns the tab with the details of the current selection. */
+	TSharedRef<SDockTab> SpawnTabSelectedDetails(const FSpawnTabArgs& Args);
 
 	/** Spawns the tab with the script details inside. */
 	TSharedRef<SDockTab> SpawnTabScriptParameters(const FSpawnTabArgs& Args);
@@ -115,9 +118,11 @@ private:
 
 	/**	The tab ids for the Niagara editor */
 	static const FName NodeGraphTabId; 
-	static const FName DetailsTabId;
+	static const FName ScriptDetailsTabId;
+	static const FName SelectedDetailsTabId;
 	static const FName ParametersTabId;
 	static const FName StatsTabId;
+
 	/** Stats log, with the log listing that it reflects */
 	TSharedPtr<class SWidget> Stats;
 	TSharedPtr<class IMessageLogListing> StatsListing;
