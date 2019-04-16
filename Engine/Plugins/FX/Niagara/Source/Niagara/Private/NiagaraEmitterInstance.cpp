@@ -69,15 +69,17 @@ FNiagaraEmitterInstance::FNiagaraEmitterInstance(FNiagaraSystemInstance* InParen
 
 FNiagaraEmitterInstance::~FNiagaraEmitterInstance()
 {
+	// Clear the cached emitter as it is not safe to access the CacheEmitter due to deferred deleted which can happen after the CachedEmitter has been GCed
+	CachedEmitter = nullptr;
+
 	//UE_LOG(LogNiagara, Warning, TEXT("~Simulator %p"), this);
 	ClearRenderer();
 	CachedBounds.Init();
 	UnbindParameters();
 
-	if (CachedEmitter != nullptr && CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+	if (GPUExecContext != nullptr)
 	{
 		/** We defer the deletion of the particle dataset and the compute context to the RT to be sure all in-flight RT commands have finished using it.*/
-
 		NiagaraEmitterInstanceBatcher* B = Batcher && !Batcher->IsPendingKill() ? Batcher : nullptr;
 		FNiagaraComputeExecutionContext* Context = GPUExecContext;
 		FNiagaraDataSet* DataSet = ParticleDataSet;
@@ -113,6 +115,14 @@ FNiagaraEmitterInstance::~FNiagaraEmitterInstance()
 			
 		GPUExecContext = nullptr;
 		ParticleDataSet = nullptr;
+	}
+	else
+	{
+		if ( ParticleDataSet != nullptr )
+		{
+			delete ParticleDataSet;
+			ParticleDataSet = nullptr;
+		}
 	}
 }
 
