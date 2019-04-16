@@ -1529,12 +1529,13 @@ void UNiagaraDataInterfaceStaticMesh::GetTriCoordPosition(FVectorVMContext& Cont
 	const FIndexArrayView& Indices = Res.IndexBuffer.GetArrayView();
 	const FPositionVertexBuffer& Positions = Res.VertexBuffers.PositionVertexBuffer;
 
+	const int32 NumTriangles = Indices.Num() / 3;
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
-		int32 Tri = TriParam.Get();
-		int32 Idx0 = Indices[Tri];
-		int32 Idx1 = Indices[Tri + 1];
-		int32 Idx2 = Indices[Tri + 2];
+		const int32 Tri = (TriParam.Get() % NumTriangles) * 3;
+		const int32 Idx0 = Indices[Tri];
+		const int32 Idx1 = Indices[Tri + 1];
+		const int32 Idx2 = Indices[Tri + 2];
 
 		FVector Pos = BarycentricInterpolate(BaryXParam.Get(), BaryYParam.Get(), BaryZParam.Get(), Positions.VertexPosition(Idx0), Positions.VertexPosition(Idx1), Positions.VertexPosition(Idx2));
 		TransformHandler.TransformPosition(Pos, InstData->Transform);
@@ -1572,12 +1573,13 @@ void UNiagaraDataInterfaceStaticMesh::GetTriCoordNormal(FVectorVMContext& Contex
 	const FIndexArrayView& Indices = Res.IndexBuffer.GetArrayView();
 	const FStaticMeshVertexBuffer& Verts = Res.VertexBuffers.StaticMeshVertexBuffer;
 
+	const int32 NumTriangles = Indices.Num() / 3;
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
-		int32 Tri = TriParam.Get();
-		int32 Idx0 = Indices[Tri];
-		int32 Idx1 = Indices[Tri + 1];
-		int32 Idx2 = Indices[Tri + 2];
+		const int32 Tri = (TriParam.Get() % NumTriangles) * 3;
+		const int32 Idx0 = Indices[Tri];
+		const int32 Idx1 = Indices[Tri + 1];
+		const int32 Idx2 = Indices[Tri + 2];
 
 		FVector Norm = BarycentricInterpolate(BaryXParam.Get(), BaryYParam.Get(), BaryZParam.Get(), Verts.VertexTangentZ(Idx0), Verts.VertexTangentZ(Idx1), Verts.VertexTangentZ(Idx2));
 		TransformHandler.TransformVector(Norm, InstData->TransformInverseTransposed);
@@ -1620,12 +1622,13 @@ void UNiagaraDataInterfaceStaticMesh::GetTriCoordTangents(FVectorVMContext& Cont
 	VectorVM::FExternalFuncRegisterHandler<float> OutNormY(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> OutNormZ(Context);
 
+	const int32 NumTriangles = Indices.Num() / 3;
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
-		int32 Tri = TriParam.Get();
-		int32 Idx0 = Indices[Tri];
-		int32 Idx1 = Indices[Tri + 1];
-		int32 Idx2 = Indices[Tri + 2];
+		const int32 Tri = (TriParam.Get() % NumTriangles) * 3;
+		const int32 Idx0 = Indices[Tri];
+		const int32 Idx1 = Indices[Tri + 1];
+		const int32 Idx2 = Indices[Tri + 2];
 		FVector Tangent = BarycentricInterpolate(BaryXParam.Get(), BaryYParam.Get(), BaryZParam.Get(), Verts.GetTangentX(Idx0), Verts.GetTangentX(Idx1), Verts.GetTangentX(Idx2));
 		FVector Binorm = BarycentricInterpolate(BaryXParam.Get(), BaryYParam.Get(), BaryZParam.Get(), Verts.GetTangentY(Idx0), Verts.GetTangentY(Idx1), Verts.GetTangentY(Idx2));
 		FVector Norm = BarycentricInterpolate(BaryXParam.Get(), BaryYParam.Get(), BaryZParam.Get(), Verts.GetTangentZ(Idx0), Verts.GetTangentZ(Idx1), Verts.GetTangentZ(Idx2));
@@ -1677,12 +1680,13 @@ void UNiagaraDataInterfaceStaticMesh::GetTriCoordColor(FVectorVMContext& Context
 
 	if (Colors.GetNumVertices() > 0)
 	{
+		const int32 NumTriangles = Indices.Num() / 3;
 		for (int32 i = 0; i < Context.NumInstances; ++i)
 		{
-			int32 Tri = TriParam.Get();
-			int32 Idx0 = Indices[Tri];
-			int32 Idx1 = Indices[Tri + 1];
-			int32 Idx2 = Indices[Tri + 2];
+			const int32 Tri = (TriParam.Get() % NumTriangles) * 3;
+			const int32 Idx0 = Indices[Tri];
+			const int32 Idx1 = Indices[Tri + 1];
+			const int32 Idx2 = Indices[Tri + 2];
 
 			FLinearColor Color = BarycentricInterpolate(BaryXParam.Get(), BaryYParam.Get(), BaryZParam.Get(),
 				Colors.VertexColor(Idx0).ReinterpretAsLinear(), Colors.VertexColor(Idx1).ReinterpretAsLinear(), Colors.VertexColor(Idx2).ReinterpretAsLinear());
@@ -1739,12 +1743,14 @@ void UNiagaraDataInterfaceStaticMesh::GetTriCoordUV(FVectorVMContext& Context)
 	FStaticMeshLODResources& Res = InstData->Mesh->RenderData->LODResources[0];
 	const FIndexArrayView& Indices = Res.IndexBuffer.GetArrayView();
 	const VertexAccessorType Verts(Res.VertexBuffers.StaticMeshVertexBuffer);
+
+	const int32 NumTriangles = Indices.Num() / 3;
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
-		int32 Tri = TriParam.Get();
-		int32 Idx0 = Indices[Tri];
-		int32 Idx1 = Indices[Tri + 1];
-		int32 Idx2 = Indices[Tri + 2];
+		const int32 Tri = (TriParam.Get() % NumTriangles) * 3;
+		const int32 Idx0 = Indices[Tri];
+		const int32 Idx1 = Indices[Tri + 1];
+		const int32 Idx2 = Indices[Tri + 2];
 
 		int32 UVSet = UVSetParam.Get();
 		FVector2D UV = BarycentricInterpolate(BaryXParam.Get(), BaryYParam.Get(), BaryZParam.Get(),	Verts.GetUV(Idx0, UVSet), Verts.GetUV(Idx1, UVSet),	Verts.GetUV(Idx2, UVSet));
@@ -1781,13 +1787,14 @@ void UNiagaraDataInterfaceStaticMesh::GetTriCoordPositionAndVelocity(FVectorVMCo
 	const FIndexArrayView& Indices = Res.IndexBuffer.GetArrayView();
 	const FPositionVertexBuffer& Positions = Res.VertexBuffers.PositionVertexBuffer;
 
+	const int32 NumTriangles = Indices.Num() / 3;
 	float InvDt = 1.0f / InstData->DeltaSeconds;
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
-		int32 Tri = TriParam.Get();
-		int32 Idx0 = Indices[Tri];
-		int32 Idx1 = Indices[Tri + 1];
-		int32 Idx2 = Indices[Tri + 2];
+		const int32 Tri = (TriParam.Get() % NumTriangles) * 3;
+		const int32 Idx0 = Indices[Tri];
+		const int32 Idx1 = Indices[Tri + 1];
+		const int32 Idx2 = Indices[Tri + 2];
 
 		FVector Pos = BarycentricInterpolate(BaryXParam.Get(), BaryYParam.Get(), BaryZParam.Get(), Positions.VertexPosition(Idx0), Positions.VertexPosition(Idx1), Positions.VertexPosition(Idx2));
 
@@ -1938,9 +1945,7 @@ void UNiagaraDataInterfaceStaticMesh::SetDefaultMeshFromBlueprints(UStaticMesh* 
 	DefaultMesh = MeshToUse;
 }
 
-
-bool 
-UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FName&  DefinitionFunctionName, FString InstanceFunctionName, FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
+bool UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FName&  DefinitionFunctionName, FString InstanceFunctionName, FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 	FNDIStaticMeshParametersName ParamNames;
 	GetNiagaraDataInterfaceParametersName(ParamNames, ParamInfo.DataInterfaceHLSLSymbol);
@@ -2034,30 +2039,120 @@ UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FName&  DefinitionFunctio
 		}
 		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriPositionName)
 		{
-			// unimplemented();
+			static const TCHAR *FormatSample = TEXT(R"(
+				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position)
+				{
+					uint TriangleIndex = In_Coord.Tri * 3;
+					uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
+					uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
+					uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
+
+					// I could not find a R32G32B32f format to create an SRV on that buffer. So float load it is for now...
+					float3 vertex0 = float3({MeshVertexBufferName}[VertexIndex0], {MeshVertexBufferName}[VertexIndex0+1], {MeshVertexBufferName}[VertexIndex0+2]);
+					float3 vertex1 = float3({MeshVertexBufferName}[VertexIndex1], {MeshVertexBufferName}[VertexIndex1+1], {MeshVertexBufferName}[VertexIndex1+2]);
+					float3 vertex2 = float3({MeshVertexBufferName}[VertexIndex2], {MeshVertexBufferName}[VertexIndex2+1], {MeshVertexBufferName}[VertexIndex2+2]);
+					Out_Position = vertex0 * In_Coord.BaryCoord.x + vertex1 * In_Coord.BaryCoord.y + vertex2 * In_Coord.BaryCoord.z;
+				}
+				)");
+			OutHLSL += FString::Format(FormatSample, ArgsSample);
 		}
 		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriPositionWSName)
 		{
-			// unimplemented();
+			static const TCHAR *FormatSample = TEXT(R"(
+				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position)
+				{
+					uint TriangleIndex = In_Coord.Tri * 3;
+					uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
+					uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
+					uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
+
+					// I could not find a R32G32B32f format to create an SRV on that buffer. So float load it is for now...
+					float3 vertex0 = float3({MeshVertexBufferName}[VertexIndex0], {MeshVertexBufferName}[VertexIndex0+1], {MeshVertexBufferName}[VertexIndex0+2]);
+					float3 vertex1 = float3({MeshVertexBufferName}[VertexIndex1], {MeshVertexBufferName}[VertexIndex1+1], {MeshVertexBufferName}[VertexIndex1+2]);
+					float3 vertex2 = float3({MeshVertexBufferName}[VertexIndex2], {MeshVertexBufferName}[VertexIndex2+1], {MeshVertexBufferName}[VertexIndex2+2]);
+					float3 Position = vertex0 * In_Coord.BaryCoord.x + vertex1 * In_Coord.BaryCoord.y + vertex2 * In_Coord.BaryCoord.z;
+
+					Out_Position = mul(float4(Position, 1.0), {InstanceTransformName}).xyz;
+				}
+				)");
+			OutHLSL += FString::Format(FormatSample, ArgsSample);
 		}
 		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriNormalName)
 		{
-			// unimplemented();
+			static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
+			{
+				uint TriangleIndex = In_Coord.Tri * 3;
+				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
+				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
+				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
+
+				float3 Normal0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyz);
+				float3 Normal1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyz);
+				float3 Normal2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyz);
+
+				float3 Normal   = Normal0 * In_Coord.BaryCoord.x + Normal1 * In_Coord.BaryCoord.y + Normal2 * In_Coord.BaryCoord.z;
+
+				Out_Normal = normalize(Normal);
+			}
+			)");
+			OutHLSL += FString::Format(FormatSample, ArgsSample);
 		}
 		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriNormalWSName)
 		{
-			// unimplemented();
+			static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
+			{
+				uint TriangleIndex = In_Coord.Tri * 3;
+				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
+				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
+				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
+
+				float3 Normal0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyz);
+				float3 Normal1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyz);
+				float3 Normal2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyz);
+
+				float3 Normal   = Normal0 * In_Coord.BaryCoord.x + Normal1 * In_Coord.BaryCoord.y + Normal2 * In_Coord.BaryCoord.z;
+
+				Out_Normal = normalize(mul(float4(Normal, 0.0), {InstanceTransformName}).xyz);
+			}
+			)");
+			OutHLSL += FString::Format(FormatSample, ArgsSample);
 		}
 		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriTangentsName)
 		{
-			// unimplemented();
+			static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
+			{
+				uint TriangleIndex = In_Coord.Tri * 3;
+				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
+				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
+				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
+
+				float3 TangentX0 = TangentBias({MeshTangentBufferName}[VertexIndex0  ].xyz);
+				float4 TangentZ0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyzw);
+				float3 TangentX1 = TangentBias({MeshTangentBufferName}[VertexIndex1  ].xyz);
+				float4 TangentZ1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyzw);
+				float3 TangentX2 = TangentBias({MeshTangentBufferName}[VertexIndex2  ].xyz);
+				float4 TangentZ2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyzw);
+
+				float3 Binormal0   = cross(TangentZ0.xyz, TangentX0.xyz) * TangentZ0.w;
+				float3 Binormal1   = cross(TangentZ1.xyz, TangentX1.xyz) * TangentZ1.w;
+				float3 Binormal2   = cross(TangentZ2.xyz, TangentX2.xyz) * TangentZ2.w;
+
+				Out_Normal   = normalize(TangentZ0.xyz * In_Coord.BaryCoord.x + TangentZ1.xyz * In_Coord.BaryCoord.y + TangentZ2.xyz * In_Coord.BaryCoord.z);  // Normal is TangentZ
+				Out_Tangent  = normalize(TangentX0.xyz * In_Coord.BaryCoord.x + TangentX1.xyz * In_Coord.BaryCoord.y + TangentX2.xyz * In_Coord.BaryCoord.z);
+				Out_Binormal = normalize(Binormal0.xyz * In_Coord.BaryCoord.x + Binormal1.xyz * In_Coord.BaryCoord.y + Binormal2.xyz * In_Coord.BaryCoord.z);
+			}
+			)");
+			OutHLSL += FString::Format(FormatSample, ArgsSample);
 		}
 		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriTangentsWSName)
 		{
 			static const TCHAR *FormatSample = TEXT(R"(
 			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
 			{
-				uint TriangleIndex = In_Coord.Tri;
+				uint TriangleIndex = In_Coord.Tri * 3;
 				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
 				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
 				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
@@ -2105,7 +2200,7 @@ UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FName&  DefinitionFunctio
 				{
 					if({NumTexCoordName}>0)
 					{
-						uint TriangleIndex = In_Coord.Tri;
+						uint TriangleIndex = In_Coord.Tri * 3;
 						uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ];
 						uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1];
 						uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2];
@@ -2131,7 +2226,7 @@ UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FName&  DefinitionFunctio
 			static const TCHAR *FormatSample = TEXT(R"(
 				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position, out float3 Out_Velocity)
 				{
-					uint TriangleIndex = In_Coord.Tri;
+					uint TriangleIndex = In_Coord.Tri * 3;
 					uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
 					uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
 					uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
@@ -2180,8 +2275,7 @@ UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FName&  DefinitionFunctio
 	return false;
 }
 
-void 
-UNiagaraDataInterfaceStaticMesh::GetParameterDefinitionHLSL(FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
+void UNiagaraDataInterfaceStaticMesh::GetParameterDefinitionHLSL(FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 	FNDIStaticMeshParametersName ParamNames;
 	GetNiagaraDataInterfaceParametersName(ParamNames, ParamInfo.DataInterfaceHLSLSymbol);
