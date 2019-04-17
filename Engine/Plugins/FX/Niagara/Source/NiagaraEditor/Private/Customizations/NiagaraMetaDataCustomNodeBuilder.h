@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -42,7 +42,7 @@ public:
 	void Rebuild();
 
 private:
-	void OnGraphChanged(const FEdGraphEditAction& Action);
+	void OnGraphChanged(const struct FEdGraphEditAction& Action);
 
 	void MetaDataPropertyHandleChanged(FNiagaraVariable ParameterVariable, TSharedRef<FStructOnScope> MetaDataContainerStruct);
 
