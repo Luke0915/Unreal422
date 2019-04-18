@@ -9,6 +9,7 @@
 #include "NiagaraDataSet.h"
 #include "NiagaraScriptExecutionContext.h"
 #include "NiagaraSystemSimulation.h"
+#include "NiagaraSystemInstance.h"
 #include "GlobalDistanceFieldParameters.h"
 #include "NiagaraDataInterfaceSkeletalMesh.h"
 
@@ -74,6 +75,7 @@ public:
 	void CleanupParameterCollections();
 	TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe> GetSystemSimulation(UNiagaraSystem* System);
 	void DestroySystemSimulation(UNiagaraSystem* System);
+	void DestroySystemInstance(TUniquePtr<FNiagaraSystemInstance>& InPtr);
 
 	void Tick(float DeltaSeconds);
 
@@ -91,5 +93,17 @@ private:
 
 	/** Generated data used by data interfaces*/
 	FNDI_SkeletalMesh_GeneratedData SkeletalMeshGeneratedData;
+
+	// Deferred deletion queue for system instances
+	// We need to make sure that any enqueued GPU ticks have been processed before we remove the system instances
+	struct FDeferredDeletionQueue
+	{
+		FRenderCommandFence							Fence;
+		TArray<TUniquePtr<FNiagaraSystemInstance>>	Queue;
+	};
+
+	static constexpr int NumDeferredQueues = 2;
+	int DeferredDeletionQueueIndex = 0;
+	FDeferredDeletionQueue DeferredDeletionQueue[NumDeferredQueues];
 };
 

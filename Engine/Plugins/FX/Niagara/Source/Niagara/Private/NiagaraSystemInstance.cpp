@@ -350,11 +350,20 @@ bool FNiagaraSystemInstance::DeallocateSystemInstance(TUniquePtr< FNiagaraSystem
 		TArray<NiagaraRenderer*> EmptyRenderers;
 		SystemInstanceAllocation->UpdateProxy(EmptyRenderers);
 
-		SystemInstanceAllocation->Component = nullptr;
-		if (SystemSim.IsValid())
+		// Make sure we remove the instance
+		if (SystemInstanceAllocation->SystemInstanceIndex != INDEX_NONE)
 		{
-			SystemSim->TransitionToDeferredDeletionQueue(SystemInstanceAllocation); // This will transfer a unique pointer back to the simulation for ownership.
+			SystemSim->RemoveInstance(SystemInstanceAllocation.Get());
 		}
+
+		// Queue deferred deletion from the WorldManager
+		FNiagaraWorldManager* WorldManager = SystemInstanceAllocation->GetWorldManager();
+		check(WorldManager != nullptr);
+
+		SystemInstanceAllocation->Component = nullptr;
+
+		WorldManager->DestroySystemInstance(SystemInstanceAllocation);
+		check(SystemInstanceAllocation == nullptr);
 	}
 	SystemInstanceAllocation = nullptr;
 	
@@ -1489,7 +1498,7 @@ void FNiagaraSystemInstance::PostSimulateTick(float DeltaSeconds)
 		FNiagaraEmitterInstance& Inst = Emitters[EmitterIdx].Get();
 		Inst.Tick(DeltaSeconds);
 
-		if (Inst.GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Inst.GetGPUContext() != nullptr)
+		if (Inst.GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Inst.GetGPUContext() != nullptr && (Inst.GetExecutionState() != ENiagaraExecutionState::Complete))
 		{
 			TotalParamSize += Inst.GetGPUContext()->CombinedParamStore.GetPaddedParameterSizeInBytes();
 			ActiveGPUEmitterCount++;

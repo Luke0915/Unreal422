@@ -67,6 +67,7 @@ NiagaraEmitterInstanceBatcher::~NiagaraEmitterInstanceBatcher()
 
 void NiagaraEmitterInstanceBatcher::GiveSystemTick_RenderThread(FNiagaraGPUSystemTick& Tick)
 {
+	check(IsInRenderingThread());
 	// Now we consume DataInterface instance data.
 	if (Tick.DIInstanceData)
 	{
@@ -125,6 +126,8 @@ void NiagaraEmitterInstanceBatcher::FinishDispatches()
 
 void NiagaraEmitterInstanceBatcher::ReleaseTicks()
 {
+	check(IsInRenderingThread());
+
 	for (FNiagaraGPUSystemTick& Tick : Ticks_RT)
 	{
 		Tick.Destroy();
@@ -1193,6 +1196,10 @@ void NiagaraEmitterInstanceBatcher::Run(const FNiagaraGPUSystemTick& Tick, const
 		const uint8* ParamData = Instance->ParamData;
 		FUniformBufferRHIRef CBuffer = RHICreateUniformBuffer(ParamData, CBufferLayout, EUniformBufferUsage::UniformBuffer_SingleDraw);
 		RHICmdList.SetShaderUniformBuffer(Shader->GetComputeShader(), Shader->EmitterConstantBufferParam.GetBaseIndex(), CBuffer);
+	}
+	else
+	{
+		ensure(!Shader->EmitterConstantBufferParam.IsBound());
 	}
 
 	// Dispatch, if anything needs to be done

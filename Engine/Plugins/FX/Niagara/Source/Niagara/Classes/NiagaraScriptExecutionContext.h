@@ -81,10 +81,14 @@ struct FNiagaraComputeExecutionContext
 {
 	FNiagaraComputeExecutionContext()
 		: MainDataSet(nullptr)
+		, GPUScript(nullptr)
+		, GPUScript_RT(nullptr)
 		, CBufferLayout(TEXT("Niagara Compute Sim CBuffer"))
 		, GPUDataReadback(nullptr)
 		, AccumulatedSpawnRate(0)
 		, NumIndicesPerInstance(0)
+		, EventSpawnTotal_GT(0)
+		, SpawnRateInstances_GT(0)
 #if WITH_EDITORONLY_DATA
 		, GPUDebugDataReadbackFloat(nullptr)
 		, GPUDebugDataReadbackInt(nullptr)

@@ -228,6 +228,8 @@ struct H2
 
 void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 {
+	check(IsInGameThread());
+
 	ensure(InSystemInstance != nullptr);
 	ensure(!InSystemInstance->IsComplete());
 	SystemInstanceID = InSystemInstance->GetId();
@@ -291,7 +293,7 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 	{
 		FNiagaraEmitterInstance* Emitter = &InSystemInstance->GetEmitters()[i].Get();
 
-		if (Emitter->GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Emitter->GetGPUContext() != nullptr)
+		if (Emitter->GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Emitter->GetGPUContext() != nullptr && Emitter->GetExecutionState() != ENiagaraExecutionState::Complete)
 		{
 			FNiagaraComputeInstanceData* InstanceData = new (&Instances[InstanceIndex]) FNiagaraComputeInstanceData;
 			InstanceIndex++;
