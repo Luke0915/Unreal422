@@ -4,7 +4,7 @@
 
 #include "IDetailCustomNodeBuilder.h"
 #include "NiagaraTypes.h"
-#include "NiagaraMetaDataCustomNodebuilder.generated.h"
+#include "NiagaraMetaDataCustomNodeBuilder.generated.h"
 
 class UNiagaraGraph;
 class FDetailWidgetRow;
