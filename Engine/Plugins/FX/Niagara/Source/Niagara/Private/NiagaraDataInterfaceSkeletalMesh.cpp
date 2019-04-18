@@ -1624,7 +1624,7 @@ bool UNiagaraDataInterfaceSkeletalMesh::GetFunctionHLSL(const FName&  Definition
 	static const TCHAR *FormatSampleSkinnedTriangleDataWSPart0 = TEXT(R"(
 			const bool SkinningEnabled = {EnabledFeaturesName} & 0x0002;
 
-			uint TriangleIndex = In_Coord.Tri;
+			uint TriangleIndex = In_Coord.Tri * 3;
 			uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ];
 			uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1];
 			uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2];
@@ -1822,7 +1822,6 @@ bool UNiagaraDataInterfaceSkeletalMesh::GetFunctionHLSL(const FName&  Definition
 						}
 						Out_Coord.Tri = TriangleIndex;
 					}
-					Out_Coord.Tri *= 3;
 
 					float r0 = NiagaraInternalNoise(1, 2, 3);
 					float r1 = NiagaraInternalNoise(1, 2, 3);
@@ -1875,7 +1874,7 @@ bool UNiagaraDataInterfaceSkeletalMesh::GetFunctionHLSL(const FName&  Definition
 				{
 					if({NumTexCoordName}>0)
 					{
-						uint TriangleIndex = In_Coord.Tri;
+						uint TriangleIndex = In_Coord.Tri * 3;
 						uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ];
 						uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1];
 						uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2];
