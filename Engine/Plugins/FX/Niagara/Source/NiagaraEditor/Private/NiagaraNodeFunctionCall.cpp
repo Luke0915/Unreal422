@@ -117,7 +117,7 @@ void UNiagaraNodeFunctionCall::AllocateDefaultPins()
 		Options.bFilterDuplicates = true;
 		Graph->FindInputNodes(InputNodes, Options);
 
-		bool bHasAdvancePins = false;
+		AdvancedPinDisplay = ENodeAdvancedPins::NoPins;
 		for (UNiagaraNodeInput* InputNode : InputNodes)
 		{
 			if (InputNode->IsExposed())
@@ -145,7 +145,7 @@ void UNiagaraNodeFunctionCall::AllocateDefaultPins()
 				if (InputNode->IsHidden())
 				{
 					NewPin->bAdvancedView = true;
-					bHasAdvancePins = true;
+					AdvancedPinDisplay = ENodeAdvancedPins::Hidden;
 				}
 				else
 				{
@@ -154,7 +154,19 @@ void UNiagaraNodeFunctionCall::AllocateDefaultPins()
 			}
 		}
 
-		AdvancedPinDisplay = bHasAdvancePins ? ENodeAdvancedPins::Hidden : ENodeAdvancedPins::NoPins;
+		TArray<FNiagaraVariable> SwitchNodeInputs = Graph->FindStaticSwitchInputs();
+		for (const FNiagaraVariable& Input : SwitchNodeInputs)
+		{
+			UEdGraphPin* NewPin = CreatePin(EGPD_Input, Schema->TypeDefinitionToPinType(Input.GetType()), Input.GetName());
+			NewPin->bDefaultValueIsIgnored = false;
+			NewPin->bNotConnectable = true;
+
+			FString PinDefaultValue;
+			if (Schema->TryGetPinDefaultValueFromNiagaraVariable(Input, PinDefaultValue))
+			{
+				NewPin->DefaultValue = PinDefaultValue;
+			}			
+		}
 
 		for (FNiagaraVariable& Output : Outputs)
 		{

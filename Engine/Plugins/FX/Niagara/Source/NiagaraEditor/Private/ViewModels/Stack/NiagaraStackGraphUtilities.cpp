@@ -526,6 +526,27 @@ void FNiagaraStackGraphUtilities::GetStackFunctionInputPins(UNiagaraNodeFunction
 	}
 }
 
+void FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<const UEdGraphPin*>& OutInputPins)
+{
+	const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(FunctionCallNode.GetSchema());
+	for (FNiagaraVariable SwitchInput : FunctionCallNode.GetCalledGraph()->FindStaticSwitchInputs())
+	{
+		FEdGraphPinType PinType = Schema->TypeDefinitionToPinType(SwitchInput.GetType());
+		for (UEdGraphPin* Pin : FunctionCallNode.Pins)
+		{
+			if (Pin->Direction != EEdGraphPinDirection::EGPD_Input)
+			{
+				continue;
+			}
+			if (Pin->PinName.IsEqual(SwitchInput.GetName()) && Pin->PinType == PinType)
+			{
+				OutInputPins.Add(Pin);
+				break;
+			}
+		}
+	}
+}
+
 UNiagaraNodeParameterMapSet* FNiagaraStackGraphUtilities::GetStackFunctionOverrideNode(UNiagaraNodeFunctionCall& FunctionCallNode)
 {
 	UEdGraphPin* ParameterMapInput = FNiagaraStackGraphUtilities::GetParameterMapInputPin(FunctionCallNode);

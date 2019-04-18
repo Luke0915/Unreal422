@@ -32,6 +32,7 @@
 #include "Misc/FileHelper.h"
 #include "EdGraph/EdGraphPin.h"
 #include "NiagaraNodeWriteDataSet.h"
+#include "NiagaraNodeStaticSwitch.h"
 
 #define LOCTEXT_NAMESPACE "FNiagaraEditorUtilities"
 
@@ -620,6 +621,61 @@ void FNiagaraEditorUtilities::FixUpNumericPins(const UEdGraphSchema_Niagara* Sch
 	TraverseGraphFromOutputDepthFirst(Schema, Node, FixUpVisitor);
 }
 
+void FNiagaraEditorUtilities::SetStaticSwitchConstants(UNiagaraGraph* Graph, const TArray<UEdGraphPin*>& CallInputs)
+{
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		UNiagaraNodeStaticSwitch* SwitchNode = Cast<UNiagaraNodeStaticSwitch>(Node);
+		if (SwitchNode)
+		{
+			SwitchNode->IsValueSet = false;
+			for (UEdGraphPin* InputPin : CallInputs)
+			{
+				if (InputPin->GetFName().IsEqual(SwitchNode->InputParameterName))
+				{
+					int32 SwitchValue = 0;
+					SwitchNode->IsValueSet = ResolveConstantValue(InputPin, SwitchValue);
+					SwitchNode->SwitchValue = SwitchValue;
+					break;
+				}
+			}
+			
+		}
+	}
+}
+
+bool FNiagaraEditorUtilities::ResolveConstantValue(UEdGraphPin* Pin, int32& Value)
+{
+	if (Pin->LinkedTo.Num() > 0)
+	{
+		return false;
+	}
+	
+	const FEdGraphPinType& PinType = Pin->PinType;
+	if (PinType.PinCategory == UEdGraphSchema_Niagara::PinCategoryType && PinType.PinSubCategoryObject.IsValid())
+	{
+		FString PinTypeName = PinType.PinSubCategoryObject->GetName();
+		if (PinTypeName.Equals(FString(TEXT("NiagaraBool"))))
+		{
+			Value = Pin->DefaultValue.Equals(FString(TEXT("true"))) ? 1 : 0;
+			return true;
+		}
+		else if (PinTypeName.Equals(FString(TEXT("NiagaraInt32"))))
+		{
+			Value = FCString::Atoi(*Pin->DefaultValue);
+			return true;
+		}
+	}
+	else if (PinType.PinCategory == UEdGraphSchema_Niagara::PinCategoryEnum && PinType.PinSubCategoryObject.IsValid())
+	{
+		UEnum* Enum = Cast<UEnum>(PinType.PinSubCategoryObject);
+		FString FullName = Enum->GenerateFullEnumName(*Pin->DefaultValue);
+		Value = Enum->GetIndexByName(FName(*FullName));
+		return Value != INDEX_NONE;
+	}
+	return false;
+}
+
 /* Go through the graph and attempt to auto-detect the type of any numeric pins by working back from the leaves of the graph. Only change the types of pins, not FNiagaraVariables.*/
 void PreprocessGraph(const UEdGraphSchema_Niagara* Schema, UNiagaraGraph* Graph, UNiagaraNodeOutput* OutputNode)
 {
@@ -769,7 +825,7 @@ void FNiagaraEditorUtilities::PreprocessFunctionGraph(const UEdGraphSchema_Niaga
 	}
 
 	FNiagaraEditorUtilities::FixUpNumericPins(Schema, OutputNode);
-
+	FNiagaraEditorUtilities::SetStaticSwitchConstants(Graph, CallInputs);
 }
 
 void FNiagaraEditorUtilities::GetFilteredScriptAssets(FGetFilteredScriptAssetsOptions InFilter, TArray<FAssetData>& OutFilteredScriptAssets)

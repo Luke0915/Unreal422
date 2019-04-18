@@ -39,6 +39,7 @@
 #include "AssetRegistryModule.h"
 #include "ARFilter.h"
 #include "EdGraph/EdGraphPin.h"
+#include "ViewModels/Stack/NiagaraStackInputCategory.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackViewModel"
 
@@ -119,10 +120,12 @@ void UNiagaraStackFunctionInput::Initialize(
 	UNiagaraNodeFunctionCall& InInputFunctionCallNode,
 	FName InInputParameterHandle,
 	FNiagaraTypeDefinition InInputType,
+	EStackParameterBehavior InParameterBehavior,
 	FString InOwnerStackItemEditorDataKey)
 {
 	checkf(OwningModuleNode.IsValid() == false && OwningFunctionCallNode.IsValid() == false, TEXT("Can only initialize once."));
 	bool bInputIsAdvanced = false;
+	ParameterBehavior = InParameterBehavior;
 	FString InputStackEditorDataKey = FString::Printf(TEXT("%s-Input-%s"), *InInputFunctionCallNode.NodeGuid.ToString(EGuidFormats::DigitsWithHyphens), *InInputParameterHandle.ToString());
 	Super::Initialize(InRequiredEntryData, bInputIsAdvanced, InOwnerStackItemEditorDataKey, InputStackEditorDataKey);
 	OwningModuleNode = &InModuleNode;
@@ -552,7 +555,7 @@ UNiagaraDataInterface* UNiagaraStackFunctionInput::FInputValues::GetDataDefaultV
 
 void UNiagaraStackFunctionInput::RefreshValues()
 {
-	if (ensureMsgf(InputParameterHandle.IsModuleHandle(), TEXT("Function inputs can only be generated for module paramters.")) == false)
+	if (ensureMsgf(IsStaticParameter() || InputParameterHandle.IsModuleHandle(), TEXT("Function inputs can only be generated for module paramters.")) == false)
 	{
 		return;
 	}
@@ -944,16 +947,34 @@ void UNiagaraStackFunctionInput::NotifyEndLocalValueChange()
 
 bool UNiagaraStackFunctionInput::IsRapidIterationCandidate() const
 {
-	return FNiagaraStackGraphUtilities::IsRapidIterationType(InputType);
+	return !IsStaticParameter() && FNiagaraStackGraphUtilities::IsRapidIterationType(InputType);
 }
 
 void UNiagaraStackFunctionInput::SetLocalValue(TSharedRef<FStructOnScope> InLocalValue)
 {
 	TGuardValue<bool> UpdateGuard(bUpdatingLocalValueDirectly, true);
 
+	const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
 	UEdGraphPin* DefaultPin = GetDefaultPin();
 	UEdGraphPin* OverridePin = GetOverridePin();
 	UEdGraphPin* ValuePin = DefaultPin;
+
+	// If the parameter we set is from a static switch then we don't want to use an override pin, but directly change the default pin.
+	if (IsStaticParameter())
+	{
+		FNiagaraVariable LocalValueVariable(InputType, NAME_None);
+		LocalValueVariable.SetData(InLocalValue->GetStructMemory());
+		FString PinDefaultValue;
+		if (ensureMsgf(NiagaraSchema->TryGetPinDefaultValueFromNiagaraVariable(LocalValueVariable, PinDefaultValue),
+			TEXT("Could not generate value string for static switch parameter.")))
+		{
+			DefaultPin->Modify();
+			DefaultPin->DefaultValue = PinDefaultValue;
+			Cast<UNiagaraNode>(DefaultPin->GetOwningNode())->MarkNodeRequiresSynchronization(TEXT("Default Value Changed"), true);
+		}
+		RefreshValues();
+		return;
+	}
 	
 	// If the default pin in the function graph is connected internally, rapid iteration parameters can't be used since
 	// the compilation currently won't use them.
@@ -983,7 +1004,6 @@ void UNiagaraStackFunctionInput::SetLocalValue(TSharedRef<FStructOnScope> InLoca
 		bGraphWillNeedRelayout = true;
 	}
 
-	const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
 	if (bCanUseRapidIterationParameter)
 	{
 		for (TWeakObjectPtr<UNiagaraScript> Script : AffectedScripts)
@@ -1035,60 +1055,67 @@ void UNiagaraStackFunctionInput::SetLocalValue(TSharedRef<FStructOnScope> InLoca
 
 bool UNiagaraStackFunctionInput::CanReset() const
 {
-	if (bCanReset.IsSet() == false)
+	if (IsStaticParameter())
 	{
-		bool bNewCanReset;
-		if (InputValues.Mode == EValueMode::Data)
-		{
-			// For data values a copy of the default object should have been created automatically and attached to the override pin for this input.  If a 
-			// copy of the default object wasn't created, the input can be reset to create one.  If a copy of the data object is available it can be
-			// reset if it's different from it's default value.
-			bool bHasDataValueObject = InputValues.DataObjects.GetValueObject() != nullptr;
-			bool bHasDefaultDataValueObject = InputValues.DataObjects.GetDefaultValueObject() != nullptr;
-			bool bIsDataValueDifferentFromDefaultDataValue = bHasDataValueObject && bHasDefaultDataValueObject
-				&& InputValues.DataObjects.GetValueObject()->Equals(InputValues.DataObjects.GetDefaultValueObject()) == false;
-			bNewCanReset = bHasDataValueObject == false || bHasDefaultDataValueObject == false || bIsDataValueDifferentFromDefaultDataValue;
-		}
-		else
-		{
-			UEdGraphPin* DefaultPin = GetDefaultPin();
-			if (ensure(DefaultPin != nullptr))
-			{			
-				if(DefaultPin->LinkedTo.Num() == 0)
+		// Static switch parameters only hold a single value in the default pin, so we disable resetting to prevent a special implementation for them
+		return false;
+	}
+	if (bCanReset.IsSet())
+	{
+		return bCanReset.GetValue();
+	}
+
+	bool bNewCanReset;
+	if (InputValues.Mode == EValueMode::Data)
+	{
+		// For data values a copy of the default object should have been created automatically and attached to the override pin for this input.  If a 
+		// copy of the default object wasn't created, the input can be reset to create one.  If a copy of the data object is available it can be
+		// reset if it's different from it's default value.
+		bool bHasDataValueObject = InputValues.DataObjects.GetValueObject() != nullptr;
+		bool bHasDefaultDataValueObject = InputValues.DataObjects.GetDefaultValueObject() != nullptr;
+		bool bIsDataValueDifferentFromDefaultDataValue = bHasDataValueObject && bHasDefaultDataValueObject
+			&& InputValues.DataObjects.GetValueObject()->Equals(InputValues.DataObjects.GetDefaultValueObject()) == false;
+		bNewCanReset = bHasDataValueObject == false || bHasDefaultDataValueObject == false || bIsDataValueDifferentFromDefaultDataValue;
+	}
+	else
+	{
+		UEdGraphPin* DefaultPin = GetDefaultPin();
+		if (ensure(DefaultPin != nullptr))
+		{			
+			if(DefaultPin->LinkedTo.Num() == 0)
+			{
+				if (GetOverridePin() != nullptr)
 				{
-					if (GetOverridePin() != nullptr)
-					{
-						bNewCanReset = true;
-					}
-					else if (IsRapidIterationCandidate())
-					{
-						FNiagaraVariable DefaultVar = GetDefaultVariableForRapidIterationParameter();
-						bool bHasValidLocalValue = InputValues.LocalStruct.IsValid();
-						bool bHasValidDefaultValue = DefaultVar.IsValid();
-						bNewCanReset = bHasValidLocalValue && bHasValidDefaultValue && FNiagaraEditorUtilities::DataMatches(DefaultVar, *InputValues.LocalStruct.Get()) == false;
-					}
-					else
-					{
-						bNewCanReset = false;
-					}
+					bNewCanReset = true;
+				}
+				else if (IsRapidIterationCandidate())
+				{
+					FNiagaraVariable DefaultVar = GetDefaultVariableForRapidIterationParameter();
+					bool bHasValidLocalValue = InputValues.LocalStruct.IsValid();
+					bool bHasValidDefaultValue = DefaultVar.IsValid();
+					bNewCanReset = bHasValidLocalValue && bHasValidDefaultValue && FNiagaraEditorUtilities::DataMatches(DefaultVar, *InputValues.LocalStruct.Get()) == false;
 				}
 				else
 				{
-					if (FNiagaraStackGraphUtilities::IsValidDefaultDynamicInput(*SourceScript, *DefaultPin))
-					{
-						UEdGraphPin* OverridePin = GetOverridePin();
-						bNewCanReset = OverridePin == nullptr || FNiagaraStackGraphUtilities::DoesDynamicInputMatchDefault(GetEmitterViewModel()->GetEmitter()->GetUniqueEmitterName(), *SourceScript,
-							*OwningFunctionCallNode, *OverridePin, InputParameterHandle.GetName(), *DefaultPin) == false;
-					}
-					else
-					{
-						bNewCanReset = GetOverridePin() != nullptr;
-					}
+					bNewCanReset = false;
+				}
+			}
+			else
+			{
+				if (FNiagaraStackGraphUtilities::IsValidDefaultDynamicInput(*SourceScript, *DefaultPin))
+				{
+					UEdGraphPin* OverridePin = GetOverridePin();
+					bNewCanReset = OverridePin == nullptr || FNiagaraStackGraphUtilities::DoesDynamicInputMatchDefault(GetEmitterViewModel()->GetEmitter()->GetUniqueEmitterName(), *SourceScript,
+						*OwningFunctionCallNode, *OverridePin, InputParameterHandle.GetName(), *DefaultPin) == false;
+				}
+				else
+				{
+					bNewCanReset = GetOverridePin() != nullptr;
 				}
 			}
 		}
-		bCanReset = bNewCanReset;
 	}
+	bCanReset = bNewCanReset;
 	return bCanReset.GetValue();
 }
 
@@ -1226,6 +1253,11 @@ void UNiagaraStackFunctionInput::Reset()
 		}
 	}
 	RefreshChildren();
+}
+
+bool UNiagaraStackFunctionInput::IsStaticParameter() const
+{
+	return ParameterBehavior == EStackParameterBehavior::Static;
 }
 
 bool UNiagaraStackFunctionInput::EmitterHasBase() const
@@ -1615,6 +1647,22 @@ UNiagaraNodeParameterMapSet& UNiagaraStackFunctionInput::GetOrCreateOverrideNode
 
 UEdGraphPin* UNiagaraStackFunctionInput::GetDefaultPin() const
 {
+	// If we have a static switch parameter, we check the pins of the function call node for a matching name,
+	// otherwise we search the parameter map node inside the function for a matching pin
+	if (IsStaticParameter())
+	{
+		const UEdGraphSchema_Niagara* NiagaraSchema = CastChecked<UEdGraphSchema_Niagara>(OwningFunctionCallNode->GetSchema());
+		FName InputName = InputParameterHandle.GetParameterHandleString();
+		for (UEdGraphPin* Pin : OwningFunctionCallNode->Pins)
+		{
+			FNiagaraVariable InputVariable = NiagaraSchema->PinToNiagaraVariable(Pin);
+			if (InputVariable.GetName() == InputName && InputVariable.GetType() == InputType)
+			{
+				return Pin;
+			}
+		}
+		return nullptr;
+	}
 	return OwningFunctionCallNode->FindParameterMapDefaultValuePin(InputParameterHandle.GetParameterHandleString(), SourceScript->GetUsage());
 }
 
