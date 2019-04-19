@@ -10,6 +10,8 @@
 #include "Toolkits/AssetEditorToolkit.h"
 #include "UObject/GCObject.h"
 
+#include "NiagaraScript.h"
+
 class IDetailsView;
 class SGraphEditor;
 class UEdGraph;
@@ -18,6 +20,10 @@ class UNiagaraScriptSource;
 class FNiagaraScriptViewModel;
 class FNiagaraObjectSelection;
 struct FEdGraphEditAction;
+class FTokenizedMessage; //@todo(ng) remove this forward decl after making FNiagaraMessageManager
+class IMessageToken; //@todo(ng) remove this forward decl after making FNiagaraMessageManager
+class UNiagaraGraph; //@todo(ng) remove this forward decl after making FNiagaraMessageManager
+//struct FNiagaraCompileEvent; //@todo(ng) remove this forward decl after making FNiagaraMessageManager
 
 /** Viewer/editor for a DataTable */
 class FNiagaraScriptToolkit : public FAssetEditorToolkit, public FGCObject
@@ -51,6 +57,11 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
 	/**
+	* Updates list of Niagara messages in message log
+	*/
+	void UpdateMessageLog();
+
+	/**
 	* Updates list of module info used to show stats
 	*/
 	void UpdateModuleStats();
@@ -80,9 +91,12 @@ private:
 	TSharedRef<SDockTab> SpawnTabScriptParameters(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTabStats(const FSpawnTabArgs& Args);
 
+	TSharedRef<SDockTab> SpawnTabMessageLog(const FSpawnTabArgs& Args);
+
 	/** Sets up commands for the toolkit toolbar. */
 	void SetupCommands();
 
+	const FName GetNiagaraScriptMessageLogName(UNiagaraScript* InScript) const;
 	FSlateIcon GetCompileStatusImage() const;
 	FText GetCompileStatusTooltip() const;
 
@@ -116,12 +130,17 @@ private:
 	/** The selection displayed by the details tab. */
 	TSharedPtr<FNiagaraObjectSelection> DetailsSelection;
 
+	/** Message log, with the log listing that it reflects */
+	TSharedPtr<class SWidget> NiagaraMessageLog;
+	TSharedPtr<class IMessageLogListing> NiagaraMessageLogListing;
+
 	/**	The tab ids for the Niagara editor */
 	static const FName NodeGraphTabId; 
 	static const FName ScriptDetailsTabId;
 	static const FName SelectedDetailsTabId;
 	static const FName ParametersTabId;
 	static const FName StatsTabId;
+	static const FName MessageLogTabID;
 
 	/** Stats log, with the log listing that it reflects */
 	TSharedPtr<class SWidget> Stats;
@@ -131,4 +150,12 @@ private:
 
 	bool bEditedScriptHasPendingChanges;
 	bool bChangesDiscarded;
+
+	/**  //@todo(ng) Everything below this line should be moved to an owning class such as FNiagaraMessageManager as we don't want to duplicate this code for both the Script and System toolkits
+	* --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	*/
+	
+	TSharedRef<FTokenizedMessage> BuildMessageForCompileEvent(FNiagaraCompileEvent& InCompileEvent);
+	TOptional<UNiagaraGraph*> RecursiveBuildMessageTokensFromContextStackAndGetOriginatingGraph(TArray<FGuid>& InContextStackNodeGuids, UNiagaraGraph* InGraphToSearch, TArray<TSharedRef<IMessageToken>>& OutMessageTokensToAdd);
+
 };

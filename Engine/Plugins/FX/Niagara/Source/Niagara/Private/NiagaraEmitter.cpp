@@ -450,7 +450,7 @@ bool UNiagaraEmitter::IsReadyToRun() const
 	return true;
 }
 
-void UNiagaraEmitter::GetScripts(TArray<UNiagaraScript*>& OutScripts, bool bCompilableOnly)
+void UNiagaraEmitter::GetScripts(TArray<UNiagaraScript*>& OutScripts, bool bCompilableOnly) const
 {
 	OutScripts.Add(SpawnScriptProps.Script);
 	OutScripts.Add(UpdateScriptProps.Script);
