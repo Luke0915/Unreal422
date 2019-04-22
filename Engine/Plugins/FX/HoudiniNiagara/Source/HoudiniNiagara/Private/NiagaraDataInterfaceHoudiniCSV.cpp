@@ -2166,7 +2166,7 @@ void FNiagaraDataInterfaceProxyHoudiniCSV::AcceptStaticDataUpdate(FNiagaraDIHoud
 
 		RHIUnlockVertexBuffer(LifeValuesGPUBuffer.Buffer);
 		
-		delete Update.SpawnTimes;
+		delete Update.LifeValues;
 	}
 
 	if (Update.PointTypes)
