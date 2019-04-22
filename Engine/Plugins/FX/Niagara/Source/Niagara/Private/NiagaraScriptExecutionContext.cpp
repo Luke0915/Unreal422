@@ -231,6 +231,7 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 	check(IsInGameThread());
 
 	ensure(InSystemInstance != nullptr);
+	CA_ASSUME(InSystemInstance != nullptr);
 	ensure(!InSystemInstance->IsComplete());
 	SystemInstanceID = InSystemInstance->GetId();
 	bRequiredDistanceFieldData = InSystemInstance->RequiresDistanceFieldData();
