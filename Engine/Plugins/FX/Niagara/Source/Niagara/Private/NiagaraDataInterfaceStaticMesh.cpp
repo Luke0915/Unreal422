@@ -457,22 +457,6 @@ struct FNiagaraDataInterfaceParametersCS_StaticMesh : public FNiagaraDataInterfa
 		{
 			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshVertexBufferName)
 		}
-		if (!MeshTangentBuffer.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshTangentBufferName)
-		}
-		if (!MeshTexCoordBuffer.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshTexCoordBufferName)
-		}
-		if (!MeshSectionBuffer.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshSectionBufferName)
-		}
-		if (!MeshTriangleBuffer.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshTriangleBufferName)
-		}
 	}
 
 	virtual void Serialize(FArchive& Ar)override

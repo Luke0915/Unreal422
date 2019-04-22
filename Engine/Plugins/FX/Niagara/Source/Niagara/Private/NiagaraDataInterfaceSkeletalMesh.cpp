@@ -545,25 +545,9 @@ struct FNiagaraDataInterfaceParametersCS_SkeletalMesh : public FNiagaraDataInter
 		{
 			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshCurrBonesBufferName)
 		}
-		if (!MeshPrevBonesBuffer.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshPrevBonesBufferName)
-		}
 		if (!MeshTangentBuffer.IsBound())
 		{
 			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshTangentBufferName)
-		}
-		if (!MeshTexCoordBuffer.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshTexCoordBufferName)
-		}
-		if (!MeshTriangleSamplerProbaBuffer.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshTriangleSamplerProbaBufferName)
-		}
-		if (!MeshTriangleSamplerAliasBuffer.IsBound())
-		{
-			UE_LOG(LogNiagara, Warning, TEXT("Binding failed for FNiagaraDataInterfaceParametersCS_StaticMesh Sampler %s. Was it optimized out?"), *ParamNames.MeshTriangleSamplerAliasBufferName)
 		}
 		if (!MeshTriangleMatricesOffsetBuffer.IsBound())
 		{
