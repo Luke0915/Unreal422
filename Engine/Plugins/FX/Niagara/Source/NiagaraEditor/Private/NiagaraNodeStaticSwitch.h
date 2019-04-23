@@ -30,7 +30,7 @@ struct FStaticSwitchTypeData
 	UPROPERTY()
 	UEnum* Enum;
 
-	FStaticSwitchTypeData() : SwitchType(ENiagaraStaticSwitchType::Bool), MaxIntCount(1)
+	FStaticSwitchTypeData() : SwitchType(ENiagaraStaticSwitchType::Bool), MaxIntCount(1), Enum(nullptr)
 	{ }
 };
 
