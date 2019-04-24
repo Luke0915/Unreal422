@@ -201,14 +201,8 @@ class UNiagaraGraph : public UEdGraph
 	/** Recomputes the current compile id associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid Guid is returned.*/
 	FGuid ComputeCompileID(ENiagaraScriptUsage InUsage, const FGuid& InUsageId);
 
-	/** Recomputes the current compile data hash associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid hash is returned.*/
-	FNiagaraCompileHash ComputeCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId);
-
 	/** Gets the current compile data hash associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid hash is returned.*/
 	FNiagaraCompileHash GetCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const;
-
-	/** Recomputes the current base id associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid guid is returned. */
-	FGuid ComputeBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId);
 
 	/** Gets the current base id associated with the output node traversal specified by InUsage and InUsageId. If the usage is not found, an invalid guid is returned. */
 	FGuid GetBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const;
@@ -258,8 +252,9 @@ class UNiagaraGraph : public UEdGraph
 
 	FString GetFunctionAliasByContext(const FNiagaraGraphFunctionAliasContext& FunctionAliasContext);
 
+	void RebuildCachedCompileIds(bool bForce = false);
+
 protected:
-	void RebuildCachedData(bool bForce = false);
 	void RebuildNumericCache();
 	bool bNeedNumericCacheRebuilt;
 	TMap<TPair<FGuid, UEdGraphNode*>, FNiagaraTypeDefinition> CachedNumericConversions;

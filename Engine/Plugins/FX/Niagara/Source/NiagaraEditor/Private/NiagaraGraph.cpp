@@ -197,7 +197,7 @@ void UNiagaraGraph::PostLoad()
 		}
 	}
 
-	RebuildCachedData();
+	RebuildCachedCompileIds();
 
 	if (GIsEditor)
 	{
@@ -268,7 +268,7 @@ class UNiagaraScriptSource* UNiagaraGraph::GetSource() const
 
 FGuid UNiagaraGraph::ComputeCompileID(ENiagaraScriptUsage InUsage, const FGuid& InUsageId)
 {
-	RebuildCachedData();
+	RebuildCachedCompileIds();
 
 	for (int32 j = 0; j < CachedUsageInfo.Num(); j++)
 	{
@@ -282,12 +282,6 @@ FGuid UNiagaraGraph::ComputeCompileID(ENiagaraScriptUsage InUsage, const FGuid& 
 
 }
 
-FNiagaraCompileHash UNiagaraGraph::ComputeCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId)
-{
-	RebuildCachedData();
-	return GetCompileDataHash(InUsage, InUsageId);
-}
-
 FNiagaraCompileHash UNiagaraGraph::GetCompileDataHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
 {
 	for (int32 i = 0; i < CachedUsageInfo.Num(); i++)
@@ -298,12 +292,6 @@ FNiagaraCompileHash UNiagaraGraph::GetCompileDataHash(ENiagaraScriptUsage InUsag
 		}
 	}
 	return FNiagaraCompileHash();
-}
-
-FGuid UNiagaraGraph::ComputeBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId)
-{
-	RebuildCachedData();
-	return GetBaseId(InUsage, InUsageId);
 }
 
 FGuid UNiagaraGraph::GetBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
@@ -881,7 +869,7 @@ FNiagaraTypeDefinition UNiagaraGraph::GetCachedNumericConversion(class UEdGraphP
 	return ReturnDef;
 }
 
-void UNiagaraGraph::RebuildCachedData(bool bForce)
+void UNiagaraGraph::RebuildCachedCompileIds(bool bForce)
 {
 	// If the graph hasn't changed since last rebuild, then do nothing.
 	if (!bForce && ChangeId == LastBuiltTraversalDataChangeId && LastBuiltTraversalDataChangeId.IsValid())
@@ -1123,7 +1111,7 @@ void UNiagaraGraph::ResolveNumerics(TMap<UNiagaraNode*, bool>& VisitedNodes, UEd
 void UNiagaraGraph::SynchronizeInternalCacheWithGraph(UNiagaraGraph* Other)
 {
 	// Force us to rebuild the cache, note that this builds traversals and everything else, keeping it in sync if nothing changed from the current version.
-	RebuildCachedData(true);
+	RebuildCachedCompileIds(true);
 	
 	UEnum* FoundEnum = nullptr;
 
@@ -1185,7 +1173,7 @@ void UNiagaraGraph::InvalidateCachedCompileIds()
 
 void UNiagaraGraph::GatherExternalDependencyIDs(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FGuid>& InReferencedIDs, TArray<UObject*>& InReferencedObjs)
 {
-	RebuildCachedData();
+	RebuildCachedCompileIds();
 	
 	// Particle compute scripts get all particle scripts baked into their dependency chain. 
 	if (InUsage == ENiagaraScriptUsage::ParticleGPUComputeScript)

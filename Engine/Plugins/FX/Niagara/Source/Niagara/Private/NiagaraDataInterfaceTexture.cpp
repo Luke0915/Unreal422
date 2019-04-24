@@ -422,7 +422,7 @@ void UNiagaraDataInterfaceTexture::PushToRenderThread()
 	FTextureRHIRef RT_Texture;
 	FSamplerStateRHIRef RT_SamplerState;
 
-	if (Texture)
+	if (Texture && Texture->TextureReference.TextureReferenceRHI.IsValid())
 	{
 		if (Texture->TextureReference.TextureReferenceRHI)
 		{

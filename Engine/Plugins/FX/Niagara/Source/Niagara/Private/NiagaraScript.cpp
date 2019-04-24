@@ -474,7 +474,8 @@ void UNiagaraScript::PostLoad()
 			else
 			{
 				// If the compile hash isn't valid, recompute the entire cached VM Id.
-				Source->ComputeVMCompilationId(CachedScriptVMId, Usage, UsageId);
+				bool bForceRebuild = true;
+				Source->ComputeVMCompilationId(CachedScriptVMId, Usage, UsageId, bForceRebuild);
 			}
 		}
 	}
@@ -1040,18 +1041,22 @@ void UNiagaraScript::BeginCacheForCookedPlatformData(const ITargetPlatform *Targ
 			SystemOwner->WaitForCompilationComplete();
 		}
 
-		TArray<FName> DesiredShaderFormats;
-		TargetPlatform->GetAllTargetedShaderFormats(DesiredShaderFormats);
-
-		TArray<FNiagaraShaderScript*>& CachedScriptResourcesForPlatform = CachedScriptResourcesForCooking.FindOrAdd(TargetPlatform);
-
-		// Cache for all the shader formats that the cooking target requires
-		for (int32 FormatIndex = 0; FormatIndex < DesiredShaderFormats.Num(); FormatIndex++)
+		if (ensureMsgf(CachedScriptVMId.CompilerVersionID.IsValid() && CachedScriptVMId.BaseScriptID.IsValid() && CachedScriptVMId.BaseScriptCompileHash.IsValid(),
+			TEXT("Can not cache cooked platform data for script %s because it has invalid compile id information.  Forcing a recompile of the owning asset and resaving may fix this."), *GetFullName()))
 		{
-			const EShaderPlatform LegacyShaderPlatform = ShaderFormatToLegacyShaderPlatform(DesiredShaderFormats[FormatIndex]);
-			if (FNiagaraUtilities::SupportsGPUParticles(LegacyShaderPlatform))
+			TArray<FName> DesiredShaderFormats;
+			TargetPlatform->GetAllTargetedShaderFormats(DesiredShaderFormats);
+
+			TArray<FNiagaraShaderScript*>& CachedScriptResourcesForPlatform = CachedScriptResourcesForCooking.FindOrAdd(TargetPlatform);
+
+			// Cache for all the shader formats that the cooking target requires
+			for (int32 FormatIndex = 0; FormatIndex < DesiredShaderFormats.Num(); FormatIndex++)
 			{
-				CacheResourceShadersForCooking(LegacyShaderPlatform, CachedScriptResourcesForPlatform);
+				const EShaderPlatform LegacyShaderPlatform = ShaderFormatToLegacyShaderPlatform(DesiredShaderFormats[FormatIndex]);
+				if (FNiagaraUtilities::SupportsGPUParticles(LegacyShaderPlatform))
+				{
+					CacheResourceShadersForCooking(LegacyShaderPlatform, CachedScriptResourcesForPlatform);
+				}
 			}
 		}
 	}
@@ -1068,11 +1073,12 @@ void UNiagaraScript::CacheResourceShadersForCooking(EShaderPlatform ShaderPlatfo
 			ERHIFeatureLevel::Type TargetFeatureLevel = GetMaxSupportedFeatureLevel(ShaderPlatform);
 
 			FNiagaraShaderScript* NewResource = AllocateResource();
-			check(CachedScriptVMId.CompilerVersionID != FGuid());
-			check(CachedScriptVMId.BaseScriptID != FGuid());
+			check(CachedScriptVMId.CompilerVersionID.IsValid());
+			check(CachedScriptVMId.BaseScriptID.IsValid());
+			check(CachedScriptVMId.BaseScriptCompileHash.IsValid());
 
 			NewResource->SetScript(this, (ERHIFeatureLevel::Type)TargetFeatureLevel, CachedScriptVMId.CompilerVersionID, CachedScriptVMId.BaseScriptID,
-				CachedScriptVMId.BaseScriptCompileHash,	CachedScriptVMId.ReferencedCompileHashes, CachedScriptVMId.ReferencedDependencyIds, GetName());
+				CachedScriptVMId.BaseScriptCompileHash,	CachedScriptVMId.ReferencedCompileHashes, CachedScriptVMId.ReferencedDependencyIds, GetFullName());
 			ResourceToCache = NewResource;
 
 			check(ResourceToCache);
