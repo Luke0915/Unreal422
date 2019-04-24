@@ -529,7 +529,11 @@ void FNiagaraStackGraphUtilities::GetStackFunctionInputPins(UNiagaraNodeFunction
 void FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<const UEdGraphPin*>& OutInputPins)
 {
 	const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(FunctionCallNode.GetSchema());
-	for (FNiagaraVariable SwitchInput : FunctionCallNode.GetCalledGraph()->FindStaticSwitchInputs())
+	UNiagaraGraph* FunctionCallGraph = FunctionCallNode.GetCalledGraph();
+	if (FunctionCallGraph == nullptr)
+		return;
+
+	for (FNiagaraVariable SwitchInput : FunctionCallGraph->FindStaticSwitchInputs())
 	{
 		FEdGraphPinType PinType = Schema->TypeDefinitionToPinType(SwitchInput.GetType());
 		for (UEdGraphPin* Pin : FunctionCallNode.Pins)
