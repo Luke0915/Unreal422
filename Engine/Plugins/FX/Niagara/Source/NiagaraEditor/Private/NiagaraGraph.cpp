@@ -1101,13 +1101,16 @@ void UNiagaraGraph::ResolveNumerics(TMap<UNiagaraNode*, bool>& VisitedNodes, UEd
 		{
 			if (InputPins[i])
 			{
-				UNiagaraNode* FoundNode = Cast<UNiagaraNode>(InputPins[i]->GetOwningNode());
-				if (!FoundNode || VisitedNodes.Contains(FoundNode))
+				for (int32 j = 0; j < InputPins[i]->LinkedTo.Num(); j++)
 				{
-					continue;
+					UNiagaraNode* FoundNode = Cast<UNiagaraNode>(InputPins[i]->LinkedTo[j]->GetOwningNode());
+					if (!FoundNode || VisitedNodes.Contains(FoundNode))
+					{
+						continue;
+					}
+					VisitedNodes.Add(FoundNode, true);
+					ResolveNumerics(VisitedNodes, FoundNode);
 				}
-				VisitedNodes.Add(FoundNode, true);
-				ResolveNumerics(VisitedNodes, FoundNode);
 			}
 		}
 
