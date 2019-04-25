@@ -6,7 +6,6 @@
 #include "NiagaraEmitter.h"
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraSystem.h"
-#include "NiagaraParameterBindingInstance.h"
 #include "NiagaraDataInterfaceBindingInstance.h"
 #include "Templates/UniquePtr.h"
 #include "NiagaraCommon.h"
