@@ -52,7 +52,6 @@ void UNiagaraScriptSource::ComputeVMCompilationId(FNiagaraVMExecutableDataId& Id
 	{
 		if (bForceRebuild)
 		{
-			bool bForceRebuild = true;
 			NodeGraph->RebuildCachedCompileIds(bForceRebuild);
 		}
 		Id.BaseScriptID = NodeGraph->GetBaseId(InUsage, InUsageId);
