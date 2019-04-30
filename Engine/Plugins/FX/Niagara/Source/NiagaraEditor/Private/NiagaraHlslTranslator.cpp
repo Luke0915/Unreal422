@@ -257,7 +257,7 @@ bool FHlslNiagaraTranslator::ValidateTypePins(UNiagaraNode* NodeToValidate)
 
 
 void FHlslNiagaraTranslator::GenerateFunctionSignature(ENiagaraScriptUsage ScriptUsage, FString InName, const FString& InFullName, UNiagaraGraph* FuncGraph, TArray<int32>& Inputs,
-	bool bHadNumericInputs, bool bHasParameterMapParameters, FNiagaraFunctionSignature& OutSig)const
+	bool bHadNumericInputs, bool bHasParameterMapParameters, TArray<UEdGraphPin*> StaticSwitchValues, FNiagaraFunctionSignature& OutSig)const
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_Module_NiagaraHLSLTranslator_GenerateFunctionSignature);
 
@@ -316,7 +316,7 @@ void FHlslNiagaraTranslator::GenerateFunctionSignature(ENiagaraScriptUsage Scrip
 				}
 			}
 		}
-
+		
 		// Remove the inputs which will be handled by inline constants
 		for (int32 i = ConstantInputIndicesToRemove.Num() - 1; i >= 0; i--)
 		{
@@ -374,6 +374,7 @@ void FHlslNiagaraTranslator::GenerateFunctionSignature(ENiagaraScriptUsage Scrip
 	{
 		FNiagaraGraphFunctionAliasContext FunctionAliasContext;
 		FunctionAliasContext.CompileUsage = GetCurrentUsage();
+		FunctionAliasContext.StaticSwitchValues = StaticSwitchValues;
 		FString SignatureName = InName + FuncGraph->GetFunctionAliasByContext(FunctionAliasContext);
 		OutSig = FNiagaraFunctionSignature(*SignatureName, InputVars, OutputVars, *InFullName, true, false);
 	}
@@ -2285,27 +2286,7 @@ FString FHlslNiagaraTranslator::GetSanitizedSymbolName(FString SymbolName, bool 
 		SplitName[i].ReplaceInline(TEXT(" "), TEXT(""));
 
 		// Handle internationalization of characters..
-		FString ChangedSplitName;
-		ChangedSplitName.Reserve(SplitName[i].Len() * 6); // Assign room for every current char to be 'ASCXXX'
-		for (int32 j = 0; j < SplitName[i].Len(); j++)
-		{
-			if ((SplitName[i][j] >= TCHAR('0') && SplitName[i][j] <= TCHAR('9')) ||
-				(SplitName[i][j] >= TCHAR('A') && SplitName[i][j] <= TCHAR('Z')) ||
-				(SplitName[i][j] >= TCHAR('a') && SplitName[i][j] <= TCHAR('z')) ||
-				SplitName[i][j] == TCHAR('_') ||
-				SplitName[i][j] == TCHAR(' '))
-			{
-				// Do nothing.. these are valid chars..
-				ChangedSplitName.AppendChar(SplitName[i][j]);
-			}
-			else
-			{
-				// Need to replace the bad characters..
-				ChangedSplitName.Append(TEXT("ASC"));
-				ChangedSplitName.AppendInt((int32)SplitName[i][j]);
-			}
-		}
-		SplitName[i] = ChangedSplitName;
+		SplitName[i] = ConvertToAsciiString(SplitName[i]);
 	}
 
 	// Gather back into single string..
@@ -2325,6 +2306,53 @@ FString FHlslNiagaraTranslator::GetSanitizedSymbolName(FString SymbolName, bool 
 		Ret.ReplaceInline(TEXT("."), TEXT("_"));
 	}
 	return Ret;
+}
+
+FString FHlslNiagaraTranslator::GetSanitizedFunctionNameSuffix(FString Name)
+{
+	if (Name.Len() == 0)
+	{
+		return Name;
+	}
+	FString Ret = Name;
+
+	// remove special characters
+	Ret.ReplaceInline(TEXT("."), TEXT("_"));
+	Ret.ReplaceInline(TEXT("\\"), TEXT("_"));
+	Ret.ReplaceInline(TEXT("/"), TEXT("_"));
+	Ret.ReplaceInline(TEXT(","), TEXT("_"));
+	Ret.ReplaceInline(TEXT("-"), TEXT("_"));
+	Ret.ReplaceInline(TEXT(":"), TEXT("_"));
+	Ret.ReplaceInline(TEXT("\t"), TEXT(""));
+	Ret.ReplaceInline(TEXT(" "), TEXT(""));	
+	Ret.ReplaceInline(TEXT("__"), TEXT("ASC95ASC95")); // Opengl reserves "__" within a name
+
+	// Handle internationalization of characters..
+	return ConvertToAsciiString(Ret);
+}
+
+FString FHlslNiagaraTranslator::ConvertToAsciiString(FString Str)
+{
+	FString AsciiString;
+	AsciiString.Reserve(Str.Len() * 6); // Assign room for every current char to be 'ASCXXX'
+	for (int32 j = 0; j < Str.Len(); j++)
+	{
+		if ((Str[j] >= TCHAR('0') && Str[j] <= TCHAR('9')) ||
+			(Str[j] >= TCHAR('A') && Str[j] <= TCHAR('Z')) ||
+			(Str[j] >= TCHAR('a') && Str[j] <= TCHAR('z')) ||
+			Str[j] == TCHAR('_') || Str[j] == TCHAR(' '))
+		{
+			// Do nothing.. these are valid chars..
+			AsciiString.AppendChar(Str[j]);
+		}
+		else
+		{
+			// Need to replace the bad characters..
+			AsciiString.Append(TEXT("ASC"));
+			AsciiString.AppendInt((int32)Str[j]);
+		}
+	}
+	return AsciiString;
 }
 
 FString FHlslNiagaraTranslator::GetUniqueSymbolName(FName BaseName)
@@ -4566,11 +4594,22 @@ void FHlslNiagaraTranslator::RegisterFunctionCall(ENiagaraScriptUsage ScriptUsag
 				}
 			}
 		}
-
+		TArray<UEdGraphPin*> StaticSwitchValues;
+		for (FNiagaraVariable StaticSwitchInput : SourceGraph->FindStaticSwitchInputs())
+		{
+			for (UEdGraphPin* Pin : CallInputs)
+			{
+				if (StaticSwitchInput.GetName().IsEqual(Pin->GetFName()))
+				{
+					StaticSwitchValues.Add(Pin);
+					break;
+				}
+			}
+		}
 
 		bool bHasParameterMapParameters = SourceGraph->HasParameterMapParameters();
 
-		GenerateFunctionSignature(ScriptUsage, InName, InFullName, SourceGraph, Inputs, bHasNumericInputs, bHasParameterMapParameters, OutSignature);
+		GenerateFunctionSignature(ScriptUsage, InName, InFullName, SourceGraph, Inputs, bHasNumericInputs, bHasParameterMapParameters, StaticSwitchValues, OutSignature);
 
 		// 		//Sort the input and outputs to match the sorted parameters. They may be different.
 		// 		TArray<FNiagaraVariable> OrderedInputs;

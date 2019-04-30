@@ -83,6 +83,7 @@ private:
 struct FNiagaraGraphFunctionAliasContext
 {
 	ENiagaraScriptUsage CompileUsage;
+	TArray<UEdGraphPin*> StaticSwitchValues;
 };
 
 UCLASS(MinimalAPI)
@@ -250,6 +251,10 @@ class UNiagaraGraph : public UEdGraph
 
 	void InvalidateNumericCache();
 
+	/** If this graph is the source of a function call, it can add a string to the function name to discern it from different
+	  * function calls to the same graph. For example, if the graph contains static switches and two functions call it with
+	  * different switch parameters, the final function names in the hlsl must be different.
+	  */
 	FString GetFunctionAliasByContext(const FNiagaraGraphFunctionAliasContext& FunctionAliasContext);
 
 	void RebuildCachedCompileIds(bool bForce = false);
