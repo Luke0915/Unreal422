@@ -200,11 +200,11 @@ bool UNiagaraNodeStaticSwitch::GetVarIndex(class FHlslNiagaraTranslator* Transla
 
 void UNiagaraNodeStaticSwitch::Compile(FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs)
 {
-	TArray<UEdGraphPin*> InputPins;
-	GetInputPins(InputPins);
-	TArray<UEdGraphPin*> OutputPins;
-	GetOutputPins(OutputPins);
+	UNiagaraNode::Compile(Translator, Outputs);
+}
 
+bool UNiagaraNodeStaticSwitch::SubstituteCompiledPin(FHlslNiagaraTranslator* Translator, UEdGraphPin** LocallyOwnedPin)
+{
 	// if we compile the standalone module or function we don't have any valid input yet, so we just take the first option to satisfy the compiler
 	ENiagaraScriptUsage TargetUsage = Translator->GetTargetUsage();
 	bool IsDryRun = TargetUsage == ENiagaraScriptUsage::Module || TargetUsage == ENiagaraScriptUsage::Function;
@@ -213,36 +213,7 @@ void UNiagaraNodeStaticSwitch::Compile(FHlslNiagaraTranslator* Translator, TArra
 	{
 		FText ErrorMessage = FText::Format(LOCTEXT("MissingSwitchValue", "The input parameter \"{0}\" is not set to a constant value for the static switch node."), FText::FromString(InputParameterName.ToString()));
 		Translator->Error(ErrorMessage, this, nullptr);
-		return;
-	}
-
-	int32 VarIdx;
-	if (!GetVarIndex(Translator, InputPins.Num(), VarIdx))
-	{
-		return;
-	}
-
-	Outputs.SetNumUninitialized(OutputPins.Num());
-	for (int32 i = 0; i < OutputVars.Num(); i++)
-	{
-		int32 InputIdx = Translator->CompilePin(InputPins[VarIdx + i]);
-		Outputs[i] = InputIdx;
-	}
-	check(this->IsAddPin(OutputPins[OutputPins.Num() - 1]));
-	Outputs[OutputPins.Num() - 1] = INDEX_NONE;
-}
-
-UEdGraphPin* UNiagaraNodeStaticSwitch::GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin, ENiagaraScriptUsage MasterUsage) const
-{
-	if (IsAddPin(LocallyOwnedOutputPin))
-	{
-		return nullptr;
-	}
-
-	bool IsDryRun = MasterUsage == ENiagaraScriptUsage::Module || MasterUsage == ENiagaraScriptUsage::Function;
-	if (!IsValueSet && !IsDryRun)
-	{
-		return nullptr;
+		return false;
 	}
 
 	TArray<UEdGraphPin*> InputPins;
@@ -254,33 +225,49 @@ UEdGraphPin* UNiagaraNodeStaticSwitch::GetPassThroughPin(const UEdGraphPin* Loca
 	{
 		UEdGraphPin* OutPin = OutputPins[i];
 		int32 VarIdx;
-		if (OutPin == LocallyOwnedOutputPin && GetVarIndex(nullptr, InputPins.Num(), IsDryRun ? 0 : SwitchValue, VarIdx))
+		if (OutPin == *LocallyOwnedPin && GetVarIndex(Translator, InputPins.Num(), IsDryRun ? 0 : SwitchValue, VarIdx))
 		{
-			return InputPins[VarIdx + i];
+			UEdGraphPin* InputPin = InputPins[VarIdx + i];
+			if (InputPin->LinkedTo.Num() == 1)
+			{
+				*LocallyOwnedPin = GetTracedOutputPin(InputPin->LinkedTo[0]);
+				return true;
+			}
+			else
+			{
+				*LocallyOwnedPin = InputPin;
+			}
+			return true;
 		}
 	}
-	
-	return nullptr;
+	return false;
 }
 
-void UNiagaraNodeStaticSwitch::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive) const
+UEdGraphPin* UNiagaraNodeStaticSwitch::GetTracedOutputPin(UEdGraphPin* LocallyOwnedOutputPin) const
 {
-	if (bRecursive)
+	TArray<UEdGraphPin*> InputPins;
+	GetInputPins(InputPins);
+	TArray<UEdGraphPin*> OutputPins;
+	GetOutputPins(OutputPins);
+
+	for (int i = 0; i < OutputPins.Num(); i++)
 	{
-		TArray<UEdGraphPin*> InputPins;
-		GetInputPins(InputPins);
-
-		int32 VarIdx;
-		if (!GetVarIndex(nullptr, InputPins.Num(), VarIdx))
+		UEdGraphPin* OutPin = OutputPins[i];
+		if (IsAddPin(OutPin))
 		{
-			return;
+			continue;
 		}
-
-		for (int32 i = 0; i < OutputVars.Num(); i++)
+		int32 VarIdx;
+		if (OutPin == LocallyOwnedOutputPin && GetVarIndex(nullptr, InputPins.Num(), IsValueSet ? SwitchValue : 0, VarIdx))
 		{
-			OutHistory.VisitInputPin(InputPins[VarIdx + i], this);
+			UEdGraphPin* InputPin = InputPins[VarIdx + i];
+			if (InputPin->LinkedTo.Num() == 1)
+			{
+				return InputPin->LinkedTo[0];
+			}
 		}
 	}
+	return LocallyOwnedOutputPin;
 }
 
 FText UNiagaraNodeStaticSwitch::GetTooltipText() const

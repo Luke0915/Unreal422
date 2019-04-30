@@ -5400,11 +5400,39 @@ int32 FHlslNiagaraTranslator::CompileOutputPin(const UEdGraphPin* InPin)
 	// The incoming pin to compile may be pointing to a reroute node. If so, we just jump over it
 	// to where it really came from.
 	UEdGraphPin* Pin = UNiagaraNode::TraceOutputPin(const_cast<UEdGraphPin*>(InPin));
-
 	check(Pin->Direction == EGPD_Output);
 
-	int32 Ret = INDEX_NONE;
+	// The node can also replace our pin with another pin (e.g. in the case of static switches), so we need to make sure we don't run into a circular dependency
+	TSet<UEdGraphPin*> SeenPins;
+	UNiagaraNode* Node = Cast<UNiagaraNode>(Pin->GetOwningNode());
+	UEdGraphPin* OriginalPin = Pin;
+	while (Node->SubstituteCompiledPin(this, &Pin))
+	{
+		bool bIsAlreadyInSet = false;
+		SeenPins.Add(Pin, &bIsAlreadyInSet);
+		Node = Cast<UNiagaraNode>(Pin->GetOwningNode());
+		if (bIsAlreadyInSet)
+		{
+			Error(LOCTEXT("CircularGraphSubstitutionError", "Circular dependency detected, please check your module graph."), Node, Pin);
+			return INDEX_NONE;
+		}
+	}
 
+	// It is possible that the output pin was substituted by an input pin (e.g. the default value pin on a node).
+	// If that is the case we try to compile that pin directly.
+	if (Pin->Direction == EGPD_Input)
+	{
+		int32* ExistingChunk = PinToCodeChunks.Last().Find(OriginalPin); // Check if the pin was already compiled before
+		if (ExistingChunk)
+		{
+			return *ExistingChunk;
+		}
+		int32 Chunk = CompilePin(Pin);
+		PinToCodeChunks.Last().Add(OriginalPin, Chunk);
+		return Chunk;
+	}
+
+	int32 Ret = INDEX_NONE;
 	int32* Chunk = PinToCodeChunks.Last().Find(Pin);
 	if (Chunk)
 	{
@@ -5413,7 +5441,6 @@ int32 FHlslNiagaraTranslator::CompileOutputPin(const UEdGraphPin* InPin)
 	else
 	{
 		//Otherwise we need to compile the node to get its output pins.
-		UNiagaraNode* Node = Cast<UNiagaraNode>(Pin->GetOwningNode());
 		if (ValidateTypePins(Node))
 		{
 			TArray<int32> Outputs;
