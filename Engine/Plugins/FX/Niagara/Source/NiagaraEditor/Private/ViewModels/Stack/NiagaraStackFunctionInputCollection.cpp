@@ -133,12 +133,18 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 	FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*InputFunctionCallNode, InputPins);
 	for (const UEdGraphPin* InputPin : InputPins)
 	{
-		if (ProcessedInputNames.Contains(InputPin->PinName))
+		// The static switch pin names to not contain the module namespace, as they are not part of the parameter maps.
+		// We add it here only to check for name clashes with actual module parameters.
+		FString ModuleName = TEXT("Module.");
+		InputPin->PinName.AppendString(ModuleName);
+		FName SwitchPinName(*ModuleName); 
+
+		if (ProcessedInputNames.Contains(SwitchPinName))
 		{
-			DuplicateInputNames.AddUnique(InputPin->PinName);
+			DuplicateInputNames.AddUnique(SwitchPinName);
 			continue;
 		}
-		ProcessedInputNames.Add(InputPin->PinName);
+		ProcessedInputNames.Add(SwitchPinName);
 
 		FNiagaraVariable InputVariable = NiagaraSchema->PinToNiagaraVariable(InputPin);
 		if (InputVariable.GetType().IsValid() == false)
@@ -271,7 +277,7 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(TArray<FName> Duplicate
 		FStackIssue DuplicateInputError(
 			EStackIssueSeverity::Error,
 			FText::Format(LOCTEXT("DuplicateInputSummaryFormat", "Duplicate Input: {0}"), FText::FromName(DuplicateInputName)),
-			FText::Format(LOCTEXT("DuplicateInputFormat", "There are multiple inputs with the same name {0}, but different types exposed by the function {1}.\nThis is not suppored and must be fixed in the script that defines this function."),
+			FText::Format(LOCTEXT("DuplicateInputFormat", "There are multiple inputs with the same name {0} exposed by the function {1}.\nThis is not supported and must be fixed in the script that defines this function.\nCheck for inputs with the same name and different types or static switches."),
 				FText::FromName(DuplicateInputName), FText::FromString(InputFunctionCallNode->GetFunctionName())),
 			GetStackEditorDataKey(),
 			false);

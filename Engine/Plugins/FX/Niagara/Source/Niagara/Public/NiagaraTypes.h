@@ -337,8 +337,8 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Variable", meta = (ToolTip = "Affects the sort order in the editor stacks. Use a smaller number to push it to the top. Defaults to zero."))
 	int32 EditorSortPriority;
 
-	/** Declares the associated input is used as an inline edit condition toggle, so it should should be hidden and it should be edited as a 
-	checkbox inline with the input which has designated as its edit condition. */
+	/** Declares the associated input is used as an inline edit condition toggle, so it should be hidden and edited as a 
+	checkbox inline with the input which was designated as its edit condition. */
 	UPROPERTY(EditAnywhere, Category = "Variable")
 	bool bInlineEditConditionToggle;
 

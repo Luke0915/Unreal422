@@ -4214,6 +4214,22 @@ void FHlslNiagaraTranslator::FunctionCall(UNiagaraNodeFunctionCall* FunctionNode
 	FunctionNode->GetOutputPins(CallOutputs);
 	FunctionNode->GetInputPins(CallInputs);
 
+	// Validate that there are no input pins with the same name and type
+	TMultiMap<FName, FEdGraphPinType> SeenPins;
+	for (UEdGraphPin* Pin : CallInputs)
+	{
+		FEdGraphPinType* SeenType = SeenPins.FindPair(Pin->GetFName(), Pin->PinType);
+		if (SeenType)
+		{
+			Error(LOCTEXT("FunctionCallDuplicateInput", "Function call has duplicated inputs. Please make sure that each function parameter is unique."), FunctionNode, Pin);
+			return;
+		}
+		else
+		{
+			SeenPins.Add(Pin->GetFName(), Pin->PinType);
+		}
+	}
+
 	// If the function call is disabled, we 
 	// need to route the input parameter map pin to the output parameter map pin.
 	// Any other outputs become invalid.
