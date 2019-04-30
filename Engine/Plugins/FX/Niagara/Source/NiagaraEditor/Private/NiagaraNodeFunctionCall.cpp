@@ -165,7 +165,8 @@ void UNiagaraNodeFunctionCall::AllocateDefaultPins()
 			if (Schema->TryGetPinDefaultValueFromNiagaraVariable(Input, PinDefaultValue))
 			{
 				NewPin->DefaultValue = PinDefaultValue;
-			}			
+			}
+			NewPin->bDefaultValueIsIgnored = PropagatedStaticSwitchParameters.Contains(Input);
 		}
 
 		for (FNiagaraVariable& Output : Outputs)
@@ -540,6 +541,25 @@ bool UNiagaraNodeFunctionCall::RefreshFromExternalChanges()
 		if (Signature.IsValid())
 		{
 			bReload = true;
+		}
+	}
+
+	// Go over the static switch parameters to set their propagation status on the pins
+	UNiagaraGraph* CalledGraph = GetCalledGraph();
+	if (CalledGraph)
+	{
+		TArray<UEdGraphPin*> InputPins;
+		GetInputPins(InputPins);
+		for (FNiagaraVariable InputVar : CalledGraph->FindStaticSwitchInputs())
+		{
+			for (UEdGraphPin* Pin : InputPins)
+			{
+				if (InputVar.GetName().IsEqual(Pin->GetFName()))
+				{
+					Pin->bDefaultValueIsIgnored = PropagatedStaticSwitchParameters.Contains(InputVar);
+					break;
+				}
+			}
 		}
 	}
 

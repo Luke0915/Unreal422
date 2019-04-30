@@ -33,6 +33,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "NiagaraNodeWriteDataSet.h"
 #include "NiagaraNodeStaticSwitch.h"
+#include "NiagaraNodeFunctionCall.h"
 
 #define LOCTEXT_NAMESPACE "FNiagaraEditorUtilities"
 
@@ -625,6 +626,7 @@ void FNiagaraEditorUtilities::SetStaticSwitchConstants(UNiagaraGraph* Graph, con
 {
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
+		// if there is a static switch node its value must be set by the caller
 		UNiagaraNodeStaticSwitch* SwitchNode = Cast<UNiagaraNodeStaticSwitch>(Node);
 		if (SwitchNode)
 		{
@@ -640,6 +642,31 @@ void FNiagaraEditorUtilities::SetStaticSwitchConstants(UNiagaraGraph* Graph, con
 				}
 			}
 			
+		}
+
+		// if there is a function node, it might have delegated some of the static switch values inside its script graph
+		// to be set by the next higher caller instead of directly by the user
+		UNiagaraNodeFunctionCall* FunctionNode = Cast<UNiagaraNodeFunctionCall>(Node);
+		if (FunctionNode && FunctionNode->PropagatedStaticSwitchParameters.Num() > 0)
+		{
+			for (const FNiagaraVariable& SwitchValue : FunctionNode->PropagatedStaticSwitchParameters)
+			{
+				UEdGraphPin* ValuePin = FunctionNode->FindPin(SwitchValue.GetName(), EGPD_Input);
+				if (!ValuePin)
+				{
+					continue;
+				}
+				ValuePin->DefaultValue = FString();
+				for (UEdGraphPin* InputPin : CallInputs)
+				{
+					if (InputPin->GetFName().IsEqual(ValuePin->GetFName()) && InputPin->PinType == ValuePin->PinType)
+					{
+						ValuePin->DefaultValue = InputPin->DefaultValue;
+						break;
+					}
+				}				
+			}
+
 		}
 	}
 }

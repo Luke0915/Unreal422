@@ -36,6 +36,10 @@ public:
 	UPROPERTY()
 	FNiagaraFunctionSignature Signature;
 
+	/** All the input values the function propagates to the next higher caller instead of forcing the user to set them directly. */
+	UPROPERTY()
+	TArray<FNiagaraVariable> PropagatedStaticSwitchParameters;
+
 	bool ScriptIsValid() const;
 
 	//Begin UObject interface

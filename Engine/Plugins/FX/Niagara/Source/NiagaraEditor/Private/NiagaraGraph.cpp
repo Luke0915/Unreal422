@@ -31,6 +31,7 @@
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
 #include "NiagaraNodeStaticSwitch.h"
 #include "NiagaraHlslTranslator.h"
+#include "NiagaraNodeFunctionCall.h"
 
 DECLARE_CYCLE_STAT(TEXT("NiagaraEditor - Graph - FindInputNodes"), STAT_NiagaraEditor_Graph_FindInputNodes, STATGROUP_NiagaraEditor);
 DECLARE_CYCLE_STAT(TEXT("NiagaraEditor - Graph - FindInputNodes_NotFilterUsage"), STAT_NiagaraEditor_Graph_FindInputNodes_NotFilterUsage, STATGROUP_NiagaraEditor);
@@ -601,6 +602,15 @@ TArray<FNiagaraVariable> UNiagaraGraph::FindStaticSwitchInputs() const
 		{
 			FNiagaraVariable Variable(SwitchNode->GetInputType(), SwitchNode->InputParameterName);
 			Result.AddUnique(Variable);
+		}
+
+		UNiagaraNodeFunctionCall* FunctionNode = Cast<UNiagaraNodeFunctionCall>(Node);
+		if (FunctionNode)
+		{
+			for (FNiagaraVariable Variable : FunctionNode->PropagatedStaticSwitchParameters)
+			{
+				Result.AddUnique(Variable);
+			}			
 		}
 	}
 	return Result;
