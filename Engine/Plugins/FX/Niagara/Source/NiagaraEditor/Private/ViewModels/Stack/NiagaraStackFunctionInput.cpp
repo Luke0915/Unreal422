@@ -1529,7 +1529,7 @@ bool UNiagaraStackFunctionInput::GetShowEditConditionInline() const
 
 bool UNiagaraStackFunctionInput::GetEditConditionEnabled() const
 {
-	return EditCondition.IsValid() && EditCondition.GetConditionIsEnabled();
+	return EditCondition.GetConditionIsEnabled();
 }
 
 void UNiagaraStackFunctionInput::SetEditConditionEnabled(bool bIsEnabled)

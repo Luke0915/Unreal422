@@ -93,9 +93,9 @@ bool FNiagaraStackFunctionInputCondition::GetConditionIsEnabled() const
 	if (IsValid())
 	{
 		TArray<uint8> InputValue = InputBinder.GetData();
-		bool bMatchFound = TargetValuesData.FindByPredicate([&InputValue](const TArray<uint8>& TargetValueData) {
-			return FMemory::Memcmp(TargetValueData.GetData(), InputValue.GetData(), TargetValueData.Num()) == 0; }) != nullptr;
-		return bMatchFound;
+		return nullptr != TargetValuesData.FindByPredicate([&InputValue](const TArray<uint8>& TargetValueData) 
+			{ return FMemory::Memcmp(TargetValueData.GetData(), InputValue.GetData(), TargetValueData.Num()) == 0; }
+		);
 	}
 	return false;
 }

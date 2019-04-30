@@ -712,6 +712,31 @@ UEdGraphPin* UNiagaraNodeFunctionCall::FindParameterMapDefaultValuePin(const FNa
 	return nullptr;
 }
 
+UEdGraphPin* UNiagaraNodeFunctionCall::FindStaticSwitchInputPin(const FName& VariableName) const
+{
+	UNiagaraGraph* CalledGraph = GetCalledGraph();
+	if (CalledGraph == nullptr)
+	{
+		return nullptr;
+	}
+	TArray<UEdGraphPin*> InputPins;
+	GetInputPins(InputPins);
+	for (FNiagaraVariable InputVar : CalledGraph->FindStaticSwitchInputs())
+	{
+		if (InputVar.GetName().IsEqual(VariableName))
+		{			
+			for (UEdGraphPin* Pin : InputPins)
+			{
+				if (VariableName.IsEqual(Pin->GetFName()))
+				{
+					return Pin;
+				}
+			}
+		}
+	}
+	return nullptr;
+}
+
 void UNiagaraNodeFunctionCall::SuggestName(FString SuggestedName)
 {
 	ComputeNodeName(SuggestedName);
