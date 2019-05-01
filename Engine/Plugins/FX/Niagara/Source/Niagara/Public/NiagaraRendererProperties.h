@@ -19,9 +19,10 @@
 * and handed back to the System renderer on load.
 */
 
-class NiagaraRenderer;
+class FNiagaraRenderer;
 class UMaterial;
 class UMaterialInterface;
+class FNiagaraEmitterInstance;
 
 UCLASS(ABSTRACT)
 class NIAGARA_API UNiagaraRendererProperties : public UNiagaraMergeable
@@ -31,9 +32,12 @@ class NIAGARA_API UNiagaraRendererProperties : public UNiagaraMergeable
 public:
 	UNiagaraRendererProperties()
 	: bIsEnabled(true)
+	, BaseExtents(FVector(50.0f,50.0f,50.0f))//JIRA - UE-72156 - TODO: Provide better API for renderers to affect dynamic bounds with correct per particle rendered size.
 	{
 	}
-	virtual NiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel) PURE_VIRTUAL ( UNiagaraRendererProperties::CreateEmitterRenderer, return nullptr;);
+
+	//UObject Interface End
+	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter) PURE_VIRTUAL ( UNiagaraRendererProperties::CreateEmitterRenderer, return nullptr;);
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials) const PURE_VIRTUAL(UNiagaraRendererProperties::GetUsedMaterials,);
 
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const { return false; };
@@ -51,15 +55,11 @@ public:
 	// GPU simulation uses DrawIndirect, so the sim step needs to know indices per instance in order to prepare the draw call parameters
 	virtual uint32 GetNumIndicesPerInstance() { return 0; }
 
-	virtual bool GetIsEnabled() const
-	{
-		return bIsEnabled;
-	}
+	virtual bool GetIsEnabled() const { return bIsEnabled; }
+	virtual void SetIsEnabled(bool bInIsEnabled) { bIsEnabled = bInIsEnabled; }
 
-	virtual void SetIsEnabled(bool bInIsEnabled)
-	{
-		bIsEnabled = bInIsEnabled;
-	}
+	FORCEINLINE FVector GetBaseExtents() { return BaseExtents; }
+	
 	/** By default, emitters are drawn in the order that they are added to the system. This value will allow you to control the order in a more fine-grained manner. 
 	Materials of the same type (i.e. Transparent) will draw in order from lowest to highest within the system. The default value is 0.*/
 	UPROPERTY(EditAnywhere, Category = "Sort Order")
@@ -67,6 +67,9 @@ public:
 	
 	UPROPERTY()
 	bool bIsEnabled;
+
+protected:
+	FVector BaseExtents;
 };
 
 

@@ -9,24 +9,12 @@
 #include "Engine/Engine.h"
 #include "DynamicBufferAllocator.h"
 
-DECLARE_CYCLE_STAT(TEXT("Generate Particle Lights"), STAT_NiagaraGenLights, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Sort Particles"), STAT_NiagaraSortParticles, STATGROUP_Niagara);
 
 DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - All"), STAT_NiagaraAllocateGlobalFloatAll, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - InsideLock"), STAT_NiagaraAllocateGlobalFloatInsideLock, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - Alloc New Buffer"), STAT_NiagaraAllocateGlobalFloatAllocNew, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - Map Buffer"), STAT_NiagaraAllocateGlobalFloatMapBuffer, STATGROUP_Niagara);
-
-
-/** Enable/disable parallelized System renderers */
-int32 GbNiagaraParallelEmitterRenderers = 1;
-static FAutoConsoleVariableRef CVarParallelEmitterRenderers(
-	TEXT("niagara.ParallelEmitterRenderers"),
-	GbNiagaraParallelEmitterRenderers,
-	TEXT("Whether to run Niagara System renderers in parallel"),
-	ECVF_Default
-	);
-
 
 class FNiagaraDummyRWBufferFloat : public FRenderResource
 {
@@ -108,62 +96,152 @@ public:
 	}
 };
 
-FRWBuffer& NiagaraRenderer::GetDummyFloatBuffer()
+FRWBuffer& FNiagaraRenderer::GetDummyFloatBuffer()
 {
 	check(IsInRenderingThread());
 	static TGlobalResource<FNiagaraDummyRWBufferFloat> DummyFloatBuffer(TEXT("NiagaraRenderer::DummyFloat"));
 	return DummyFloatBuffer.Buffer;
 }
 
-FRWBufferStructured& NiagaraRenderer::GetDummyMatrixBuffer()
+FRWBufferStructured& FNiagaraRenderer::GetDummyMatrixBuffer()
 {
 	check(IsInRenderingThread());
 	static TGlobalResource<FNiagaraDummyRWBufferMatrix> DummyMatrixBuffer(TEXT("NiagaraRenderer::DummyMatrix"));
 	return DummyMatrixBuffer.Buffer;
 }
 
-FRWBuffer& NiagaraRenderer::GetDummyIntBuffer()
+FRWBuffer& FNiagaraRenderer::GetDummyIntBuffer()
 {
 	check(IsInRenderingThread());
 	static TGlobalResource<FNiagaraDummyRWBufferInt> DummyIntBuffer(TEXT("NiagaraRenderer::DummyInt"));
 	return DummyIntBuffer.Buffer;
 }
 
-FRWBuffer& NiagaraRenderer::GetDummyUIntBuffer()
+FRWBuffer& FNiagaraRenderer::GetDummyUIntBuffer()
 {
 	check(IsInRenderingThread());
 	static TGlobalResource<FNiagaraDummyRWBufferUInt> DummyUIntBuffer(TEXT("NiagaraRenderer::DummyUInt"));
 	return DummyUIntBuffer.Buffer;
 }
 
-NiagaraRenderer::NiagaraRenderer()
-	: CPUTimeMS(0.0f)
-	, bLocalSpace(false)
-	, bEnabled(true)
-	, DynamicDataRender(nullptr)
+//////////////////////////////////////////////////////////////////////////
+
+FNiagaraDynamicDataBase::FNiagaraDynamicDataBase(const FNiagaraEmitterInstance* InEmitter)
+{
+	check(InEmitter);
+
+	FNiagaraDataSet& DataSet = InEmitter->GetData();
+	SimTarget = DataSet.GetSimTarget();
+
+	if (SimTarget == ENiagaraSimTarget::CPUSim)
+	{
+		//On CPU we pass through direct ptr to the most recent data buffer.
+		Data.CPUParticleData = &DataSet.GetCurrentDataChecked();
+
+		//Mark this buffer as in use by this renderer. Prevents this buffer being reused to write new simulation data while it's inuse by the renderer.
+		Data.CPUParticleData->AddReadRef();
+	}
+	else
+	{
+		//On GPU we must access the correct buffer via the GPUExecContext. Probably a way to route this data better outside the dynamic data in future.
+		//During simulation, the correct data buffer for rendering will be placed in the GPUContext and AddReadRef called.
+		check(SimTarget == ENiagaraSimTarget::GPUComputeSim);
+		Data.GPUExecContext = InEmitter->GetGPUContext();
+	}
+}
+
+FNiagaraDynamicDataBase::~FNiagaraDynamicDataBase()
+{
+	if (SimTarget == ENiagaraSimTarget::CPUSim)
+	{
+		check(Data.CPUParticleData);
+		//Release our ref on the buffer so it can be reused as a destination for a new simulation tick.
+		Data.CPUParticleData->ReleaseReadRef();
+	}
+}
+
+FNiagaraDataBuffer* FNiagaraDynamicDataBase::GetParticleDataToRender()const
+{
+	FNiagaraDataBuffer* Ret = nullptr;
+
+	if (SimTarget == ENiagaraSimTarget::CPUSim)
+	{
+		Ret = Data.CPUParticleData;
+	}
+	else
+	{
+		Ret = Data.GPUExecContext->GetDataToRender();
+	}
+
+	checkSlow(Ret == nullptr || Ret->IsBeingRead());
+	return Ret;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+
+FNiagaraRenderer::FNiagaraRenderer(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter)
+	: DynamicDataRender(nullptr)
 	, BaseExtents(1.0f, 1.0f, 1.0f)
+	, CPUTimeMS(0.0f)
+	, bLocalSpace(Emitter->GetCachedEmitter()->bLocalSpace)
+	, bHasLights(false)
 {
-	Material = UMaterial::GetDefaultMaterial(MD_Surface);
+#if STATS
+	EmitterStatID = Emitter->GetCachedEmitter()->GetStatID(false, false);
+#endif
 }
 
-
-NiagaraRenderer::~NiagaraRenderer() 
+void FNiagaraRenderer::Initialize(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter)
 {
-}
-
-void NiagaraRenderer::Release()
-{
-	check(IsInGameThread());
-	NiagaraRenderer* Renderer = this;
-	ENQUEUE_RENDER_COMMAND(NiagaraRendererDeletion)(
-		[Renderer](FRHICommandListImmediate& RHICmdList)
+	//Get our list of valid base materials. Fall back to default material if they're not valid.
+	InProps->GetUsedMaterials(BaseMaterials_GT);
+	for (UMaterialInterface*& Mat : BaseMaterials_GT)
+	{
+		if (!IsMaterialValid(Mat))
 		{
-			delete Renderer;
+			Mat = UMaterial::GetDefaultMaterial(MD_Surface);
 		}
-	);
+		BaseMaterialRelevance |= Mat->GetRelevance(FeatureLevel);
+	}
 }
 
-void NiagaraRenderer::SortIndices(ENiagaraSortMode SortMode, int32 SortAttributeOffset, const FNiagaraDataBuffer& Buffer, const FMatrix& LocalToWorld, const FSceneView* View, FGlobalDynamicReadBuffer::FAllocation& OutIndices)const
+FNiagaraRenderer::~FNiagaraRenderer()
+{
+	ReleaseRenderThreadResources();
+	SetDynamicData_RenderThread(nullptr);
+}
+
+FPrimitiveViewRelevance FNiagaraRenderer::GetViewRelevance(const FSceneView* View, const FNiagaraSceneProxy *SceneProxy)const
+{
+	FPrimitiveViewRelevance Result;
+	bool bHasDynamicData = HasDynamicData();
+
+	//Always draw so our LastRenderTime is updated. We may not have dynamic data if we're disabled from visibility culling.
+	Result.bDrawRelevance =/* bHasDynamicData && */SceneProxy->IsShown(View) && View->Family->EngineShowFlags.Particles;
+	Result.bShadowRelevance = bHasDynamicData && SceneProxy->IsShadowCast(View);
+	Result.bDynamicRelevance = bHasDynamicData;
+	if (bHasDynamicData && View->Family->EngineShowFlags.Bounds)
+	{
+		Result.bOpaqueRelevance = true;
+	}
+	MaterialRelevance.SetPrimitiveViewRelevance(Result);
+
+	return Result;
+}
+
+void FNiagaraRenderer::SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData)
+{
+	check(IsInRenderingThread());
+	if (DynamicDataRender)
+	{
+		delete DynamicDataRender;
+		DynamicDataRender = NULL;
+	}
+	DynamicDataRender = NewDynamicData;
+}
+
+void FNiagaraRenderer::SortIndices(ENiagaraSortMode SortMode, int32 SortAttributeOffset, const FNiagaraDataBuffer& Buffer, const FMatrix& LocalToWorld, const FSceneView* View, FGlobalDynamicReadBuffer::FAllocation& OutIndices)const
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraSortParticles);
 
@@ -266,143 +344,3 @@ void NiagaraRenderer::SortIndices(ENiagaraSortMode SortMode, int32 SortAttribute
 		IndexBuffer[i] = ParticleOrder[i].Index;
 	}
 }
-
-	
-//////////////////////////////////////////////////////////////////////////
-// Light renderer
-
-NiagaraRendererLights::NiagaraRendererLights(ERHIFeatureLevel::Type FeatureLevel, UNiagaraRendererProperties *InProps) :
-	NiagaraRenderer()
-{
-	Properties = Cast<UNiagaraLightRendererProperties>(InProps);
-
-#if STATS
-	if (UNiagaraEmitter* Emitter = InProps->GetTypedOuter<UNiagaraEmitter>())
-	{
-		EmitterStatID = Emitter->GetStatID(false, false);
-	}
-#endif
-}
-
-
-void NiagaraRendererLights::ReleaseRenderThreadResources()
-{
-}
-
-void NiagaraRendererLights::CreateRenderThreadResources()
-{
-}
-
-
-
-/** Update render data buffer from attributes */
-FNiagaraDynamicDataBase *NiagaraRendererLights::GenerateVertexData(const FNiagaraSceneProxy* Proxy, FNiagaraDataSet &Data, const ENiagaraSimTarget Target)
-{
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraGenLights);
-
-	SimpleTimer VertexDataTimer;
-
-	//Bail if we don't have the required attributes to render this emitter.
-	if (!bEnabled || !Properties)
-	{
-		return nullptr;
-	}
-
-	//I'm not a great fan of pulling scalar components out to a structured vert buffer like this.
-	//TODO: Experiment with a new VF that reads the data directly from the scalar layout.
-	FNiagaraDataSetIterator<FVector> PosItr(Data, Properties->PositionBinding.DataSetVariable);
-	FNiagaraDataSetIterator<FLinearColor> ColItr(Data, Properties->ColorBinding.DataSetVariable);
-	FNiagaraDataSetIterator<float> RadiusItr(Data, Properties->RadiusBinding.DataSetVariable);
-	FNiagaraDataSetIterator<float> ExponentItr(Data, Properties->LightExponentBinding.DataSetVariable);
-	FNiagaraDataSetIterator<float> ScatteringItr(Data, Properties->VolumetricScatteringBinding.DataSetVariable);
-	FNiagaraDataSetIterator<int32> EnabledItr(Data, Properties->LightRenderingEnabledBinding.DataSetVariable);
-
-	FNiagaraDynamicDataLights *DynamicData = new FNiagaraDynamicDataLights;
-	const FMatrix& LocalToWorldMatrix = Proxy->GetLocalToWorld();
-	FVector DefaultColor = FVector(Properties->ColorBinding.DefaultValueIfNonExistent.GetValue<FLinearColor>());
-	FVector DefaultPos = FVector4(LocalToWorldMatrix.GetOrigin());
-	float DefaultRadius = Properties->RadiusBinding.DefaultValueIfNonExistent.GetValue<float>();
-	float DefaultScattering = Properties->VolumetricScatteringBinding.DefaultValueIfNonExistent.GetValue<float>();
-
-	DynamicData->LightArray.Empty();
-
-	for (uint32 ParticleIndex = 0; ParticleIndex < Data.GetNumInstances(); ParticleIndex++)
-	{
-		bool ShouldRenderParticleLight = !Properties->bOverrideRenderingEnabled || (EnabledItr.IsValid() ? (*EnabledItr) : true);
-		float LightRadius = (RadiusItr.IsValid() ? (*RadiusItr) : DefaultRadius) * Properties->RadiusScale;
-		if (ShouldRenderParticleLight && LightRadius > 0)
-		{
-			SimpleLightData LightData;
-			LightData.LightEntry.Radius = LightRadius;
-			LightData.LightEntry.Color = (ColItr.IsValid() ? FVector((*ColItr)) : DefaultColor) + Properties->ColorAdd;
-			LightData.LightEntry.Exponent = Properties->bUseInverseSquaredFalloff ? 0 : (ExponentItr.IsValid() ? (*ExponentItr) : 1);
-			LightData.LightEntry.bAffectTranslucency = Properties->bAffectsTranslucency;
-			LightData.LightEntry.VolumetricScatteringIntensity = ScatteringItr.IsValid() ? (*ScatteringItr) : DefaultScattering;
-			LightData.PerViewEntry.Position = PosItr.IsValid() ? (*PosItr) : DefaultPos;
-			if (bLocalSpace)
-			{
-				LightData.PerViewEntry.Position = LocalToWorldMatrix.TransformPosition(LightData.PerViewEntry.Position);
-			}
-
-			DynamicData->LightArray.Add(LightData);
-		}
-
-		PosItr.Advance();
-		ColItr.Advance();
-		RadiusItr.Advance();
-		ExponentItr.Advance();
-		ScatteringItr.Advance();
-		EnabledItr.Advance();
-	}
-
-	CPUTimeMS = VertexDataTimer.GetElapsedMilliseconds();
-	return DynamicData;
-}
-
-
-void NiagaraRendererLights::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const
-{
-
-}
-
-void NiagaraRendererLights::SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData)
-{
-	if (DynamicDataRender)
-	{
-		delete static_cast<FNiagaraDynamicDataLights*>(DynamicDataRender);
-		DynamicDataRender = NULL;
-	}
-	DynamicDataRender = static_cast<FNiagaraDynamicDataLights*>(NewDynamicData);
-}
-
-int NiagaraRendererLights::GetDynamicDataSize()
-{
-	return 0;
-}
-bool NiagaraRendererLights::HasDynamicData()
-{
-	return false;
-}
-
-bool NiagaraRendererLights::SetMaterialUsage()
-{
-	return false;
-}
-
-void NiagaraRendererLights::TransformChanged()
-{
-}
-
-#if WITH_EDITORONLY_DATA
-
-const TArray<FNiagaraVariable>& NiagaraRendererLights::GetRequiredAttributes()
-{
-	return Properties->GetRequiredAttributes();
-}
-
-const TArray<FNiagaraVariable>& NiagaraRendererLights::GetOptionalAttributes()
-{
-	return Properties->GetOptionalAttributes();
-}
-
-#endif

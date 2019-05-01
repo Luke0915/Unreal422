@@ -4,6 +4,7 @@
 #include "NiagaraRenderer.h"
 #include "Internationalization/Internationalization.h"
 #include "NiagaraConstants.h"
+#include "NiagaraRendererSprites.h"
 #if WITH_EDITOR
 #include "DerivedDataCacheInterface.h"
 #endif
@@ -37,7 +38,6 @@ UNiagaraSpriteRendererProperties::UNiagaraSpriteRendererProperties()
 	, bSortOnlyWhenTranslucent(true)
 	, MinFacingCameraBlendDistance(0.0f)
 	, MaxFacingCameraBlendDistance(0.0f)
-	, SyncId(0)
 #if WITH_EDITORONLY_DATA
 	, BoundingMode(BVC_EightVertices)
 	, AlphaThreshold(0.1f)
@@ -45,9 +45,11 @@ UNiagaraSpriteRendererProperties::UNiagaraSpriteRendererProperties()
 {
 }
 
-NiagaraRenderer* UNiagaraSpriteRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel)
+FNiagaraRenderer* UNiagaraSpriteRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter)
 {
-	return new NiagaraRendererSprites(FeatureLevel, this);
+	FNiagaraRenderer* NewRenderer = new FNiagaraRendererSprites(FeatureLevel, this, Emitter);	
+	NewRenderer->Initialize(FeatureLevel, this, Emitter);
+	return NewRenderer;
 }
 
 void UNiagaraSpriteRendererProperties::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials) const
@@ -74,7 +76,6 @@ void UNiagaraSpriteRendererProperties::PostLoad()
 void UNiagaraSpriteRendererProperties::PostInitProperties()
 {
 	Super::PostInitProperties();
-	SyncId = 0;
 	if (HasAnyFlags(RF_ClassDefaultObject) == false)
 	{
 		InitBindings();
@@ -149,12 +150,7 @@ void UNiagaraSpriteRendererProperties::PostEditChangeProperty(struct FPropertyCh
 			CacheDerivedData();
 		}
 	}
-
-	if (PropertyChangedEvent.GetPropertyName() != TEXT("SyncId"))
-	{
-		SyncId++;
-	}
-
+	
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 

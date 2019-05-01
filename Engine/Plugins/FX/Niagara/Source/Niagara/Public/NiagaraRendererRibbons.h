@@ -14,60 +14,38 @@ class FNiagaraDataSet;
 * NiagaraRendererRibbons renders an FNiagaraEmitterInstance as a ribbon connecting all particles
 * in order by particle age.
 */
-class NIAGARA_API NiagaraRendererRibbons : public NiagaraRenderer
+class NIAGARA_API FNiagaraRendererRibbons : public FNiagaraRenderer
 {
 public:
-	NiagaraRendererRibbons(ERHIFeatureLevel::Type FeatureLevel, UNiagaraRendererProperties *Props);
-	~NiagaraRendererRibbons()
-	{
-		ReleaseRenderThreadResources();
-	}
+	FNiagaraRendererRibbons(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);
 
-	virtual void ReleaseRenderThreadResources() override;
+	// FNiagaraRenderer Interface 
 	virtual void CreateRenderThreadResources() override;
-
+	virtual void ReleaseRenderThreadResources() override;
 
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const override;
-
-	virtual bool SetMaterialUsage() override;
-
+	virtual FNiagaraDynamicDataBase *GenerateDynamicData(const FNiagaraSceneProxy* Proxy, const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitteride) const override;
+	virtual int32 GetDynamicDataSize()const override;
 	virtual void TransformChanged() override;
+	virtual bool IsMaterialValid(UMaterialInterface* Mat)const override;
+	//FNiagaraInterface END
 
-	/** Update render data buffer from attributes */
-	FNiagaraDynamicDataBase *GenerateVertexData(const FNiagaraSceneProxy* Proxy, FNiagaraDataSet &Data, const ENiagaraSimTarget Target) override;
-
-	void AddDynamicParam(TArray<FNiagaraRibbonVertexDynamicParameter>& ParamData, const FVector4& DynamicParam)
-	{
-		FNiagaraRibbonVertexDynamicParameter Param;
-		Param.DynamicValue[0] = DynamicParam.X;
-		Param.DynamicValue[1] = DynamicParam.Y;
-		Param.DynamicValue[2] = DynamicParam.Z;
-		Param.DynamicValue[3] = DynamicParam.W;
-		ParamData.Add(Param);
-	}
-
-
-
-	virtual void SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData) override;
-	int GetDynamicDataSize() override;
-	bool HasDynamicData() override;
-
-#if WITH_EDITORONLY_DATA
-	virtual const TArray<FNiagaraVariable>& GetRequiredAttributes() override;
-	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
-#endif
-
-	UClass *GetPropertiesClass() override { return UNiagaraRibbonRendererProperties::StaticClass(); }
-	void SetRendererProperties(UNiagaraRendererProperties *Props) override { Properties = Cast<UNiagaraRibbonRendererProperties>(Props); }
-	virtual UNiagaraRendererProperties* GetRendererProperties() const override 
-	{
-		return Properties;
-	}
-
+	FORCEINLINE void AddDynamicParam(TArray<FNiagaraRibbonVertexDynamicParameter>& ParamData, const FVector4& DynamicParam);
 private:
 	class FNiagaraRibbonVertexFactory *VertexFactory;
-	UNiagaraRibbonRendererProperties *Properties;
 	mutable TUniformBuffer<FPrimitiveUniformShaderParameters> WorldSpacePrimitiveUniformBuffer;
+
+	ENiagaraRibbonFacingMode FacingMode;
+	float UV0TilingDistance;
+	FVector2D UV0Scale;
+	FVector2D UV0Offset;
+	ENiagaraRibbonAgeOffsetMode UV0AgeOffsetMode;
+	float UV1TilingDistance;
+	FVector2D UV1Scale;
+	FVector2D UV1Offset;
+	ENiagaraRibbonAgeOffsetMode UV1AgeOffsetMode;
+	ENiagaraRibbonDrawDirection DrawDirection;
+
 	int32 PositionDataOffset;
 	int32 VelocityDataOffset;
 	int32 WidthDataOffset;
@@ -76,7 +54,6 @@ private:
 	int32 ColorDataOffset;
 	int32 NormalizedAgeDataOffset;
 	int32 MaterialRandomDataOffset;
-	int32 LastSyncedId;
 	int32 MaterialParamOffset;
 	int32 MaterialParamOffset1;
 	int32 MaterialParamOffset2;

@@ -12,9 +12,16 @@ UNiagaraMeshRendererProperties::UNiagaraMeshRendererProperties()
 {
 }
 
-NiagaraRenderer* UNiagaraMeshRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel)
+FNiagaraRenderer* UNiagaraMeshRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter)
 {
-	return new NiagaraRendererMeshes(FeatureLevel, this);
+	if (ParticleMesh)
+	{
+		FNiagaraRenderer* NewRenderer = new FNiagaraRendererMeshes(FeatureLevel, this, Emitter);
+		NewRenderer->Initialize(FeatureLevel, this, Emitter);
+		return NewRenderer;
+	}
+
+	return nullptr;
 }
 
 
@@ -22,7 +29,6 @@ NiagaraRenderer* UNiagaraMeshRendererProperties::CreateEmitterRenderer(ERHIFeatu
 void UNiagaraMeshRendererProperties::PostInitProperties()
 {
 	Super::PostInitProperties();
-	SyncId = 0;
 	if (HasAnyFlags(RF_ClassDefaultObject) == false)
 	{
 		InitBindings();
@@ -153,6 +159,10 @@ void UNiagaraMeshRendererProperties::PostEditChangeProperty(FPropertyChangedEven
 {
 	if (ParticleMesh && PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetName() == "ParticleMesh")
 	{
+		//TODO: Provide proper API for renderers to affect dynamic bounds.
+		//JIRA - UE-72156;
+		BaseExtents = ParticleMesh->GetBounds().BoxExtent;
+
 		const FStaticMeshLODResources& LODModel = ParticleMesh->RenderData->LODResources[0];
 		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 		{
@@ -164,11 +174,6 @@ void UNiagaraMeshRendererProperties::PostEditChangeProperty(FPropertyChangedEven
 				Material->CheckMaterialUsage(MATUSAGE_NiagaraMeshParticles);
 			}
 		}
-	}
-	
-	if (PropertyChangedEvent.GetPropertyName() != TEXT("SyncId"))
-	{
-		SyncId++;
 	}
 }
 

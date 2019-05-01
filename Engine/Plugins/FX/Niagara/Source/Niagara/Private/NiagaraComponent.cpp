@@ -99,27 +99,12 @@ FNiagaraSceneProxy::FNiagaraSceneProxy(const UNiagaraComponent* InComponent)
 {
 	// In this case only, update the System renderers on the game thread.
 	check(IsInGameThread());
-
-#if STATS
-	SystemStatID = InComponent->GetAsset() ? InComponent->GetAsset()->GetStatID(false, false) : TStatId();
-	FScopeCycleCounter SystemStatCounter(SystemStatID);
-#endif
-
 	FNiagaraSystemInstance* SystemInst = InComponent->GetSystemInstance();
 	if (SystemInst)
 	{
-		TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> > &Sims = SystemInst->GetEmitters();
-		TArray<NiagaraRenderer*> RenderersFromSims;
-		for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> Sim : Sims)
-		{
-			for (int32 i = 0; i < Sim->GetEmitterRendererNum(); i++)
-			{
-				RenderersFromSims.Add(Sim->GetEmitterRenderer(i));
-			}
-		}
-		UpdateEmitterRenderers(RenderersFromSims);
 		//UE_LOG(LogNiagara, Warning, TEXT("FNiagaraSceneProxy %p"), this);
 
+		CreateRenderers(InComponent);
 		bAlwaysHasVelocity = true;
 		Batcher = SystemInst->GetBatcher();
 	}
@@ -131,52 +116,95 @@ SIZE_T FNiagaraSceneProxy::GetTypeHash() const
 	return reinterpret_cast<size_t>(&UniquePointer);
 }
 
-void FNiagaraSceneProxy::UpdateEmitterRenderers(const TArray<NiagaraRenderer*>& InRenderers)
+void FNiagaraSceneProxy::ReleaseRenderers()
 {
-	//UE_LOG(LogNiagara, Log, TEXT("FNiagaraSceneProxy::UpdateEmitterRenderers %p"), this);
-	EmitterRenderers.Empty();
-	for (NiagaraRenderer* EmitterRenderer : InRenderers)
+	if (EmitterRenderers.Num() > 0)
 	{
-		if (EmitterRenderer)
+		//Renderers must be freed on the render thread.
+		ENQUEUE_RENDER_COMMAND(ReleaseRenderersCommand)(
+			[ToDeleteEmitterRenderers = MoveTemp(EmitterRenderers)](FRHICommandListImmediate& RHICmdList)
 		{
-			EmitterRenderers.Add(EmitterRenderer);
+			for (FNiagaraRenderer* EmitterRenderer : ToDeleteEmitterRenderers)
+			{
+				if (EmitterRenderer)
+				{
+					EmitterRenderer->ReleaseRenderThreadResources();
+					delete EmitterRenderer;
+				}
+			}
+		});
+		EmitterRenderers.Empty();
+	}
+	RendererDrawOrder.Empty();
+}
+
+void FNiagaraSceneProxy::CreateRenderers(const UNiagaraComponent* Component)
+{
+	check(Component);
+	check(Component->GetSystemInstance());
+
+	UNiagaraSystem* System = Component->GetAsset();
+	check(System);
+
+	struct FSortInfo
+	{
+		FSortInfo(int32 InSortHint, int32 InRendererIdx): SortHint(InSortHint), RendererIdx(InRendererIdx){}
+		int32 SortHint;
+		int32 RendererIdx;
+	};
+	TArray<FSortInfo, TInlineAllocator<8>> RendererSortInfo;
+
+	ReleaseRenderers();
+	ERHIFeatureLevel::Type FeatureLevel = GetScene().GetFeatureLevel();
+	for(TSharedRef<const FNiagaraEmitterInstance, ESPMode::ThreadSafe> EmitterInst : Component->GetSystemInstance()->GetEmitters())
+	{
+		if (UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter())
+		{
+			for (UNiagaraRendererProperties* Properties : Emitter->GetRenderers())
+			{
+				RendererSortInfo.Emplace(Properties->SortOrderHint, EmitterRenderers.Num());
+				FNiagaraRenderer* NewRenderer = nullptr;
+				if (Properties->GetIsEnabled())
+				{
+					NewRenderer = Properties->CreateEmitterRenderer(FeatureLevel, &EmitterInst.Get());
+				}
+				EmitterRenderers.Add(NewRenderer);
+			}
 		}
 	}
 
 	// We sort by the sort hint in order to guarantee that we submit according to the preferred sort order..
-	EmitterRenderers.Sort([&](const NiagaraRenderer& A, const NiagaraRenderer& B)
+	RendererSortInfo.Sort([&](const FSortInfo& A, const FSortInfo& B)
 	{
-		check(A.GetRendererProperties());
-		check(B.GetRendererProperties());
-		int32 AIndex = A.GetRendererProperties()->SortOrderHint;
-		int32 BIndex = B.GetRendererProperties()->SortOrderHint;
+		int32 AIndex = A.SortHint;
+		int32 BIndex = B.SortHint;
 		return AIndex < BIndex;
 	});
+	RendererDrawOrder.Reset(RendererSortInfo.Num());
+	for (FSortInfo SortInfo : RendererSortInfo)
+	{
+		RendererDrawOrder.Add(SortInfo.RendererIdx);
+	}
 }
 
 FNiagaraSceneProxy::~FNiagaraSceneProxy()
 {
 	//UE_LOG(LogNiagara, Warning, TEXT("~FNiagaraSceneProxy %p"), this);
-	ReleaseRenderThreadResources();
-}
-
-/** Called on render thread to assign new dynamic data */
-void FNiagaraSceneProxy::SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData)
-{
-	for (NiagaraRenderer* Renderer : EmitterRenderers)
+	check(IsInRenderingThread());
+	for (FNiagaraRenderer* EmitterRenderer : EmitterRenderers)
 	{
-		if (Renderer)
+		if (EmitterRenderer)
 		{
-			Renderer->SetDynamicData_RenderThread(NewDynamicData);
+			EmitterRenderer->ReleaseRenderThreadResources();
+			delete EmitterRenderer;
 		}
 	}
-	return;
+	EmitterRenderers.Empty();
 }
-
 
 void FNiagaraSceneProxy::ReleaseRenderThreadResources()
 {
-	for (NiagaraRenderer* Renderer : EmitterRenderers)
+	for (FNiagaraRenderer* Renderer : EmitterRenderers)
 	{
 		if (Renderer)
 		{
@@ -189,7 +217,7 @@ void FNiagaraSceneProxy::ReleaseRenderThreadResources()
 // FPrimitiveSceneProxy interface.
 void FNiagaraSceneProxy::CreateRenderThreadResources()
 {
-	for (NiagaraRenderer* Renderer : EmitterRenderers)
+	for (FNiagaraRenderer* Renderer : EmitterRenderers)
 	{
 		if (Renderer)
 		{
@@ -201,7 +229,7 @@ void FNiagaraSceneProxy::CreateRenderThreadResources()
 
 void FNiagaraSceneProxy::OnTransformChanged()
 {
-	for (NiagaraRenderer* Renderer : EmitterRenderers)
+	for (FNiagaraRenderer* Renderer : EmitterRenderers)
 	{
 		if (Renderer)
 		{
@@ -220,9 +248,9 @@ FPrimitiveViewRelevance FNiagaraSceneProxy::GetViewRelevance(const FSceneView* V
 	}
 	Relevance.bDynamicRelevance = true;
 
-	for (NiagaraRenderer* Renderer : EmitterRenderers)
+	for (FNiagaraRenderer* Renderer : EmitterRenderers)
 	{
-		if (Renderer && Renderer->GetRendererProperties()->GetIsEnabled())
+		if (Renderer)
 		{
 			Relevance |= Renderer->GetViewRelevance(View, this);
 		}
@@ -242,7 +270,7 @@ uint32 FNiagaraSceneProxy::GetMemoryFootprint() const
 uint32 FNiagaraSceneProxy::GetAllocatedSize() const
 { 
 	uint32 DynamicDataSize = 0;
-	for (NiagaraRenderer* Renderer : EmitterRenderers)
+	for (FNiagaraRenderer* Renderer : EmitterRenderers)
 	{
 		if (Renderer)
 		{
@@ -266,8 +294,9 @@ void FNiagaraSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>&
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_RT);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraComponentGetDynamicMeshElements);
-	for (NiagaraRenderer* Renderer : EmitterRenderers)
+	for (int32 RendererIdx : RendererDrawOrder)
 	{
+		FNiagaraRenderer* Renderer = EmitterRenderers[RendererIdx];
 		if (Renderer)
 		{
 			Renderer->GetDynamicMeshElements(Views, ViewFamily, VisibilityMap, Collector, this);
@@ -293,7 +322,7 @@ void FNiagaraSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>&
 #if RHI_RAYTRACING
 void FNiagaraSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances)
 {
-	for (NiagaraRenderer* Renderer : EmitterRenderers)
+	for (FNiagaraRenderer* Renderer : EmitterRenderers)
 	{
 		if (Renderer)
 		{
@@ -307,32 +336,13 @@ void FNiagaraSceneProxy::GatherSimpleLights(const FSceneViewFamily& ViewFamily, 
 {
 	for (int32 Idx = 0; Idx < EmitterRenderers.Num(); Idx++)
 	{
-		NiagaraRenderer *Renderer = EmitterRenderers[Idx];
-		if (Renderer && Renderer->GetPropertiesClass() == UNiagaraLightRendererProperties::StaticClass())
+		FNiagaraRenderer *Renderer = EmitterRenderers[Idx];
+		if (Renderer && Renderer->HasLights())
 		{
-			NiagaraRendererLights* LightRenderer = static_cast<NiagaraRendererLights*>(Renderer);
-			FNiagaraDynamicDataLights* DynamicData = static_cast<FNiagaraDynamicDataLights*>(Renderer->GetDynamicData());
-
-			if (DynamicData)
-			{
-				int32 LightCount = DynamicData->LightArray.Num();
-
-				OutParticleLights.InstanceData.Reserve(LightCount + OutParticleLights.InstanceData.Num());
-				OutParticleLights.PerViewData.Reserve(LightCount + OutParticleLights.PerViewData.Num());
-
-				for (NiagaraRendererLights::SimpleLightData &LightData : DynamicData->LightArray)
-				{
-					// When not using camera-offset, output one position for all views to share. 
-					OutParticleLights.PerViewData.Add(LightData.PerViewEntry);
-
-					// Add an entry for the light instance.
-					OutParticleLights.InstanceData.Add(LightData.LightEntry);
-				}
-			}
+			Renderer->GatherSimpleLights(OutParticleLights);
 		}
 	}
 }
-
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -555,6 +565,7 @@ bool UNiagaraComponent::InitializeSystem()
 		OnSystemInstanceChangedDelegate.Broadcast();
 #endif
 		SystemInstance->Init(bForceSolo);
+		MarkRenderStateDirty();
 		return true;
 	}
 	return false;
@@ -748,6 +759,7 @@ void UNiagaraComponent::DestroyInstance()
 #if WITH_EDITORONLY_DATA
 	OnSystemInstanceChangedDelegate.Broadcast();
 #endif
+	MarkRenderStateDirty();
 }
 
 void UNiagaraComponent::OnRegister()
@@ -857,65 +869,88 @@ void UNiagaraComponent::CreateRenderState_Concurrent()
 
 void UNiagaraComponent::SendRenderDynamicData_Concurrent()
 {
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_GT_CNC);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraComponentSendRenderData);
 	if (SystemInstance.IsValid() && SceneProxy)
 	{
-		FNiagaraSceneProxy* NiagaraProxy = static_cast<FNiagaraSceneProxy*>(SceneProxy);
-
 #if STATS
 		TStatId SystemStatID = GetAsset() ? GetAsset()->GetStatID(true, true) : TStatId();
 		FScopeCycleCounter SystemStatCounter(SystemStatID);
 #endif
+		FNiagaraSceneProxy* NiagaraProxy = static_cast<FNiagaraSceneProxy*>(SceneProxy);
+		const TArray<FNiagaraRenderer*>& EmitterRenderers = NiagaraProxy->GetEmitterRenderers();
 
+		typedef TArray<FNiagaraDynamicDataBase*, TInlineAllocator<8>> TDynamicDataArray;
+		TDynamicDataArray NewDynamicData;
+		NewDynamicData.Reserve(EmitterRenderers.Num());
+
+		int32 RendererIndex = 0;
 		for (int32 i = 0; i < SystemInstance->GetEmitters().Num(); i++)
 		{
-			FNiagaraEmitterInstance* Emitter = &SystemInstance->GetEmitters()[i].Get();
+			FNiagaraEmitterInstance* EmitterInst = &SystemInstance->GetEmitters()[i].Get();
+			UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter();
 
 #if STATS
-			TStatId EmitterStatID = Emitter->GetCachedEmitter()->GetStatID(true, true);
+			TStatId EmitterStatID = Emitter->GetStatID(true, true);
 			FScopeCycleCounter EmitterStatCounter(EmitterStatID);
 #endif
 
-			for (int32 EmitterIdx = 0; EmitterIdx < Emitter->GetEmitterRendererNum(); EmitterIdx++)
+			for (int32 EmitterIdx = 0; EmitterIdx < Emitter->GetRenderers().Num(); EmitterIdx++, RendererIndex++)
 			{
-				NiagaraRenderer* Renderer = Emitter->GetEmitterRenderer(EmitterIdx);
+				UNiagaraRendererProperties* Properties = Emitter->GetRenderers()[EmitterIdx];
+				FNiagaraRenderer* Renderer = EmitterRenderers[RendererIndex];
+				FNiagaraDynamicDataBase* NewData = nullptr;
+				
 				if (Renderer)
 				{
 					bool bRendererEditorEnabled = true;
 #if WITH_EDITORONLY_DATA
-					bRendererEditorEnabled = (!SystemInstance->GetIsolateEnabled() || Emitter->GetEmitterHandle().IsIsolated());
+					const FNiagaraEmitterHandle& Handle = Asset->GetEmitterHandle(i);
+					bRendererEditorEnabled = (!SystemInstance->GetIsolateEnabled() || Handle.IsIsolated());
 #endif
-					bRendererEditorEnabled &= Renderer->GetRendererProperties()->GetIsEnabled();
-					if (bRendererEditorEnabled && !Emitter->IsComplete() && !SystemInstance->IsComplete())
+					bRendererEditorEnabled &= Properties->GetIsEnabled();
+					if (bRendererEditorEnabled && !EmitterInst->IsComplete() && !SystemInstance->IsComplete())
 					{
-						FNiagaraDynamicDataBase* DynamicData = Renderer->GenerateVertexData(NiagaraProxy, Emitter->GetData(), Emitter->GetEmitterHandle().GetInstance()->SimTarget);
-						NiagaraRenderer* EmitterRenderer = Emitter->GetEmitterRenderer(EmitterIdx);
-						ENQUEUE_RENDER_COMMAND(FSendNiagaraDynamicData)(
-							[EmitterRenderer, DynamicData](FRHICommandListImmediate& RHICmdList)
-							{
-								EmitterRenderer->SetDynamicData_RenderThread(DynamicData);
-							});
-					}
-					else
-					{
-						NiagaraRenderer* EmitterRenderer = Emitter->GetEmitterRenderer(EmitterIdx);
-						ENQUEUE_RENDER_COMMAND(FSendNiagaraDynamicData)(
-							[EmitterRenderer](FRHICommandListImmediate& RHICmdList)
-							{
-								EmitterRenderer->SetDynamicData_RenderThread(nullptr);
-							});
+						NewData = Renderer->GenerateDynamicData(NiagaraProxy, Properties, EmitterInst);
 					}
 				}
+
+				NewDynamicData.Add(NewData);
 			}
 		}
+		
+		ENQUEUE_RENDER_COMMAND(ResetDataSetBuffers)(
+			[NiagaraProxy, DynamicData = MoveTemp(NewDynamicData)](FRHICommandListImmediate& RHICmdList)
+		{
+			const TArray<FNiagaraRenderer*>& EmitterRenderers = NiagaraProxy->GetEmitterRenderers();
+			for (int32 i = 0; i < EmitterRenderers.Num(); ++i)
+			{
+				if (FNiagaraRenderer* Renderer = EmitterRenderers[i])
+				{
+					Renderer->SetDynamicData_RenderThread(DynamicData[i]);
+				}
+			}
+		});
 	}
-
 }
 
 int32 UNiagaraComponent::GetNumMaterials() const
 {
-	return 0;
+	TArray<UMaterialInterface*> UsedMaterials;
+	if (SystemInstance)
+	{
+		for (int32 i = 0; i < SystemInstance->GetEmitters().Num(); i++)
+		{
+			FNiagaraEmitterInstance* EmitterInst = &SystemInstance->GetEmitters()[i].Get();
+			UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter();
+			for (int32 EmitterIdx = 0; EmitterIdx < Emitter->GetRenderers().Num(); EmitterIdx++)
+			{
+				UNiagaraRendererProperties* Properties = Emitter->GetRenderers()[EmitterIdx];
+				Properties->GetUsedMaterials(UsedMaterials);
+			}
+		}
+	}
+
+	return UsedMaterials.Num();
 }
 
 
@@ -969,10 +1004,12 @@ void UNiagaraComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMateria
 		return;
 	}
 
-	for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> Sim : SystemInstance->GetEmitters())
+	for (int32 EmitterIdx = 0; EmitterIdx < SystemInstance->GetEmitters().Num(); ++EmitterIdx)
 	{
+		TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> Sim = SystemInstance->GetEmitters()[EmitterIdx];
+
 		if (UNiagaraEmitter* Props = Sim->GetEmitterHandle().GetInstance())
-		{	
+		{
 			for (int32 i = 0; i < Props->GetRenderers().Num(); i++)
 			{
 				if (UNiagaraRendererProperties* Renderer = Props->GetRenderers()[i])
@@ -1060,17 +1097,15 @@ TArray<FVector> UNiagaraComponent::GetNiagaraParticleValueVec3_DebugOnly(const F
 		{
 			if (Sim->GetEmitterHandle().GetName() == EmitterName)
 			{
-				int32 NumParticles = Sim->GetData().GetNumInstances();
+				FNiagaraDataBuffer& ParticleData = Sim->GetData().GetCurrentDataChecked();
+				int32 NumParticles = ParticleData.GetNumInstances();
 				Positions.SetNum(NumParticles);
-				FNiagaraDataSetIterator<FVector> PosItr(Sim->GetData(), FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), *InValueName));
-				int32 i = 0;
-				while (PosItr.IsValid())
+				FNiagaraDataSetAccessor<FVector> PosData(Sim->GetData(), FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), *InValueName));
+				for (int32 i = 0; i < NumParticles; ++i)
 				{
 					FVector Position;
-					PosItr.Get(Position);
+					PosData.Get(i, Position);
 					Positions[i] = Position;
-					i++;
-					PosItr.Advance();
 				}
 			}
 		}
@@ -1081,7 +1116,6 @@ TArray<FVector> UNiagaraComponent::GetNiagaraParticleValueVec3_DebugOnly(const F
 
 TArray<float> UNiagaraComponent::GetNiagaraParticleValues_DebugOnly(const FString& InEmitterName, const FString& InValueName)
 {
-
 	TArray<float> Values;
 	FName EmitterName = FName(*InEmitterName);
 	if (SystemInstance.IsValid())
@@ -1090,17 +1124,15 @@ TArray<float> UNiagaraComponent::GetNiagaraParticleValues_DebugOnly(const FStrin
 		{
 			if (Sim->GetEmitterHandle().GetName() == EmitterName)
 			{
-				int32 NumParticles = Sim->GetData().GetNumInstances();
+				FNiagaraDataBuffer& ParticleData = Sim->GetData().GetCurrentDataChecked();
+				int32 NumParticles = ParticleData.GetNumInstances();
 				Values.SetNum(NumParticles);
-				FNiagaraDataSetIterator<float> ValueItr(Sim->GetData(), FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), *InValueName));
-				int32 i = 0;
-				while (ValueItr.IsValid())
+				FNiagaraDataSetAccessor<float> ValueData(Sim->GetData(), FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), *InValueName));
+				for (int32 i = 0; i < NumParticles; ++i)
 				{
 					float Value;
-					ValueItr.Get(Value);
+					ValueData.Get(i, Value);
 					Values[i] = Value;
-					i++;
-					ValueItr.Advance();
 				}
 			}
 		}

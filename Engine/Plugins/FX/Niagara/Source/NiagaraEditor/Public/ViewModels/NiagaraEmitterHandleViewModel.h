@@ -10,7 +10,7 @@
 
 class UNiagaraSystem;
 struct FNiagaraEmitterHandle;
-struct FNiagaraEmitterInstance;
+class FNiagaraEmitterInstance;
 class FNiagaraEmitterViewModel;
 
 /** The view model for the FNiagaraEmitterEditorWidget. */

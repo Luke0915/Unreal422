@@ -16,15 +16,16 @@ NiagaraEmitterInstance.h: Niagara emitter simulation class
 #include "NiagaraScriptExecutionContext.h"
 
 class FNiagaraSystemInstance;
-class NiagaraRenderer;
 struct FNiagaraEmitterHandle;
 class UNiagaraParameterCollection;
 class UNiagaraParameterCollectionInstance;
 class NiagaraEmitterInstanceBatcher;
+
+
 /**
 * A Niagara particle simulation.
 */
-struct FNiagaraEmitterInstance
+class FNiagaraEmitterInstance
 {
 public:
 	explicit FNiagaraEmitterInstance(FNiagaraSystemInstance* InParentSystemInstance);
@@ -58,21 +59,25 @@ public:
 
 	NIAGARA_API TOptional<FBox> CalculateDynamicBounds();
 
-	FNiagaraDataSet &GetData()	{ return *ParticleDataSet; }
-
-	int32 GetEmitterRendererNum() const {
-		return EmitterRenderer.Num();
-	}
-
-	NiagaraRenderer *GetEmitterRenderer(int32 Index)	{ return EmitterRenderer[Index]; }
-
+	FNiagaraDataSet& GetData()const { return *ParticleDataSet; }
+	
 	FORCEINLINE bool IsDisabled()const { return ExecutionState == ENiagaraExecutionState::Disabled; }
 	FORCEINLINE bool IsComplete()const { return ExecutionState == ENiagaraExecutionState::Complete || ExecutionState == ENiagaraExecutionState::Disabled; }
 		
 	/** Create a new NiagaraRenderer. The old renderer is not immediately deleted, but instead put in the ToBeRemoved list.*/
-	void NIAGARA_API UpdateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, TArray<NiagaraRenderer*>& ToBeAddedList, TArray<NiagaraRenderer*>& ToBeRemovedList);
+	//void NIAGARA_API UpdateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, TArray<NiagaraRenderer*>& ToBeAddedList, TArray<NiagaraRenderer*>& ToBeRemovedList);
 
-	FORCEINLINE int32 GetNumParticles()const	{ return ParticleDataSet->GetNumInstances(); }
+	FORCEINLINE int32 GetNumParticles()const
+	{
+		if (ParticleDataSet->GetSimTarget() == ENiagaraSimTarget::CPUSim)
+		{
+			if (ParticleDataSet->GetCurrentData())
+			{
+				return ParticleDataSet->GetCurrentData()->GetNumInstances();
+			}
+		}
+		return 0; //Not as easy as all that for GPU sim. 
+	}
 	FORCEINLINE int32 GetTotalSpawnedParticles()const	{ return TotalSpawnedParticles; }
 
 	NIAGARA_API const FNiagaraEmitterHandle& GetEmitterHandle() const;
@@ -86,9 +91,6 @@ public:
 	void NIAGARA_API SetExecutionState(ENiagaraExecutionState InState);
 
 	FNiagaraDataSet* GetDataSet(FNiagaraDataSetID SetID);
-
-	/** Tell the renderer thread that we're done with the Niagara renderer on this simulation.*/
-	void ClearRenderer();
 
 	FBox GetBounds();
 
@@ -107,7 +109,7 @@ public:
 
 	bool WaitForDebugInfo();
 
-	FNiagaraComputeExecutionContext* GetGPUContext()
+	FNiagaraComputeExecutionContext* GetGPUContext()const
 	{
 		return GPUExecContext;
 	}
@@ -185,7 +187,6 @@ private:
 	/** particle simulation data. Must be a shared ref as various things on the RT can have direct ref to it. */
 	FNiagaraDataSet* ParticleDataSet;
 
-	TArray<NiagaraRenderer*> EmitterRenderer;
 	FNiagaraSystemInstance *ParentSystemInstance;
 
 	/** Raw pointer to the emitter that we're instanced from. Raw ptr should be safe here as we check for the validity of the system and it's emitters higher up before any ticking. */
@@ -225,4 +226,8 @@ private:
 	FNiagaraParameterStore ScriptDefinedDataInterfaceParameters;
 
 	NiagaraEmitterInstanceBatcher* Batcher = nullptr;
+
+	/** Data required for handling events. */
+	TArray<FNiagaraEventHandlingInfo> EventHandlingInfo;
+	int32 EventSpawnTotal;
 };

@@ -193,32 +193,10 @@ void FNiagaraWorldManager::OnWorldCleanup(bool bSessionEnded, bool bCleanupResou
 
 void FNiagaraWorldManager::Tick(float DeltaSeconds)
 {
-/*
-Some experimental tinkering with links to effects quality.
-Going off this idea tbh
-
-	int32 CurrentEffectsQuality = Scalability::GetEffectsQualityDirect(true);
-	if (CachedEffectsQuality != CurrentEffectsQuality)
-	{
-		CachedEffectsQuality = CurrentEffectsQuality;
-		FString SectionName = FString::Printf(TEXT("%s@%d"), TEXT("EffectsQuality"), CurrentEffectsQuality);
-		if (FConfigFile* File = GConfig->FindConfigFileWithBaseName(TEXT("Niagara")))
-		{
-			FString ScalabilityCollectionString;			
-			if (File->GetString(*SectionName, TEXT("ScalabilityCollection"), ScalabilityCollectionString))
-			{
-				//NewLandscape_Material = LoadObject<UMaterialInterface>(NULL, *NewLandsfgcapeMaterialName, NULL, LOAD_NoWarn);
-				UNiagaraParameterCollectionInstance* ScalabilityCollection = LoadObject<UNiagaraParameterCollectionInstance>(NULL, *ScalabilityCollectionString, NULL, LOAD_NoWarn);
-				if (ScalabilityCollection)
-				{
-					SetParameterCollection(ScalabilityCollection);
-				}
-			}
-		}
-	}
-*/
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraWorldManTick);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_GT);
+
+	FNiagaraSharedObject::FlushDeletionList();
 
 	SkeletalMeshGeneratedData.TickGeneratedData(DeltaSeconds);
 

@@ -38,19 +38,11 @@ public:
 		FNiagaraEventDataSetMgr::Reset(OwnerSystemInstanceName, EmitterName);
 	}
 
-	void Tick()
-	{
-		if (CollisionEventDataSet)
-		{
-			CollisionEventDataSet->Tick();
-		}
-	}
-
 	void Reset()
 	{
 		if (CollisionEventDataSet)
 		{
-			CollisionEventDataSet->SetNumInstances(0);
+			CollisionEventDataSet->ResetBuffers();
 		}
 	}
 
@@ -80,9 +72,9 @@ public:
 		CollisionEventDataSet->Finalize();
 	}
 	
-	void KickoffNewBatch(struct FNiagaraEmitterInstance *Sim, float DeltaSeconds);
+	void KickoffNewBatch(class FNiagaraEmitterInstance *Sim, float DeltaSeconds);
 
-	void GenerateEventsFromResults(struct FNiagaraEmitterInstance *Sim);
+	void GenerateEventsFromResults(class FNiagaraEmitterInstance *Sim);
 
 	const FNiagaraDataSet *GetDataSet() const { return CollisionEventDataSet; }
 private:

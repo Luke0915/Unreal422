@@ -17,12 +17,6 @@ DECLARE_CYCLE_STAT(TEXT("Render Meshes [RT]"), STAT_NiagaraRenderMeshes, STATGRO
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumMeshesRenderer"), STAT_NiagaraNumMeshes, STATGROUP_Niagara);
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumMesheVerts"), STAT_NiagaraNumMeshVerts, STATGROUP_Niagara);
 
-
-
-extern int32 GbNiagaraParallelEmitterRenderers;
-
-
-
 static int32 GbEnableNiagaraMeshRendering = 1;
 static FAutoConsoleVariableRef CVarEnableNiagaraMeshRendering(
 	TEXT("fx.EnableNiagaraMeshRendering"),
@@ -31,9 +25,17 @@ static FAutoConsoleVariableRef CVarEnableNiagaraMeshRendering(
 	ECVF_Default
 );
 
+struct FNiagaraDynamicDataMesh : public FNiagaraDynamicDataBase
+{
+	FNiagaraDynamicDataMesh(const FNiagaraEmitterInstance* InEmitter)
+		: FNiagaraDynamicDataBase(InEmitter)
+	{
+	}
 
+	TArray<FMaterialRenderProxy*, TInlineAllocator<8>> Materials;
+};
 
-
+//////////////////////////////////////////////////////////////////////////
 
 class FNiagaraMeshCollectorResourcesMesh : public FOneFrameResource
 {
@@ -47,9 +49,10 @@ public:
 	}
 };
 
+//////////////////////////////////////////////////////////////////////////
 
-NiagaraRendererMeshes::NiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLevel, UNiagaraRendererProperties *InProps) :
-	NiagaraRenderer()
+FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *Props, const FNiagaraEmitterInstance* Emitter)
+	: FNiagaraRenderer(FeatureLevel, Props, Emitter)
 	, PositionOffset(INDEX_NONE)
 	, VelocityOffset(INDEX_NONE)
 	, ColorOffset(INDEX_NONE)
@@ -63,53 +66,55 @@ NiagaraRendererMeshes::NiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLevel
 	, NormalizedAgeOffset(INDEX_NONE)
 	, MaterialRandomOffset(INDEX_NONE)
 	, CustomSortingOffset(INDEX_NONE)
-	, LastSyncedId(INDEX_NONE)
 {
-	//check(InProps);
+	check(Emitter);
+	check(Props);
+
 	VertexFactory = ConstructNiagaraMeshVertexFactory(NVFT_Mesh, FeatureLevel);
-	Properties = Cast<UNiagaraMeshRendererProperties>(InProps);
+	
+	const UNiagaraMeshRendererProperties* Properties = CastChecked<const UNiagaraMeshRendererProperties>(Props);
+	check(Properties->ParticleMesh);
 
-#if STATS
-	if (UNiagaraEmitter* Emitter = InProps->GetTypedOuter<UNiagaraEmitter>())
-	{
-		EmitterStatID = Emitter->GetStatID(false, false);
-	}
-#endif
+	MeshRenderData = Properties->ParticleMesh->RenderData.Get();
 
-	if (Properties && Properties->ParticleMesh)
-	{
-		if (Properties->bOverrideMaterials && Properties->OverrideMaterials.Num() != 0)
-		{
-			for (UMaterialInterface* Interface : Properties->OverrideMaterials)
-			{
-				if (Interface)
-				{
-					Interface->CheckMaterialUsage_Concurrent(MATUSAGE_NiagaraMeshParticles);
-				}
-			}
-		}
+	BaseExtents = Properties->ParticleMesh->GetBounds().BoxExtent;
 
-		const FStaticMeshLODResources& LODModel = Properties->ParticleMesh->RenderData->LODResources[0];
-		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
-		{
-			//FMaterialRenderProxy* MaterialProxy = MeshMaterials[SectionIndex]->GetRenderProxy(bSelected);
-			const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
-			UMaterialInterface* ParticleMeshMaterial = Properties->ParticleMesh->GetMaterial(Section.MaterialIndex);
-			if (ParticleMeshMaterial && Properties->bOverrideMaterials == false)
-			{
-				if (ParticleMeshMaterial)
-				{
-					ParticleMeshMaterial->CheckMaterialUsage_Concurrent(MATUSAGE_NiagaraMeshParticles);
-				}
-			}
-		}
+	FacingMode = Properties->FacingMode;
+	SortMode = Properties->SortMode;
+	bSortOnlyWhenTranslucent = Properties->bSortOnlyWhenTranslucent;
+	bOverrideMaterials = Properties->bOverrideMaterials;
 
-		BaseExtents = Properties->ParticleMesh->GetBounds().BoxExtent;
-	}
-
+	const FNiagaraDataSet& Data = Emitter->GetData();
+	int32 IntDummy;
+	SizeOffset = -1;
+	Data.GetVariableComponentOffsets(Properties->PositionBinding.DataSetVariable, PositionOffset, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->VelocityBinding.DataSetVariable, VelocityOffset, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->ColorBinding.DataSetVariable, ColorOffset, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->ScaleBinding.DataSetVariable, ScaleOffset, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->DynamicMaterialBinding.DataSetVariable, MaterialParamOffset, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->DynamicMaterial1Binding.DataSetVariable, MaterialParamOffset1, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->DynamicMaterial2Binding.DataSetVariable, MaterialParamOffset2, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->DynamicMaterial3Binding.DataSetVariable, MaterialParamOffset3, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->MeshOrientationBinding.DataSetVariable, TransformOffset, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->NormalizedAgeBinding.DataSetVariable, NormalizedAgeOffset, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->MaterialRandomBinding.DataSetVariable, MaterialRandomOffset, IntDummy);
+	Data.GetVariableComponentOffsets(Properties->CustomSortingBinding.DataSetVariable, CustomSortingOffset, IntDummy);
 }
 
-void NiagaraRendererMeshes::SetupVertexFactory(FNiagaraMeshVertexFactory *InVertexFactory, const FStaticMeshLODResources& LODResources) const
+void FNiagaraRendererMeshes::ReleaseRenderThreadResources()
+{
+	FNiagaraRenderer::ReleaseRenderThreadResources();
+	VertexFactory->ReleaseResource();
+	WorldSpacePrimitiveUniformBuffer.ReleaseResource();
+}
+
+void FNiagaraRendererMeshes::CreateRenderThreadResources()
+{
+	FNiagaraRenderer::CreateRenderThreadResources();
+	VertexFactory->InitResource();
+}
+
+void FNiagaraRendererMeshes::SetupVertexFactory(FNiagaraMeshVertexFactory *InVertexFactory, const FStaticMeshLODResources& LODResources) const
 {
 	FStaticMeshDataType Data;
 
@@ -120,21 +125,27 @@ void NiagaraRendererMeshes::SetupVertexFactory(FNiagaraMeshVertexFactory *InVert
 	InVertexFactory->SetData(Data);
 }
 
-
-
-void NiagaraRendererMeshes::ReleaseRenderThreadResources()
+FPrimitiveViewRelevance FNiagaraRendererMeshes::GetViewRelevance(const FSceneView* View, const FNiagaraSceneProxy *SceneProxy)const
 {
-	VertexFactory->ReleaseResource();
-	WorldSpacePrimitiveUniformBuffer.ReleaseResource();
+	FPrimitiveViewRelevance Result;
+	bool bHasDynamicData = HasDynamicData();
+	//Always draw so our LastRenderTime is updated. We may not have dynamic data if we're disabled from visibility culling.
+	Result.bDrawRelevance = /*bHasDynamicData && */SceneProxy->IsShown(View) && View->Family->EngineShowFlags.Particles;
+	Result.bShadowRelevance = bHasDynamicData && SceneProxy->IsShadowCast(View);
+	Result.bDynamicRelevance = bHasDynamicData;
+
+	if (bHasDynamicData)
+	{
+		Result.bOpaqueRelevance = MaterialRelevance.bOpaque;
+		Result.bNormalTranslucencyRelevance = MaterialRelevance.bNormalTranslucency;
+		Result.bSeparateTranslucencyRelevance = MaterialRelevance.bSeparateTranslucency;
+		Result.bDistortionRelevance = MaterialRelevance.bDistortion;
+	}
+
+	return Result;
 }
 
-void NiagaraRendererMeshes::CreateRenderThreadResources()
-{
-	VertexFactory->InitResource();
-}
-
-
-void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const
+void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraRender);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderMeshes);
@@ -142,13 +153,18 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 	SimpleTimer MeshElementsTimer;
 
 	FNiagaraDynamicDataMesh *DynamicDataMesh = (static_cast<FNiagaraDynamicDataMesh*>(DynamicDataRender));
-	//if (!DynamicDataMesh || !DynamicDataMesh->DataSet || DynamicDataMesh->DataSet->GetNumInstances()==0)
-	if (!DynamicDataMesh 
-		|| DynamicDataMesh->RTParticleData.GetNumInstancesAllocated() == 0
-		|| DynamicDataMesh->RTParticleData.GetNumInstances() == 0
-		|| nullptr == Properties
-		|| !GSupportsResourceView  // Current shader requires SRV to draw properly in all cases.
-		|| GbEnableNiagaraMeshRendering == 0
+	if (!DynamicDataMesh)
+	{
+		return;
+	}
+
+	FNiagaraDataBuffer* SourceParticleData = DynamicDataMesh->GetParticleDataToRender();
+	if( SourceParticleData == nullptr ||
+		MeshRenderData == nullptr ||
+		SourceParticleData->GetNumInstancesAllocated() == 0 ||
+		SourceParticleData->GetNumInstances() == 0 ||
+		GbEnableNiagaraMeshRendering == 0 ||
+		!GSupportsResourceView  // Current shader requires SRV to draw properly in all cases.
 		)
 	{
 		return;
@@ -158,24 +174,19 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 	FScopeCycleCounter EmitterStatsCounter(EmitterStatID);
 #endif
 
-	int32 NumInstances = DynamicDataMesh->RTParticleData.GetNumInstances();
+	int32 NumInstances = SourceParticleData->GetNumInstances();
 
-	int32 TotalFloatSize = DynamicDataMesh->RTParticleData.GetFloatBuffer().Num() / sizeof(float);
-
+	int32 TotalFloatSize = SourceParticleData->GetFloatBuffer().Num() / sizeof(float);
 	FGlobalDynamicReadBuffer& DynamicReadBuffer = Collector.GetDynamicReadBuffer();
 	FGlobalDynamicReadBuffer::FAllocation ParticleData;
-	
+
 	//For cpu sims we allocate render buffers from the global pool. GPU sims own their own.
-	if (DynamicDataMesh->DataSet->GetSimTarget() == ENiagaraSimTarget::CPUSim)
+	if (DynamicDataMesh->GetSimTarget() == ENiagaraSimTarget::CPUSim)
 	{
 		ParticleData = DynamicReadBuffer.AllocateFloat(TotalFloatSize);
-		FMemory::Memcpy(ParticleData.Buffer, DynamicDataMesh->RTParticleData.GetFloatBuffer().GetData(), DynamicDataMesh->RTParticleData.GetFloatBuffer().Num());
+		FMemory::Memcpy(ParticleData.Buffer, SourceParticleData->GetFloatBuffer().GetData(), SourceParticleData->GetFloatBuffer().Num());
 	}
 
-	//check(DynamicDataMesh->DataSet->PrevDataRender().GetNumInstances() > 0);
-	//check(DynamicDataMesh->DataSet->PrevDataRender().GetNumInstancesAllocated() > 0);
-	//check(DynamicDataMesh->DataSet->PrevData().GetGPUBufferFloat()->NumBytes > 0 || DynamicDataMesh->DataSet->PrevData().GetGPUBufferInt()->NumBytes > 0)
-	
 	{
 		// Update the primitive uniform buffer if needed.
 		if (!WorldSpacePrimitiveUniformBuffer.IsInitialized())
@@ -207,7 +218,8 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 			if (VisibilityMap & (1 << ViewIndex))
 			{
 				const FSceneView* View = Views[ViewIndex];
-				const FStaticMeshLODResources& LODModel = Properties->ParticleMesh->RenderData->LODResources[0];
+				//TODO: Work out LOD and pass through in dynamic data.
+				const FStaticMeshLODResources& LODModel = MeshRenderData->LODResources[0];
 
 				FNiagaraMeshCollectorResourcesMesh& CollectorResources = Collector.AllocateOneFrameResource<FNiagaraMeshCollectorResourcesMesh>();
 				SetupVertexFactory(&CollectorResources.VertexFactory, LODModel);
@@ -229,54 +241,25 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 				PerViewUniformParameters.NormalizedAgeDataOffset = NormalizedAgeOffset;
 				PerViewUniformParameters.MaterialRandomDataOffset = MaterialRandomOffset;
 				PerViewUniformParameters.DefaultPos = bLocalSpace ? FVector4(0.0f, 0.0f, 0.0f, 1.0f) : FVector4(SceneProxy->GetLocalToWorld().GetOrigin());
-				/*
-				if (Properties)
-				{
-				PerViewUniformParameters.SubImageSize = FVector4(Properties->SubImageInfo.X, Properties->SubImageInfo.Y, 1.0f / Properties->SubImageInfo.X, 1.0f / Properties->SubImageInfo.Y);
-				}
-				*/
 
 				//Grab the material proxies we'll be using for each section and check them for translucency.
 				TArray<FMaterialRenderProxy*, TInlineAllocator<32>> MaterialProxies;
 				bool bHasTranslucentMaterials = false;
-				for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
+				for (FMaterialRenderProxy* MaterialProxy : DynamicDataMesh->Materials)
 				{
-					const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
-					UMaterialInterface* ParticleMeshMaterial = Properties->ParticleMesh->GetMaterial(Section.MaterialIndex);
-					FMaterialRenderProxy* MaterialProxy = nullptr;
-
-					if (Properties->bOverrideMaterials && Properties->OverrideMaterials.Num() > Section.MaterialIndex &&
-						Properties->OverrideMaterials[Section.MaterialIndex] != nullptr)
-					{
-						MaterialProxy = Properties->OverrideMaterials[Section.MaterialIndex]->GetRenderProxy();
-					}
-
-					if (MaterialProxy == nullptr && ParticleMeshMaterial)
-					{
-						MaterialProxy = ParticleMeshMaterial->GetRenderProxy();
-					}
-
-					if (MaterialProxy == nullptr)
-					{
-						MaterialProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-					}
-
-					MaterialProxies.Add(MaterialProxy);
-					if (MaterialProxy)
-					{
-						EBlendMode BlendMode = MaterialProxy->GetMaterial(VertexFactory->GetFeatureLevel())->GetBlendMode();
-						bHasTranslucentMaterials |= BlendMode == BLEND_AlphaComposite || BlendMode == BLEND_Translucent;
-					}
+					check(MaterialProxy);
+					EBlendMode BlendMode = MaterialProxy->GetMaterial(SceneProxy->GetScene().GetFeatureLevel())->GetBlendMode();
+					bHasTranslucentMaterials |= BlendMode == BLEND_AlphaComposite || BlendMode == BLEND_Translucent;
 				}
 
 				//Sort particles if needed.
 				CollectorResources.VertexFactory.SetSortedIndices(nullptr, 0xFFFFFFFF);
 
 				FNiagaraGPUSortInfo SortInfo;
-				if (View && Properties->SortMode != ENiagaraSortMode::None && (bHasTranslucentMaterials || !Properties->bSortOnlyWhenTranslucent))
+				if (View && SortMode != ENiagaraSortMode::None && (bHasTranslucentMaterials || !bSortOnlyWhenTranslucent))
 				{
 					SortInfo.ParticleCount = NumInstances;
-					SortInfo.SortMode = Properties->SortMode;
+					SortInfo.SortMode = SortMode;
 					SortInfo.SortAttributeOffset = (SortInfo.SortMode == ENiagaraSortMode::CustomAscending || SortInfo.SortMode == ENiagaraSortMode::CustomDecending) ? CustomSortingOffset : PositionOffset;
 					SortInfo.ViewOrigin = View->ViewMatrices.GetViewOrigin();
 					SortInfo.ViewDirection = View->GetViewDirection();
@@ -288,7 +271,7 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 					}
 				};
 
-				if (DynamicDataMesh->DataSet->GetSimTarget() == ENiagaraSimTarget::CPUSim)//TODO: Compute shader for sorting gpu sims and larger cpu sims.
+				if (DynamicDataMesh->GetSimTarget() == ENiagaraSimTarget::CPUSim)//TODO: Compute shader for sorting gpu sims and larger cpu sims.
 				{
 					check(ParticleData.IsValid());
 					if (SortInfo.SortMode != ENiagaraSortMode::None && SortInfo.SortAttributeOffset != INDEX_NONE)
@@ -301,7 +284,7 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 							SortInfo.ParticleCount = NumInstances;
 							SortInfo.ParticleDataFloatSRV = ParticleData.ReadBuffer->SRV;
 							SortInfo.FloatDataOffset = ParticleData.FirstIndex / sizeof(float);
-							SortInfo.FloatDataStride = DynamicDataMesh->RTParticleData.GetFloatStride() / sizeof(float);
+							SortInfo.FloatDataStride = SourceParticleData->GetFloatStride() / sizeof(float);
 							const int32 IndexBufferOffset = SceneProxy->GetBatcher()->AddSortedGPUSimulation(SortInfo);
 							if (IndexBufferOffset != INDEX_NONE)
 							{
@@ -312,20 +295,20 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 						{
 							FGlobalDynamicReadBuffer::FAllocation SortedIndices;
 							SortedIndices = DynamicReadBuffer.AllocateInt32(NumInstances);
-							SortIndices(SortInfo.SortMode, SortInfo.SortAttributeOffset, DynamicDataMesh->RTParticleData, SceneProxy->GetLocalToWorld(), View, SortedIndices);
+							SortIndices(SortInfo.SortMode, SortInfo.SortAttributeOffset, *SourceParticleData, SceneProxy->GetLocalToWorld(), View, SortedIndices);
 							CollectorResources.VertexFactory.SetSortedIndices(SortedIndices.ReadBuffer->SRV, SortedIndices.FirstIndex / sizeof(float));
 						}
 					}
-					CollectorResources.VertexFactory.SetParticleData(ParticleData.ReadBuffer->SRV, ParticleData.FirstIndex / sizeof(float), DynamicDataMesh->RTParticleData.GetFloatStride() / sizeof(float));
+					CollectorResources.VertexFactory.SetParticleData(ParticleData.ReadBuffer->SRV, ParticleData.FirstIndex / sizeof(float), SourceParticleData->GetFloatStride() / sizeof(float));
 				}
 				else
 				{
 					if (SortInfo.SortMode != ENiagaraSortMode::None && SortInfo.SortAttributeOffset != INDEX_NONE && GNiagaraGPUSorting && SceneProxy->GetBatcher())
 					{
-						SortInfo.ParticleDataFloatSRV = DynamicDataMesh->DataSet->CurrData().GetGPUBufferFloat()->SRV;
+						SortInfo.ParticleDataFloatSRV = SourceParticleData->GetGPUBufferFloat().SRV;
 						SortInfo.FloatDataOffset = 0;
-						SortInfo.FloatDataStride = DynamicDataMesh->RTParticleData.GetFloatStride() / sizeof(float);
-						SortInfo.GPUParticleCountSRV = DynamicDataMesh->DataSet->GetCurDataSetIndices().SRV;
+						SortInfo.FloatDataStride = SourceParticleData->GetFloatStride() / sizeof(float);
+						SortInfo.GPUParticleCountSRV = SourceParticleData->GetGPUIndices().SRV;
 						SortInfo.GPUParticleCountOffset = 1;
 						const int32 IndexBufferOffset = SceneProxy->GetBatcher()->AddSortedGPUSimulation(SortInfo);
 						if (IndexBufferOffset != INDEX_NONE)
@@ -333,18 +316,16 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 							CollectorResources.VertexFactory.SetSortedIndices(SceneProxy->GetBatcher()->GetGPUSortedBuffer().VertexBufferSRV, IndexBufferOffset);
 						}
 					}
-					const FNiagaraDataSet* GPUDataSet = DynamicDataMesh->DataSet;
-					check(GPUDataSet);
 
 					if (SortInfo.SortMode != ENiagaraSortMode::None && SortInfo.SortAttributeOffset != INDEX_NONE && GNiagaraGPUSorting && SceneProxy->GetBatcher())
 					{
 						// Here we need to be conservative about the InstanceCount, since the final value is only known on the GPU after the simulation.
-						SortInfo.ParticleCount = (int32)FMath::Max<uint32>(GPUDataSet->CurrData().GetNumInstances(), GPUDataSet->PrevData().GetNumInstances()) + GPUDataSet->NumOfSpawnedInstances_RT;
+						SortInfo.ParticleCount = SourceParticleData->GetNumInstances();
 
-						SortInfo.ParticleDataFloatSRV = GPUDataSet->CurrData().GetGPUBufferFloat()->SRV;
+						SortInfo.ParticleDataFloatSRV = SourceParticleData->GetGPUBufferFloat().SRV;
 						SortInfo.FloatDataOffset = 0;
-						SortInfo.FloatDataStride = GPUDataSet->CurrData().GetFloatStride() / sizeof(float);
-						SortInfo.GPUParticleCountSRV = GPUDataSet->GetCurDataSetIndices().SRV;
+						SortInfo.FloatDataStride = SourceParticleData->GetFloatStride() / sizeof(float);
+						SortInfo.GPUParticleCountSRV = SourceParticleData->GetGPUIndices().SRV;
 						SortInfo.GPUParticleCountOffset = 1;
 						const int32 IndexBufferOffset = SceneProxy->GetBatcher()->AddSortedGPUSimulation(SortInfo);
 						if (IndexBufferOffset != INDEX_NONE)
@@ -352,12 +333,12 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 							CollectorResources.VertexFactory.SetSortedIndices(SceneProxy->GetBatcher()->GetGPUSortedBuffer().VertexBufferSRV, IndexBufferOffset);
 						}
 					}
-					CollectorResources.VertexFactory.SetParticleData(GPUDataSet->CurrData().GetGPUBufferFloat()->SRV, 0, GPUDataSet->CurrData().GetFloatStride() / sizeof(float));
+					CollectorResources.VertexFactory.SetParticleData(SourceParticleData->GetGPUBufferFloat().SRV, 0, SourceParticleData->GetFloatStride() / sizeof(float));
 				}
 
 				// Collector.AllocateOneFrameResource uses default ctor, initialize the vertex factory
 				CollectorResources.VertexFactory.SetParticleFactoryType(NVFT_Mesh);
-				CollectorResources.VertexFactory.SetMeshFacingMode((uint32)Properties->FacingMode);
+				CollectorResources.VertexFactory.SetMeshFacingMode((uint32)FacingMode);
 				CollectorResources.UniformBuffer = FNiagaraMeshUniformBufferRef::CreateUniformBufferImmediate(PerViewUniformParameters, UniformBuffer_SingleFrame);
 
 				CollectorResources.VertexFactory.InitResource();
@@ -365,12 +346,12 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 			
 				// GPU mesh rendering currently only supports one mesh section.
 				// TODO: Add proper support for multiple mesh sections for GPU mesh particles.
-				int32 MaxSection = DynamicDataMesh->DataSet->GetSimTarget() == ENiagaraSimTarget::GPUComputeSim ? 1 : LODModel.Sections.Num();
+				int32 MaxSection = DynamicDataMesh->GetSimTarget() == ENiagaraSimTarget::GPUComputeSim ? 1 : LODModel.Sections.Num();
 				const bool bIsWireframe = AllowDebugViewmodes() && View && View->Family->EngineShowFlags.Wireframe;
 				for (int32 SectionIndex = 0; SectionIndex < MaxSection; SectionIndex++)
 				{
 					const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
-					FMaterialRenderProxy* MaterialProxy = MaterialProxies[SectionIndex];
+					FMaterialRenderProxy* MaterialProxy = DynamicDataMesh->Materials[SectionIndex];
 					if ((Section.NumTriangles == 0) || (MaterialProxy == NULL))
 					{
 						//@todo. This should never occur, but it does occasionally.
@@ -421,10 +402,10 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 						BatchElement.NumPrimitives = Section.NumTriangles;
 					}
 
-					if (DynamicDataMesh->DataSet->GetSimTarget() == ENiagaraSimTarget::GPUComputeSim)
+					if (DynamicDataMesh->GetSimTarget() == ENiagaraSimTarget::GPUComputeSim)
 					{
 						BatchElement.NumPrimitives = 0;
-						BatchElement.IndirectArgsBuffer = DynamicDataMesh->DataSet->GetCurDataSetIndices().Buffer;
+						BatchElement.IndirectArgsBuffer = SourceParticleData->GetGPUIndices().Buffer;
 					}
 					else
 					{
@@ -446,110 +427,101 @@ void NiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView
 	CPUTimeMS += MeshElementsTimer.GetElapsedMilliseconds();
 }
 
-
-
-bool NiagaraRendererMeshes::SetMaterialUsage()
-{
-	//Causes deadlock :S Need to look at / rework the setting of materials and render modules.
-	return Material && Material->CheckMaterialUsage_Concurrent(MATUSAGE_NiagaraMeshParticles);
-}
-
-void NiagaraRendererMeshes::TransformChanged()
-{
-	WorldSpacePrimitiveUniformBuffer.ReleaseResource();
-}
-
-/** Update render data buffer from attributes */
-FNiagaraDynamicDataBase *NiagaraRendererMeshes::GenerateVertexData(const FNiagaraSceneProxy* Proxy, FNiagaraDataSet &Data, const ENiagaraSimTarget Target)
+FNiagaraDynamicDataBase *FNiagaraRendererMeshes::GenerateDynamicData(const FNiagaraSceneProxy* Proxy, const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderGT);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraGenMeshVertexData);
 
-	if (!Properties || Properties->ParticleMesh == nullptr || !bEnabled)
+	const UNiagaraMeshRendererProperties* Properties = CastChecked<const UNiagaraMeshRendererProperties>(InProperties);
+
+	if (Properties->ParticleMesh == nullptr)
 	{
 		return nullptr;
 	}
 
 	SimpleTimer VertexDataTimer;
-//	TArray<FNiagaraMeshInstanceVertex>& RenderData = DynamicData->VertexData;
-	//TArray< FNiagaraMeshInstanceVertexDynamicParameter>& RenderMaterialVertexData = DynamicData->MaterialParameterVertexData;
 
-	if (PositionOffset == INDEX_NONE || LastSyncedId != Properties->SyncId)
-	{
-		// optional attributes
-		int32 IntDummy;
-		SizeOffset = -1;
-		Data.GetVariableComponentOffsets(Properties->PositionBinding.DataSetVariable, PositionOffset, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->VelocityBinding.DataSetVariable, VelocityOffset, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->ColorBinding.DataSetVariable, ColorOffset, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->ScaleBinding.DataSetVariable, ScaleOffset, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->DynamicMaterialBinding.DataSetVariable, MaterialParamOffset, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->DynamicMaterial1Binding.DataSetVariable, MaterialParamOffset1, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->DynamicMaterial2Binding.DataSetVariable, MaterialParamOffset2, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->DynamicMaterial3Binding.DataSetVariable, MaterialParamOffset3, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->MeshOrientationBinding.DataSetVariable, TransformOffset, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->NormalizedAgeBinding.DataSetVariable, NormalizedAgeOffset, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->MaterialRandomBinding.DataSetVariable, MaterialRandomOffset, IntDummy);
-		Data.GetVariableComponentOffsets(Properties->CustomSortingBinding.DataSetVariable, CustomSortingOffset, IntDummy);
-		LastSyncedId = Properties->SyncId;
-	}
+	FNiagaraDynamicDataMesh *DynamicData = nullptr;
 
-	//Bail if we don't have the required attributes to render this emitter.
-	if (!bEnabled)
+	ENiagaraSimTarget SimTarget = Emitter->GetData().GetSimTarget();
+	if (Properties->ParticleMesh)
 	{
-		return nullptr;
-	}
+		DynamicData = new FNiagaraDynamicDataMesh(Emitter);
 
-	FNiagaraDynamicDataMesh* DynamicData = ConditionallyCreateDynamicData< FNiagaraDynamicDataMesh>(Data, Target);
-	if (DynamicData != nullptr)
-	{
-		DynamicData->DataSet = &Data;
+		//TODO: Mesh LODs.
+		const FStaticMeshLODResources& LODModel = Properties->ParticleMesh->RenderData->LODResources[0];
+
+		check(BaseMaterials_GT.Num() == LODModel.Sections.Num());
+
+		DynamicData->Materials.Reset(LODModel.Sections.Num());
+		DynamicData->SetMaterialRelevance(BaseMaterialRelevance);
+		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
+		{
+			const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
+			UMaterialInterface* SectionMat = nullptr;
+
+			//In preparation for a material override feature, we pass our material(s) and relevance in via dynamic data.
+			//The renderer ensures we have the correct usage and relevance for materials in BaseMaterials_GT.
+			//Any override feature must also do the same for materials that are set.
+			check(BaseMaterials_GT[SectionIndex]->CheckMaterialUsage_Concurrent(MATUSAGE_NiagaraMeshParticles));
+			DynamicData->Materials.Add(BaseMaterials_GT[SectionIndex]->GetRenderProxy());
+		}
 	}
 
 	CPUTimeMS = VertexDataTimer.GetElapsedMilliseconds();
 	return DynamicData;  
 }
 
-
-
-void NiagaraRendererMeshes::SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData)
-{
-	check(IsInRenderingThread());
-
-	if (DynamicDataRender)
-	{
-		delete static_cast<FNiagaraDynamicDataMesh*>(DynamicDataRender);
-		DynamicDataRender = NULL;
-	}
-	DynamicDataRender = NewDynamicData;
-}
-
-int NiagaraRendererMeshes::GetDynamicDataSize()
+int FNiagaraRendererMeshes::GetDynamicDataSize()const
 {
 	uint32 Size = sizeof(FNiagaraDynamicDataMesh);
-	if (DynamicDataRender && static_cast<FNiagaraDynamicDataMesh*>(DynamicDataRender)->DataSet)
-	{
-		//Size += (static_cast<FNiagaraDynamicDataMesh*>(DynamicDataRender))->DataSet->PrevDataRender().GetNumInstances() * sizeof(float);
-	}
-
 	return Size;
 }
 
-bool NiagaraRendererMeshes::HasDynamicData()
+void FNiagaraRendererMeshes::TransformChanged()
 {
-	return DynamicDataRender != nullptr;
+	WorldSpacePrimitiveUniformBuffer.ReleaseResource();
 }
 
-#if WITH_EDITORONLY_DATA
-
-const TArray<FNiagaraVariable>& NiagaraRendererMeshes::GetRequiredAttributes()
+bool FNiagaraRendererMeshes::IsMaterialValid(UMaterialInterface* Mat)const
 {
-	return Properties->GetRequiredAttributes();
+	return Mat && Mat->CheckMaterialUsage(MATUSAGE_NiagaraMeshParticles);
 }
 
-const TArray<FNiagaraVariable>& NiagaraRendererMeshes::GetOptionalAttributes()
-{
-	return Properties->GetOptionalAttributes();
-}
 
-#endif
+//////////////////////////////////////////////////////////////////////////
+// Proposed class for ensuring Niagara/Cascade components who's proxies reference render data of other objects (Materials, Meshes etc) do not have data freed from under them.
+// Our components register themselves with the referenced component which then calls InvalidateRenderDependencies() whenever it's render data is changed or when it is destroyed.
+// UNTESTED - DO NOT USE.
+struct FComponentRenderDependencyHandler
+{
+	void AddDependency(UPrimitiveComponent* Component)
+	{
+		DependentComponents.Add(Component);
+	}
+
+	void RemoveDependancy(UPrimitiveComponent* Component)
+	{
+		DependentComponents.RemoveSwap(Component);
+	}
+
+	void InvalidateRenderDependencies()
+	{
+		int32 i = DependentComponents.Num();
+		while(--i >= 0)
+		{
+			if (UPrimitiveComponent* Comp = DependentComponents[i].Get())
+			{
+				Comp->MarkRenderStateDirty();
+			}
+			else
+			{
+				DependentComponents.RemoveAtSwap(i);
+			}
+		}
+	}
+
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> DependentComponents;
+};
+
+//////////////////////////////////////////////////////////////////////////
