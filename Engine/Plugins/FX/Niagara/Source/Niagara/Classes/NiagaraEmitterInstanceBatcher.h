@@ -47,6 +47,8 @@ public:
 		: FeatureLevel(InFeatureLevel)
 		, ShaderPlatform(InShaderPlatform)
 		, ParticleSortBuffers(true)
+		// @todo REMOVE THIS HACK
+		, LastFrameThatDrainedData(GFrameNumberRenderThread)
 	{
 	}
 
@@ -161,6 +163,9 @@ private:
 	int32 NumFramesRequiringShrinking = 0;
 	TArray<FNiagaraGPUSortInfo> SimulationsToSort;
 	FParticleSortBuffers ParticleSortBuffers;
+
+	// @todo REMOVE THIS HACK
+	uint32 LastFrameThatDrainedData;
 
 	// The result of the GPU sort. Each next element replace the previous.
 	// The last entry is used to transfer the result of the ParticleSortBuffers.

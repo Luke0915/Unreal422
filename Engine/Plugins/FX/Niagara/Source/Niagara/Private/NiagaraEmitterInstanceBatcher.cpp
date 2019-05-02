@@ -40,6 +40,15 @@ static FAutoConsoleVariableRef CVarNiagaraUseAsyncCompute(
 	ECVF_Default
 );
 
+// @todo REMOVE THIS HACK
+int32 GNiagaraGpuMaxQueuedRenderFrames = 10;
+static FAutoConsoleVariableRef CVarNiagaraGpuMaxQueuedRenderFrames(
+	TEXT("fx.NiagaraGpuMaxQueuedRenderFrames"),
+	GNiagaraOverlapCompute,
+	TEXT("Number of frames we all to pass before we start to discard GPU ticks.\n"),
+	ECVF_Default
+);
+
 FNiagaraIndicesVertexBuffer::FNiagaraIndicesVertexBuffer(int32 InIndexCount)
 	: IndexCount(InIndexCount)
 {
@@ -66,6 +75,14 @@ NiagaraEmitterInstanceBatcher::~NiagaraEmitterInstanceBatcher()
 void NiagaraEmitterInstanceBatcher::GiveSystemTick_RenderThread(FNiagaraGPUSystemTick& Tick)
 {
 	check(IsInRenderingThread());
+
+	// @todo REMOVE THIS HACK
+	if (GFrameNumberRenderThread > LastFrameThatDrainedData + GNiagaraGpuMaxQueuedRenderFrames)
+	{
+		Tick.Destroy();
+		return;
+	}
+
 	// Now we consume DataInterface instance data.
 	if (Tick.DIInstanceData)
 	{
@@ -369,6 +386,9 @@ void NiagaraEmitterInstanceBatcher::PostRenderOpaque(FRHICommandListImmediate& R
 
 void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList &RHICmdList, FUniformBufferRHIParamRef ViewUniformBuffer)
 {
+	// @todo REMOVE THIS HACK
+	LastFrameThatDrainedData = GFrameNumberRenderThread;
+
 	// This is always called by the renderer so early out if we have no work.
 	if (Ticks_RT.Num() == 0)
 	{
