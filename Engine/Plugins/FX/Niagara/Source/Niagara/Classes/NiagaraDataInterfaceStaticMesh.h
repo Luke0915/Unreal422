@@ -349,16 +349,7 @@ struct FNiagaraPassedInstanceDataForRT
 
 struct FNiagaraDataInterfaceProxyStaticMesh : public FNiagaraDataInterfaceProxy
 {
-	virtual void DeferredDestroy() override
-	{
-		for (const FGuid& Sys : DeferredDestroyList)
-		{
-			SystemInstancesToMeshData.Remove(Sys);
-			//UE_LOG(LogNiagara, Log, TEXT("DeferredDestroy() ... Removing %s"), *Sys.ToString());
-		}
-
-		DeferredDestroyList.Empty();
-	}
+	virtual void DeferredDestroy() override;
 
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override
 	{

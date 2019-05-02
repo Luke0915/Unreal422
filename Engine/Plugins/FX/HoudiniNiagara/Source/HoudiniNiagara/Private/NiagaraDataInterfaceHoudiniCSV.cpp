@@ -96,7 +96,7 @@ UNiagaraDataInterfaceHoudiniCSV::UNiagaraDataInterfaceHoudiniCSV(FObjectInitiali
     HoudiniCSVAsset = nullptr;
 	LastSpawnedPointID = -1;
 
-	Proxy = new FNiagaraDataInterfaceProxyHoudiniCSV;
+	Proxy = MakeShared<FNiagaraDataInterfaceProxyHoudiniCSV, ESPMode::ThreadSafe>();
 }
 
 void UNiagaraDataInterfaceHoudiniCSV::PostInitProperties()
@@ -2090,7 +2090,7 @@ void UNiagaraDataInterfaceHoudiniCSV::PushToRenderThread()
 	DataToPass.NumPoints = GetNumberOfPoints();
 	DataToPass.MaxNumIndexesPerPoint = GetMaxNumberOfIndexesPerPoints();
 
-	FNiagaraDataInterfaceProxyHoudiniCSV* ThisProxy = (FNiagaraDataInterfaceProxyHoudiniCSV*)Proxy;
+	FNiagaraDataInterfaceProxyHoudiniCSV* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyHoudiniCSV>();
 	ENQUEUE_RENDER_COMMAND(FNiagaraDIHoudiniCSV_ToRT) (
 		[ThisProxy, DataToPass](FRHICommandListImmediate& CmdList) mutable
 	{

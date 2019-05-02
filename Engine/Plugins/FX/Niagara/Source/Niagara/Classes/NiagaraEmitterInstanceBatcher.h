@@ -61,9 +61,9 @@ public:
 	void GiveEmitterContextToDestroy_RenderThread(FNiagaraComputeExecutionContext* Context);
 	void GiveDataSetToDestroy_RenderThread(FNiagaraDataSet* DataSet);
 
-	void EnqueueDeferredDeletesForDI_RenderThread(FNiagaraDataInterfaceProxy* Proxy)
+	void EnqueueDeferredDeletesForDI_RenderThread(TSharedPtr<FNiagaraDataInterfaceProxy, ESPMode::ThreadSafe> Proxy)
 	{
-		DIProxyDeferredDeletes_RT.Add(Proxy);
+		DIProxyDeferredDeletes_RT.Add(MoveTemp(Proxy));
 	}
 
 #if WITH_EDITOR
@@ -173,5 +173,5 @@ private:
 	TSet<FNiagaraComputeExecutionContext*> ContextsToDestroy_RT;
 	TSet<FNiagaraDataSet*> DataSetsToDestroy_RT;
 
-	TSet<FNiagaraDataInterfaceProxy*> DIProxyDeferredDeletes_RT;
+	TSet<TSharedPtr<FNiagaraDataInterfaceProxy, ESPMode::ThreadSafe>> DIProxyDeferredDeletes_RT;
 };

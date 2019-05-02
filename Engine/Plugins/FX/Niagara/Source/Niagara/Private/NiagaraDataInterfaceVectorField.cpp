@@ -32,7 +32,7 @@ UNiagaraDataInterfaceVectorField::UNiagaraDataInterfaceVectorField(FObjectInitia
 	, bTileY(false)
 	, bTileZ(false)
 {
-	Proxy = new FNiagaraDataInterfaceProxyVectorField;
+	Proxy = MakeShared<FNiagaraDataInterfaceProxyVectorField, ESPMode::ThreadSafe>();
 	PushToRenderThread();
 }
 
@@ -675,9 +675,7 @@ bool UNiagaraDataInterfaceVectorField::CopyToInternal(UNiagaraDataInterface* Des
 
 void UNiagaraDataInterfaceVectorField::PushToRenderThread()
 {
-	check(Proxy);
-
-	FNiagaraDataInterfaceProxyVectorField* RT_Proxy = (FNiagaraDataInterfaceProxyVectorField*) Proxy;
+	FNiagaraDataInterfaceProxyVectorField* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyVectorField>();
 
 	FVector RT_Dimensions = GetDimensions();
 	FVector RT_MinBounds = GetMinBounds();

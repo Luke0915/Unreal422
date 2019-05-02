@@ -552,6 +552,18 @@ private:
 
 //////////////////////////////////////////////////////////////////////////
 
+void FNiagaraDataInterfaceProxyStaticMesh::DeferredDestroy()
+{
+	//-TODO: This is incorrect, we could be destroying instance data for a batcher is yet to tick, we should only be destroying data for this batcher!
+	for (const FGuid& Sys : DeferredDestroyList)
+	{
+		SystemInstancesToMeshData.Remove(Sys);
+		//UE_LOG(LogNiagara, Log, TEXT("DeferredDestroy() ... Removing %s"), *Sys.ToString());
+	}
+
+	DeferredDestroyList.Empty();
+}
+
 void FNiagaraDataInterfaceProxyStaticMesh::InitializePerInstanceData(const FGuid& SystemInstance, FStaticMeshGpuSpawnBuffer* MeshGPUSpawnBuffer)
 {
 	check(IsInRenderingThread());
@@ -587,7 +599,7 @@ void FNiagaraDataInterfaceProxyStaticMesh::DestroyPerInstanceData(NiagaraEmitter
 	// @todo-threadsafety verify this destroys the MeshGPUSpawnBuffer data. This thread owns it now.
 	//SystemInstancesToMeshData.Remove(SystemInstance);
 	DeferredDestroyList.Add(SystemInstance);
-	Batcher->EnqueueDeferredDeletesForDI_RenderThread(this);
+	Batcher->EnqueueDeferredDeletesForDI_RenderThread(this->AsShared());
 }
 
 void FNiagaraDataInterfaceProxyStaticMesh::ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FGuid& Instance)
@@ -623,7 +635,7 @@ UNiagaraDataInterfaceStaticMesh::UNiagaraDataInterfaceStaticMesh(FObjectInitiali
 	//, bSupportingVertexColorSampling(0)//Vertex color filtering needs some more work.
 	//, bFilterInitialized(false)
 {
-	Proxy = new FNiagaraDataInterfaceProxyStaticMesh;
+	Proxy = MakeShared<FNiagaraDataInterfaceProxyStaticMesh, ESPMode::ThreadSafe>();
 }
 
 
@@ -1203,7 +1215,7 @@ bool UNiagaraDataInterfaceStaticMesh::InitPerInstanceData(void* PerInstanceData,
 
 			// Push instance data to RT
 			{
-				FNiagaraDataInterfaceProxyStaticMesh* ThisProxy = static_cast<FNiagaraDataInterfaceProxyStaticMesh*>(Proxy);
+				FNiagaraDataInterfaceProxyStaticMesh* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyStaticMesh>();
 				ENQUEUE_RENDER_COMMAND(FNiagaraDIPushInitialInstanceDataToRT) (
 					[ThisProxy, InstanceID = SystemInstance->GetId(), MeshGpuSpawnBuffer](FRHICommandListImmediate& CmdList)
 					{
@@ -1241,7 +1253,7 @@ void UNiagaraDataInterfaceStaticMesh::DestroyPerInstanceData(void* PerInstanceDa
 	Inst->~FNDIStaticMesh_InstanceData();
 
 	{
-		FNiagaraDataInterfaceProxyStaticMesh* ThisProxy = static_cast<FNiagaraDataInterfaceProxyStaticMesh*>(Proxy);
+		FNiagaraDataInterfaceProxyStaticMesh* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyStaticMesh>();
 		ENQUEUE_RENDER_COMMAND(FNiagaraDIDestroyInstanceData) (
 			[ThisProxy, InstanceID = SystemInstance->GetId(), Batcher = SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
 			{

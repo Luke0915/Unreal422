@@ -144,9 +144,9 @@ private:
 
 //////////////////////////////////////////////////////////////////////////
 
-struct FNiagaraDataInterfaceProxy
+struct FNiagaraDataInterfaceProxy : TSharedFromThis<FNiagaraDataInterfaceProxy, ESPMode::ThreadSafe>
 {
-	virtual ~FNiagaraDataInterfaceProxy() {}
+	virtual ~FNiagaraDataInterfaceProxy() {check(IsInRenderingThread());}
 
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const = 0;
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FGuid& Instance) { check(false); }
@@ -189,7 +189,7 @@ public:
 	virtual ~UNiagaraDataInterface();
 
 	// UObject Interface
-	virtual void PostLoad()override;
+	virtual void PostLoad() override;
 	// UObject Interface END
 
 	/** Initializes the per instance data for this interface. Returns false if there was some error and the simulation should be disabled. */
@@ -275,15 +275,23 @@ public:
 	virtual void ValidateFunction(const FNiagaraFunctionSignature& Function, TArray<FText>& OutValidationErrors);
 #endif
 
-	virtual FNiagaraDataInterfaceProxy* GetProxy()
+	FNiagaraDataInterfaceProxy* GetProxy()
 	{
-		return Proxy;
+		return Proxy.Get();
 	}
 
 protected:
+	template<typename T>
+	T* GetProxyAs()
+	{
+		T* TypedProxy = static_cast<T*>(Proxy.Get());
+		check(TypedProxy != nullptr);
+		return TypedProxy;
+	}
+
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const;
 
-	FNiagaraDataInterfaceProxy* Proxy;
+	TSharedPtr<FNiagaraDataInterfaceProxy, ESPMode::ThreadSafe> Proxy;
 };
 
 /** Base class for curve data interfaces which facilitates handling the curve data in a standardized way. */
@@ -325,7 +333,7 @@ public:
 		, ShowInCurveEditor(false)
 #endif
 	{
-		Proxy = new FNiagaraDataInterfaceProxyCurveBase;
+		Proxy = MakeShared<FNiagaraDataInterfaceProxyCurveBase, ESPMode::ThreadSafe>();
 	}
 
 	UNiagaraDataInterfaceCurveBase(FObjectInitializer const& ObjectInitializer)
@@ -337,7 +345,7 @@ public:
 		, ShowInCurveEditor(false)
 #endif
 	{
-		Proxy = new FNiagaraDataInterfaceProxyCurveBase;
+		Proxy = MakeShared<FNiagaraDataInterfaceProxyCurveBase, ESPMode::ThreadSafe>();
 	}
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Curve")

@@ -59,10 +59,8 @@ FFXSystemInterface* NiagaraEmitterInstanceBatcher::GetInterface(const FName& InN
 NiagaraEmitterInstanceBatcher::~NiagaraEmitterInstanceBatcher()
 {
 	ParticleSortBuffers.ReleaseRHI();
+
 	FinishDispatches();
-	check(ContextsToDestroy_RT.Num() == 0);
-	check(DataSetsToDestroy_RT.Num() == 0);
-	check(DIProxyDeferredDeletes_RT.Num() == 0);
 }
 
 void NiagaraEmitterInstanceBatcher::GiveSystemTick_RenderThread(FNiagaraGPUSystemTick& Tick)
@@ -116,7 +114,7 @@ void NiagaraEmitterInstanceBatcher::FinishDispatches()
 	}
 	DataSetsToDestroy_RT.Reset();
 
-	for (FNiagaraDataInterfaceProxy* Proxy : DIProxyDeferredDeletes_RT)
+	for (TSharedPtr<FNiagaraDataInterfaceProxy, ESPMode::ThreadSafe>& Proxy : DIProxyDeferredDeletes_RT)
 	{
 		Proxy->DeferredDestroy();
 	}

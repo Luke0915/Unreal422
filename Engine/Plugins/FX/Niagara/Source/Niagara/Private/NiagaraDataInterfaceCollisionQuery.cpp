@@ -19,7 +19,7 @@ UNiagaraDataInterfaceCollisionQuery::UNiagaraDataInterfaceCollisionQuery(FObject
 {
 	TraceChannelEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("ECollisionChannel"), true);
 
-	Proxy = new FNiagaraDataIntefaceProxyCollisionQuery;
+	Proxy = MakeShared<FNiagaraDataIntefaceProxyCollisionQuery, ESPMode::ThreadSafe>();
 }
 
 bool UNiagaraDataInterfaceCollisionQuery::InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* InSystemInstance)

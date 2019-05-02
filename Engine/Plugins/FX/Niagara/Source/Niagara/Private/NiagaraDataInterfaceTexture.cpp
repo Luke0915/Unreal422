@@ -20,7 +20,7 @@ UNiagaraDataInterfaceTexture::UNiagaraDataInterfaceTexture(FObjectInitializer co
 	: Super(ObjectInitializer)
 	, Texture(nullptr)
 {
-	Proxy = new FNiagaraDataInterfaceProxyTexture;
+	Proxy = MakeShared<FNiagaraDataInterfaceProxyTexture, ESPMode::ThreadSafe>();
 	PushToRenderThread();
 }
 
@@ -414,8 +414,7 @@ private:
 
 void UNiagaraDataInterfaceTexture::PushToRenderThread()
 {
-	check(Proxy);
-	FNiagaraDataInterfaceProxyTexture* RT_Proxy = static_cast<FNiagaraDataInterfaceProxyTexture*>(Proxy);
+	FNiagaraDataInterfaceProxyTexture* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyTexture>();
 
 	float DimX = 0.0f;
 	float DimY = 0.0f;

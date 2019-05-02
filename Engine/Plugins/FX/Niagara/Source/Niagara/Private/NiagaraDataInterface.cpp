@@ -17,15 +17,15 @@ UNiagaraDataInterface::UNiagaraDataInterface(FObjectInitializer const& ObjectIni
 UNiagaraDataInterface::~UNiagaraDataInterface()
 {
 	// @todo-threadsafety Can there be a UNiagaraDataInterface class itself created? Perhaps by the system?
-	if (Proxy)
+	if ( Proxy.IsValid() )
 	{
-		FNiagaraDataInterfaceProxy* RT_Proxy = Proxy;
 		ENQUEUE_RENDER_COMMAND(FDeleteProxyRT) (
-			[RT_Proxy](FRHICommandListImmediate& CmdList)
-		{
-			delete RT_Proxy;
-		}
+			[RT_Proxy=MoveTemp(Proxy)](FRHICommandListImmediate& CmdList)
+			{
+				// This will release RT_Proxy on the RT
+			}
 		);
+		check(Proxy.IsValid() == false);
 	}
 }
 
@@ -185,9 +185,7 @@ void UNiagaraDataInterfaceCurveBase::GetParameterDefinitionHLSL(FNiagaraDataInte
 
 void UNiagaraDataInterfaceCurveBase::PushToRenderThread()
 {
-	check(Proxy);
-
-	FNiagaraDataInterfaceProxyCurveBase* RT_Proxy = (FNiagaraDataInterfaceProxyCurveBase*)Proxy;
+	FNiagaraDataInterfaceProxyCurveBase* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyCurveBase>();
 
 	int32 rtNumElems = GetCurveNumElems();
 	float rtLUTMinTime = this->LUTMinTime;
