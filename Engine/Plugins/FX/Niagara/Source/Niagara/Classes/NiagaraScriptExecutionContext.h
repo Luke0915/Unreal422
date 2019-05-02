@@ -19,7 +19,6 @@ NiagaraEmitterInstance.h: Niagara emitter simulation class
 
 struct FNiagaraDataInterfaceProxy;
 
-static TAtomic<uint64> FNiagaraEventHandlingInfo_Count = 0;
 /** Container for data needed to process event data. */
 struct FNiagaraEventHandlingInfo
 {
@@ -28,12 +27,10 @@ struct FNiagaraEventHandlingInfo
 		, EventData(nullptr)
 		, SourceEmitterName(NAME_None)
 	{
-		++FNiagaraEventHandlingInfo_Count;
 	}
 
 	~FNiagaraEventHandlingInfo()
 	{
-		--FNiagaraEventHandlingInfo_Count;
 		SetEventData(nullptr);
 	}
 

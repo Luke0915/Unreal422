@@ -673,7 +673,7 @@ TOptional<FBox> FNiagaraEmitterInstance::CalculateDynamicBounds()
 	FBox Ret;
 	Ret.Init();
 
-	if (IsComplete() || NumInstances == 0 || CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)//TODO: Pull data back from gpu buffers to get bounds for GPU sims.
+	if (IsComplete() || NumInstances == 0 || CachedEmitter == nullptr || CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)//TODO: Pull data back from gpu buffers to get bounds for GPU sims.
 	{
 		return TOptional<FBox>();
 	}

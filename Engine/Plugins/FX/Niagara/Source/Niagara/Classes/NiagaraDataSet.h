@@ -394,16 +394,6 @@ struct FNiagaraDataSetAccessor : public FNiagaraDataSetAccessorBase
 		return Get(Index);
 	}
 
-	FORCEINLINE T GetSafe(int32 Index, T Default)const
-	{
-		if (IsValidForRead())
-		{
-			return Get(Index);
-		}
-
-		return Default;
-	}
-
 	FORCEINLINE T Get(int32 Index)const
 	{
 		T Ret;
@@ -1231,7 +1221,7 @@ struct FNiagaraDataSetAccessor<FNiagaraSpawnInfo> : public FNiagaraDataSetAccess
 		}
 	}
 
-	FORCEINLINE bool IsValidForRead()const { return SrcCountBase != nullptr && SrcInterpStartDtBase != nullptr && SrcInterpStartDtBase != nullptr && SrcGroupBase != nullptr; }
+	FORCEINLINE bool IsValidForRead()const { return SrcCountBase != nullptr && SrcInterpStartDtBase != nullptr && SrcIntervalDtBase != nullptr && SrcGroupBase != nullptr; }
 	FORCEINLINE bool IsValidForWrite()const { return DestCountBase != nullptr && DestInterpStartDtBase != nullptr && DestIntervalDtBase != nullptr && DestGroupBase != nullptr; }
 
 	FORCEINLINE FNiagaraSpawnInfo operator[](int32 Index)const
