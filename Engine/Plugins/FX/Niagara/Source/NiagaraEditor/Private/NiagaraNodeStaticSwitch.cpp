@@ -263,7 +263,7 @@ UEdGraphPin* UNiagaraNodeStaticSwitch::GetTracedOutputPin(UEdGraphPin* LocallyOw
 			UEdGraphPin* InputPin = InputPins[VarIdx + i];
 			if (InputPin->LinkedTo.Num() == 1)
 			{
-				return InputPin->LinkedTo[0];
+				return UNiagaraNode::TraceOutputPin(InputPin->LinkedTo[0]);
 			}
 		}
 	}
