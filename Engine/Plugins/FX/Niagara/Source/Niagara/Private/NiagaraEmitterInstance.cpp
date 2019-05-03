@@ -44,10 +44,6 @@ static FAutoConsoleVariableRef CVarMaxNiagaraCPUParticlesPerEmitter(
 );
 //////////////////////////////////////////////////////////////////////////
 
-const FName FNiagaraEmitterInstance::PositionName(TEXT("Position"));
-const FName FNiagaraEmitterInstance::SizeName(TEXT("SpriteSize"));
-const FName FNiagaraEmitterInstance::MeshScaleName(TEXT("Scale"));
-
 FNiagaraEmitterInstance::FNiagaraEmitterInstance(FNiagaraSystemInstance* InParentSystemInstance)
 : CPUTimeMS(0.0f)
 , ExecutionState(ENiagaraExecutionState::Inactive)
@@ -340,17 +336,6 @@ void FNiagaraEmitterInstance::Init(int32 InEmitterIdx, FName InSystemInstanceNam
 		EventExecCountBindings[i].Init(EventExecContexts[i].Parameters, SYS_PARAM_ENGINE_EXEC_COUNT);
 	}
 
-	if (CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim && GPUExecContext != nullptr)
-	{
-	}
-	else
-	{
-		//Init accessors for PostTick
-		PositionAccessor = FNiagaraDataSetAccessor<FVector>(Data, FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), PositionName));
-		SizeAccessor = FNiagaraDataSetAccessor<FVector2D>(Data, FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), SizeName));
-		MeshScaleAccessor = FNiagaraDataSetAccessor<FVector>(Data, FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), MeshScaleName));
-	}
-
 	// Collect script defined data interface parameters.
 	TArray<UNiagaraScript*> Scripts;
 	Scripts.Add(CachedEmitter->SpawnScriptProps.Script);
@@ -360,6 +345,21 @@ void FNiagaraEmitterInstance::Init(int32 InEmitterIdx, FName InSystemInstanceNam
 		Scripts.Add(EventHandler.Script);
 	}
 	FNiagaraUtilities::CollectScriptDataInterfaceParameters(*CachedEmitter, Scripts, ScriptDefinedDataInterfaceParameters);
+
+	// Initialize bounds calculators
+	BoundsCalculators.Reserve(CachedEmitter->GetRenderers().Num());
+	for (UNiagaraRendererProperties* RendererProperties : CachedEmitter->GetRenderers())
+	{
+		if ((RendererProperties != nullptr) && RendererProperties->GetIsEnabled())
+		{
+			FNiagaraBoundsCalculator* BoundsCalculator = RendererProperties->CreateBoundsCalculator();
+			if (BoundsCalculator != nullptr)
+			{
+				BoundsCalculator->InitAccessors(*ParticleDataSet);
+				BoundsCalculators.Emplace(BoundsCalculator);
+			}
+		}
+	}
 }
 
 void FNiagaraEmitterInstance::ResetSimulation(bool bKillExisting)
@@ -665,90 +665,70 @@ int FNiagaraEmitterInstance::GetTotalBytesUsed()
 	return BytesUsed;
 }
 
-TOptional<FBox> FNiagaraEmitterInstance::CalculateDynamicBounds()
+FBox FNiagaraEmitterInstance::CalculateDynamicBounds(const bool bReadGPUSimulation)
 {
-	checkSlow(ParticleDataSet);
-	FNiagaraDataSet& Data = *ParticleDataSet;
-	int32 NumInstances = Data.GetCurrentDataChecked().GetNumInstances();
+	if (IsComplete() || !BoundsCalculators.Num() || CachedEmitter == nullptr)
+		return FBox(ForceInit);
+
+	FScopedNiagaraDataSetGPUReadback ScopedGPUReadback;
+
+	int32 NumInstances = 0;
+	if (CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+	{
+		if (!bReadGPUSimulation || (GPUExecContext == nullptr))
+			return FBox(ForceInit);
+
+		ScopedGPUReadback.ReadbackData(GPUExecContext->MainDataSet);
+		NumInstances = ScopedGPUReadback.GetNumInstances();
+	}
+	else
+	{
+		NumInstances = ParticleDataSet->GetCurrentDataChecked().GetNumInstances();
+	}
+
+	if (NumInstances == 0)
+		return FBox(ForceInit);
+
 	FBox Ret;
 	Ret.Init();
 
-	if (IsComplete() || NumInstances == 0 || CachedEmitter == nullptr || CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)//TODO: Pull data back from gpu buffers to get bounds for GPU sims.
+	bool bContainsNaN = false;
+	for ( const TUniquePtr<FNiagaraBoundsCalculator>& BoundsCalculator : BoundsCalculators )
 	{
-		return TOptional<FBox>();
+		Ret += BoundsCalculator->CalculateBounds(NumInstances, bContainsNaN);
 	}
 
-	PositionAccessor.InitForAccess();
-
-	if (PositionAccessor.IsValid() == false)
-	{
-		return TOptional<FBox>();
-	}
-
-	SizeAccessor.InitForAccess();
-	MeshScaleAccessor.InitForAccess();
-
-	FVector MaxSize(ForceInitToZero);
-
-	if (SizeAccessor.IsValid() == false && MeshScaleAccessor.IsValid() == false)
-	{
-		MaxSize = FVector(50.0f, 50.0f, 50.0f);
-	}
-
-	for (int32 InstIdx = 0; InstIdx < NumInstances && PositionAccessor.IsValid(); ++InstIdx)
-	{
-		FVector Position;
-		PositionAccessor.Get(InstIdx, Position);
-
-		// Some graphs have a tendency to divide by zero. This ContainsNaN has been added prophylactically
-		// to keep us safe during GDC. It should be removed as soon as we feel safe that scripts are appropriately warned.
-		if (!Position.ContainsNaN())
-		{
-			Ret += Position;
-
-			// We advance the scale or size depending of if we use either.
-			if (MeshScaleAccessor.IsValid())
-			{
-				MaxSize = MaxSize.ComponentMax(MeshScaleAccessor.Get(InstIdx));
-			}
-			else if (SizeAccessor.IsValid())
-			{
-				MaxSize = MaxSize.ComponentMax(FVector(SizeAccessor.Get(InstIdx).GetMax()));
-			}
-		}
-		else
-		{
 #if !UE_BUILD_SHIPPING
-			if (bEncounteredNaNs == false && ParentSystemInstance != nullptr && CachedEmitter != nullptr && ParentSystemInstance->GetSystem() != nullptr)
-			{
-				UE_LOG(LogNiagara, Warning, TEXT("Particle position data contains NaNs. Likely a divide by zero somewhere in your modules. Emitter \"%s\" in System \"%s\""),
-					*CachedEmitter->GetName(), *ParentSystemInstance->GetSystem()->GetName());
-				bEncounteredNaNs = true;
-				ParentSystemInstance->Dump();
-			}
+	if (bContainsNaN && ParentSystemInstance != nullptr && CachedEmitter != nullptr && ParentSystemInstance->GetSystem() != nullptr)
+	{
+		UE_LOG(LogNiagara, Warning, TEXT("Particle position data contains NaNs. Likely a divide by zero somewhere in your modules. Emitter \"%s\" in System \"%s\""), *CachedEmitter->GetName(), *ParentSystemInstance->GetSystem()->GetName());
+		ParentSystemInstance->Dump();
+	}
 #endif
-		}
-	}
-
-	float MaxBaseSize = 0.0001f;
-	if (MaxSize.IsNearlyZero())
-	{
-		MaxSize = FVector(1.0f, 1.0f, 1.0f);
-	}
-
-	for(UNiagaraRendererProperties* Renderers : CachedEmitter->GetRenderers())
-	{
-		if (Renderers && Renderers->GetIsEnabled())
-		{
-			FVector BaseExtents = Renderers->GetBaseExtents();//JIRA - UE-72156 - TODO: Provide better API for renderers to affect dynamic bounds with their actual rendered size.
-			FVector ComponentMax;
-			MaxBaseSize = BaseExtents.ComponentMax(FVector(MaxBaseSize, MaxBaseSize, MaxBaseSize)).GetMax();
-		}
-	}
-
-	Ret = Ret.ExpandBy(MaxSize*MaxBaseSize);
 
 	return Ret;
+}
+
+void FNiagaraEmitterInstance::CalculateFixedBounds(const FTransform& ToWorldSpace)
+{
+	check(CachedEmitter);
+
+	FBox Bounds = CalculateDynamicBounds(true);
+	if (!Bounds.IsValid)
+		return;
+
+	CachedEmitter->Modify();
+	CachedEmitter->bFixedBounds = true;
+	if (CachedEmitter->bLocalSpace)
+	{
+		CachedEmitter->FixedBounds = Bounds;
+	}
+	else
+	{
+		CachedEmitter->FixedBounds = Bounds.TransformBy(ToWorldSpace);
+	}
+
+	CachedBounds = Bounds;
 }
 
 /** 
@@ -773,16 +753,16 @@ void FNiagaraEmitterInstance::PostTick()
 	}
 	else
 	{
-		TOptional<FBox> DynamicBounds = CalculateDynamicBounds();
-		if (DynamicBounds.IsSet())
+		FBox DynamicBounds = CalculateDynamicBounds();
+		if (DynamicBounds.IsValid)
 		{
 			if (CachedEmitter->bLocalSpace)
 			{
-				CachedBounds = DynamicBounds.GetValue();
+				CachedBounds = DynamicBounds;
 			}
 			else
 			{
-				CachedBounds = DynamicBounds.GetValue().TransformBy(ParentSystemInstance->GetComponent()->GetComponentToWorld().Inverse());
+				CachedBounds = DynamicBounds.TransformBy(ParentSystemInstance->GetComponent()->GetComponentToWorld().Inverse());
 			}
 		}
 		else

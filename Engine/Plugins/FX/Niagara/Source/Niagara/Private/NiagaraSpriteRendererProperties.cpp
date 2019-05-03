@@ -5,6 +5,7 @@
 #include "Internationalization/Internationalization.h"
 #include "NiagaraConstants.h"
 #include "NiagaraRendererSprites.h"
+#include "NiagaraBoundsCalculatorHelper.h"
 #if WITH_EDITOR
 #include "DerivedDataCacheInterface.h"
 #endif
@@ -50,6 +51,11 @@ FNiagaraRenderer* UNiagaraSpriteRendererProperties::CreateEmitterRenderer(ERHIFe
 	FNiagaraRenderer* NewRenderer = new FNiagaraRendererSprites(FeatureLevel, this, Emitter);	
 	NewRenderer->Initialize(FeatureLevel, this, Emitter);
 	return NewRenderer;
+}
+
+FNiagaraBoundsCalculator* UNiagaraSpriteRendererProperties::CreateBoundsCalculator()
+{
+	return new FNiagaraBoundsCalculatorHelper<true, false, false>();
 }
 
 void UNiagaraSpriteRendererProperties::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials) const

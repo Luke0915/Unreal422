@@ -3,6 +3,7 @@
 #include "NiagaraRibbonRendererProperties.h"
 #include "NiagaraRendererRibbons.h"
 #include "NiagaraConstants.h"
+#include "NiagaraBoundsCalculatorHelper.h"
 
 UNiagaraRibbonRendererProperties::UNiagaraRibbonRendererProperties()
 	: Material(nullptr)
@@ -21,6 +22,11 @@ FNiagaraRenderer* UNiagaraRibbonRendererProperties::CreateEmitterRenderer(ERHIFe
 	FNiagaraRenderer* NewRenderer = new FNiagaraRendererRibbons(FeatureLevel, this, Emitter);
 	NewRenderer->Initialize(FeatureLevel, this, Emitter);
 	return NewRenderer;
+}
+
+FNiagaraBoundsCalculator* UNiagaraRibbonRendererProperties::CreateBoundsCalculator()
+{
+	return new FNiagaraBoundsCalculatorHelper<false, false, true>();
 }
 
 void UNiagaraRibbonRendererProperties::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials) const

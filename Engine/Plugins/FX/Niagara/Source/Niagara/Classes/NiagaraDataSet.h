@@ -91,6 +91,7 @@ protected:
 /** Buffer containing one frame of Niagara simulation data. */
 class NIAGARA_API FNiagaraDataBuffer : public FNiagaraSharedObject
 {
+	friend class FScopedNiagaraDataSetGPUReadback;
 protected:
 	virtual ~FNiagaraDataBuffer();
 
@@ -419,9 +420,9 @@ struct FNiagaraDataSetAccessor : public FNiagaraDataSetAccessorBase
 
 		for (uint32 CompIdx = 0; CompIdx < VarLayout->GetNumInt32Components(); ++CompIdx)
 		{
-			uint32 CompBufferOffset = VarLayout->FloatComponentStart + CompIdx;
+			uint32 CompBufferOffset = VarLayout->Int32ComponentStart + CompIdx;
 			int32* Src = DataBuffer->GetInstancePtrInt32(CompBufferOffset, Index);
-			int32* Dst = (int32*)(ValuePtr + VarLayout->LayoutInfo.FloatComponentByteOffsets[CompIdx]);
+			int32* Dst = (int32*)(ValuePtr + VarLayout->LayoutInfo.Int32ComponentByteOffsets[CompIdx]);
 			*Dst = *Src;
 		}
 	}
@@ -444,9 +445,9 @@ struct FNiagaraDataSetAccessor : public FNiagaraDataSetAccessorBase
 
 		for (uint32 CompIdx = 0; CompIdx < VarLayout->GetNumInt32Components(); ++CompIdx)
 		{
-			uint32 CompBufferOffset = VarLayout->FloatComponentStart + CompIdx;
+			uint32 CompBufferOffset = VarLayout->Int32ComponentStart + CompIdx;
 			int32* Dst = DataBuffer->GetInstancePtrInt32(CompBufferOffset, Index);
-			int32* Src = (int32*)(ValuePtr + VarLayout->LayoutInfo.FloatComponentByteOffsets[CompIdx]);
+			int32* Src = (int32*)(ValuePtr + VarLayout->LayoutInfo.Int32ComponentByteOffsets[CompIdx]);
 			*Dst = *Src;
 		}
 	}
@@ -1442,4 +1443,25 @@ private:
 	TArray<const FNiagaraVariableLayoutInfo*> VarLayouts;
 
 	uint32 CurrIdx;
+};
+
+/**
+Allows immediate access to GPU data on the CPU, you can then use FNiagaraDataSetAccessor to access the data.
+This will make a copy of the GPU data and will stall the CPU until the data is ready from the GPU,
+therefore it should only be used for tools / debugging.  For async readback see FNiagaraSystemInstance::RequestCapture.
+*/
+class NIAGARA_API FScopedNiagaraDataSetGPUReadback
+{
+public:
+	FScopedNiagaraDataSetGPUReadback() {}
+	FScopedNiagaraDataSetGPUReadback(FNiagaraDataSet* DataSet) { ReadbackData(DataSet); }
+	~FScopedNiagaraDataSetGPUReadback();
+
+	void ReadbackData(FNiagaraDataSet* InDataSet);
+	uint32 GetNumInstances() const { check(DataSet != nullptr); return NumInstances; }
+
+private:
+	FNiagaraDataSet*	DataSet = nullptr;
+	FNiagaraDataBuffer* DataBuffer = nullptr;
+	uint32				NumInstances = 0;
 };

@@ -978,3 +978,68 @@ void FNiagaraDataBuffer::UnsetShaderParams(FNiagaraShader *Shader, FRHICommandLi
 		//RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EGfxToGfx, CurrDataRender().GetGPUBufferInt()->UAV);
 	}
 }
+
+FScopedNiagaraDataSetGPUReadback::~FScopedNiagaraDataSetGPUReadback()
+{
+	if (DataBuffer != nullptr)
+	{
+		DataBuffer->FloatData.Empty();
+		DataBuffer->Int32Data.Empty();
+	}
+}
+
+void FScopedNiagaraDataSetGPUReadback::ReadbackData(FNiagaraDataSet* InDataSet)
+{
+	check(DataSet == nullptr);
+	check(InDataSet != nullptr);
+
+	DataSet = InDataSet;
+	DataBuffer = DataSet->GetCurrentData();
+
+	// These should be zero if we are GPU and aren't inside a readback scope already
+	check((DataBuffer->FloatData.Num() == 0) && (DataBuffer->Int32Data.Num() == 0));
+
+	// Readback data
+	TArray<uint32> DrawIndirectData;
+	ENQUEUE_RENDER_COMMAND(ReadbackGPUBuffers)
+	(
+		[&](FRHICommandListImmediate& RHICmdList)
+		{
+			// Read DrawIndirect Params
+			{
+				const FRWBuffer& DataSetIndices = DataBuffer->GetGPUIndices();
+				const int32 BytesToCopy = DataSetIndices.NumBytes / sizeof(uint32);
+				DrawIndirectData.AddUninitialized(BytesToCopy);
+
+				void* Data = RHICmdList.LockVertexBuffer(DataSetIndices.Buffer, 0, BytesToCopy, RLM_ReadOnly);
+				FMemory::Memcpy(DrawIndirectData.GetData(), Data, BytesToCopy);
+				RHICmdList.UnlockVertexBuffer(DataSetIndices.Buffer);
+			}
+
+			// Read float data
+			const FRWBuffer& GPUFloatBuffer = DataBuffer->GetGPUBufferFloat();
+			if (GPUFloatBuffer.Buffer.IsValid())
+			{
+				DataBuffer->FloatData.AddUninitialized(GPUFloatBuffer.NumBytes);
+
+				void* CPUFloatBuffer = RHICmdList.LockVertexBuffer(GPUFloatBuffer.Buffer, 0, GPUFloatBuffer.NumBytes, RLM_ReadOnly);
+				FMemory::Memcpy(DataBuffer->FloatData.GetData(), CPUFloatBuffer, GPUFloatBuffer.NumBytes);
+				RHICmdList.UnlockVertexBuffer(GPUFloatBuffer.Buffer);
+			}
+
+			// Read int data
+			const FRWBuffer& GPUIntBuffer = DataBuffer->GetGPUBufferInt();
+			if (GPUIntBuffer.Buffer.IsValid())
+			{
+				DataBuffer->Int32Data.AddUninitialized(GPUIntBuffer.NumBytes);
+
+				void* CPUIntBuffer = RHICmdList.LockVertexBuffer(GPUIntBuffer.Buffer, 0, GPUIntBuffer.NumBytes, RLM_ReadOnly);
+				FMemory::Memcpy(DataBuffer->Int32Data.GetData(), CPUIntBuffer, GPUIntBuffer.NumBytes);
+				RHICmdList.UnlockVertexBuffer(GPUIntBuffer.Buffer);
+			}
+		}
+	);
+	FlushRenderingCommands();
+
+	NumInstances = DrawIndirectData[1];
+}

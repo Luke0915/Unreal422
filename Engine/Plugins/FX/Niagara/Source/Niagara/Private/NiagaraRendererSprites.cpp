@@ -94,8 +94,6 @@ FNiagaraRendererSprites::FNiagaraRendererSprites(ERHIFeatureLevel::Type FeatureL
 
 	VertexFactory = new FNiagaraSpriteVertexFactory(NVFT_Sprite, FeatureLevel);
 
-	BaseExtents = FVector(0.5f, 0.5f, 0.5f);
-
 	const UNiagaraSpriteRendererProperties* Properties = CastChecked<const UNiagaraSpriteRendererProperties>(InProps);
 	
 	Alignment = Properties->Alignment;

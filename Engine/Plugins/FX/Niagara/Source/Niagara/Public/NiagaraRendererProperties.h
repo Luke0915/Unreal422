@@ -32,12 +32,12 @@ class NIAGARA_API UNiagaraRendererProperties : public UNiagaraMergeable
 public:
 	UNiagaraRendererProperties()
 	: bIsEnabled(true)
-	, BaseExtents(FVector(50.0f,50.0f,50.0f))//JIRA - UE-72156 - TODO: Provide better API for renderers to affect dynamic bounds with correct per particle rendered size.
 	{
 	}
 
 	//UObject Interface End
 	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter) PURE_VIRTUAL ( UNiagaraRendererProperties::CreateEmitterRenderer, return nullptr;);
+	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() PURE_VIRTUAL(UNiagaraRendererProperties::CreateBoundsCalculator, return nullptr;);
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials) const PURE_VIRTUAL(UNiagaraRendererProperties::GetUsedMaterials,);
 
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const { return false; };
@@ -57,8 +57,6 @@ public:
 
 	virtual bool GetIsEnabled() const { return bIsEnabled; }
 	virtual void SetIsEnabled(bool bInIsEnabled) { bIsEnabled = bInIsEnabled; }
-
-	FORCEINLINE FVector GetBaseExtents() { return BaseExtents; }
 	
 	/** By default, emitters are drawn in the order that they are added to the system. This value will allow you to control the order in a more fine-grained manner. 
 	Materials of the same type (i.e. Transparent) will draw in order from lowest to highest within the system. The default value is 0.*/
@@ -67,9 +65,6 @@ public:
 	
 	UPROPERTY()
 	bool bIsEnabled;
-
-protected:
-	FVector BaseExtents;
 };
 
 

@@ -20,6 +20,7 @@ NiagaraRenderer.h: Base class for Niagara render modules
 #include "SceneView.h"
 #include "NiagaraComponent.h"
 #include "NiagaraCutoutVertexBuffer.h"
+#include "NiagaraBoundsCalculator.h"
 
 class FNiagaraDataSet;
 
@@ -106,7 +107,6 @@ public:
 	void SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData);
 	FORCEINLINE FNiagaraDynamicDataBase *GetDynamicData()const { return DynamicDataRender; }
 	FORCEINLINE bool HasDynamicData()const { return DynamicDataRender; }
-	FORCEINLINE const FVector& GetBaseExtents() const {	return BaseExtents; }
 	FORCEINLINE float GetCPUTimeMS() const { return CPUTimeMS; }
 	FORCEINLINE bool HasLights()const { return bHasLights; }
 
@@ -123,8 +123,7 @@ protected:
 
 	struct FNiagaraDynamicDataBase *DynamicDataRender;
 	FMaterialRelevance MaterialRelevance;
-	FVector BaseExtents;
-
+	
 #if RHI_RAYTRACING
 	FRWBuffer RayTracingDynamicVertexBuffer;
 	FRayTracingGeometry RayTracingGeometry;

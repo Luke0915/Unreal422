@@ -218,6 +218,7 @@ bool FNiagaraSystemInstance::QueryCaptureResults(const FGuid& RequestId, TArray<
 				if ((*Array)[i]->bWaitForGPU && (*Array)[i]->bWritten == false)
 				{
 					bWaitForGPU = true;
+					break;
 				}
 			}
 			

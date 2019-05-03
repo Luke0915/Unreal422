@@ -1588,24 +1588,11 @@ void FNiagaraSystemViewModel::UpdateEmitterFixedBounds()
 		{
 			if (&EmitterInst->GetEmitterHandle() == SelectedEmitterHandle && !EmitterInst->IsComplete())
 			{
-				TOptional<FBox> EmitterBounds = EmitterInst->CalculateDynamicBounds();
-				if (EmitterBounds.IsSet())
-				{
-					Emitter->Modify();
-					Emitter->bFixedBounds = true;
-					if (Emitter->bLocalSpace)
-					{
-						Emitter->FixedBounds = EmitterBounds.GetValue();
-					}
-					else
-					{
-						//Dynamic bounds are in world space. Transform back to local.
-						Emitter->FixedBounds = EmitterBounds.GetValue().TransformBy(PreviewComponent->GetComponentToWorld().Inverse());
-					}
-				}
+				EmitterInst->CalculateFixedBounds(PreviewComponent->GetComponentToWorld().Inverse());
 			}
 		}
 	}
+	PreviewComponent->MarkRenderTransformDirty();
 }
 
 void FNiagaraSystemViewModel::AddSystemEventHandlers()

@@ -4,6 +4,7 @@
 #include "NiagaraRendererMeshes.h"
 #include "Engine/StaticMesh.h"
 #include "NiagaraConstants.h"
+#include "NiagaraBoundsCalculatorHelper.h"
 
 UNiagaraMeshRendererProperties::UNiagaraMeshRendererProperties()
 	: ParticleMesh(nullptr)
@@ -24,7 +25,18 @@ FNiagaraRenderer* UNiagaraMeshRendererProperties::CreateEmitterRenderer(ERHIFeat
 	return nullptr;
 }
 
+FNiagaraBoundsCalculator* UNiagaraMeshRendererProperties::CreateBoundsCalculator()
+{
+	if (ParticleMesh)
+	{
+		FNiagaraBoundsCalculatorHelper<false, true, false>* BoundsCalculator = new FNiagaraBoundsCalculatorHelper<false, true, false>();
+		BoundsCalculator->MeshExtents = ParticleMesh->GetBounds().BoxExtent;
+		return BoundsCalculator;
+	}
 
+	return nullptr;
+
+}
 
 void UNiagaraMeshRendererProperties::PostInitProperties()
 {
@@ -159,10 +171,6 @@ void UNiagaraMeshRendererProperties::PostEditChangeProperty(FPropertyChangedEven
 {
 	if (ParticleMesh && PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetName() == "ParticleMesh")
 	{
-		//TODO: Provide proper API for renderers to affect dynamic bounds.
-		//JIRA - UE-72156;
-		BaseExtents = ParticleMesh->GetBounds().BoxExtent;
-
 		const FStaticMeshLODResources& LODModel = ParticleMesh->RenderData->LODResources[0];
 		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 		{

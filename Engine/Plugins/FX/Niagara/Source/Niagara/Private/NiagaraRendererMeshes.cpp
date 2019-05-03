@@ -77,8 +77,6 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 
 	MeshRenderData = Properties->ParticleMesh->RenderData.Get();
 
-	BaseExtents = Properties->ParticleMesh->GetBounds().BoxExtent;
-
 	FacingMode = Properties->FacingMode;
 	SortMode = Properties->SortMode;
 	bSortOnlyWhenTranslucent = Properties->bSortOnlyWhenTranslucent;

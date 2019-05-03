@@ -1179,30 +1179,6 @@ void FNiagaraSystemToolkit::OnToggleBoundsSetFixedBounds()
 
 	SystemViewModel->UpdateEmitterFixedBounds();
 
-	/*
-	// Force the component to update its bounds.
-	ParticleSystemComponent->ForceUpdateBounds();
-
-	// Grab the current bounds of the PSysComp & set it on the PSystem itself
-	ParticleSystem->Modify();
-	ParticleSystem->FixedRelativeBoundingBox.Min = ParticleSystemComponent->Bounds.GetBoxExtrema(0);
-	ParticleSystem->FixedRelativeBoundingBox.Max = ParticleSystemComponent->Bounds.GetBoxExtrema(1);
-	ParticleSystem->FixedRelativeBoundingBox.IsValid = true;
-	ParticleSystem->bUseFixedRelativeBoundingBox = true;
-
-	ParticleSystem->MarkPackageDirty();
-
-	EndTransaction(Transaction);
-
-	if ((SelectedModule == NULL) && (SelectedEmitter == NULL))
-	{
-		TArray<UObject*> NewSelection;
-		NewSelection.Add(ParticleSystem);
-		SetSelection(NewSelection);
-	}
-
-	ReassociateParticleSystem();
-	*/
 }
 
 void FNiagaraSystemToolkit::UpdateOriginalEmitter()

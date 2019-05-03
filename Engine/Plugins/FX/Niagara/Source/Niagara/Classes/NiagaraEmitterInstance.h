@@ -14,6 +14,7 @@ NiagaraEmitterInstance.h: Niagara emitter simulation class
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraScriptExecutionContext.h"
+#include "NiagaraBoundsCalculator.h"
 
 class FNiagaraSystemInstance;
 struct FNiagaraEmitterHandle;
@@ -57,7 +58,9 @@ public:
 
 	uint32 CalculateEventSpawnCount(const FNiagaraEventScriptProperties &EventHandlerProps, TArray<int32, TInlineAllocator<16>>& EventSpawnCounts, FNiagaraDataSet *EventSet);
 
-	NIAGARA_API TOptional<FBox> CalculateDynamicBounds();
+	/** Generate system bounds, reading back data from the GPU will introduce a stall and should only be used for debug purposes. */
+	FBox CalculateDynamicBounds(const bool bReadGPUSimulation = false);
+	NIAGARA_API void CalculateFixedBounds(const FTransform& ToWorldSpace);
 
 	FNiagaraDataSet& GetData()const { return *ParticleDataSet; }
 	
@@ -210,14 +213,6 @@ private:
 	bool CheckAttributesForRenderer(int32 Index);
 #endif
 
-	FNiagaraDataSetAccessor<FVector> PositionAccessor;
-	FNiagaraDataSetAccessor<FVector2D> SizeAccessor;
-	FNiagaraDataSetAccessor<FVector> MeshScaleAccessor;
-
-	static const FName PositionName;
-	static const FName SizeName;
-	static const FName MeshScaleName;
-
 #if !UE_BUILD_SHIPPING
 	bool bEncounteredNaNs;
 #endif
@@ -230,4 +225,7 @@ private:
 	/** Data required for handling events. */
 	TArray<FNiagaraEventHandlingInfo> EventHandlingInfo;
 	int32 EventSpawnTotal;
+
+	/** Optional list of bounds calculators. */
+	TArray<TUniquePtr<FNiagaraBoundsCalculator>, TInlineAllocator<1>> BoundsCalculators;
 };

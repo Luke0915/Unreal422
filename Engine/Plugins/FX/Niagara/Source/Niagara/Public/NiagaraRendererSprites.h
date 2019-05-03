@@ -96,10 +96,3 @@ private:
 	int32 CustomSortingOffset;
 	int32 NormalizedAgeOffset;
 };
-
-
-
-
-
-
-

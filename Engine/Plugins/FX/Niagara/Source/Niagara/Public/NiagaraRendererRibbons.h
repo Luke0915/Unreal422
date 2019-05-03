@@ -59,5 +59,3 @@ private:
 	int32 MaterialParamOffset2;
 	int32 MaterialParamOffset3;
 };
-
-
