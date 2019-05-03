@@ -828,6 +828,9 @@ void UNiagaraComponent::OnUnregister()
 		// get rid of the system interface should we be doing this in response to a callback invoked during the system interface's lifetime completion cycle.
 		FNiagaraSystemInstance::DeallocateSystemInstance(SystemInstance); // System Instance will be nullptr after this.
 		check(SystemInstance.Get() == nullptr);
+#if WITH_EDITORONLY_DATA
+		OnSystemInstanceChangedDelegate.Broadcast();
+#endif
 	}
 }
 
