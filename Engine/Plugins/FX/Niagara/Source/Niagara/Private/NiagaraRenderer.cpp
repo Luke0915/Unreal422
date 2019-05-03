@@ -202,7 +202,7 @@ void FNiagaraRenderer::Initialize(ERHIFeatureLevel::Type FeatureLevel, const UNi
 		{
 			Mat = UMaterial::GetDefaultMaterial(MD_Surface);
 		}
-		BaseMaterialRelevance |= Mat->GetRelevance(FeatureLevel);
+		MaterialRelevance |= Mat->GetRelevance(FeatureLevel);
 	}
 }
 
@@ -221,11 +221,11 @@ FPrimitiveViewRelevance FNiagaraRenderer::GetViewRelevance(const FSceneView* Vie
 	Result.bDrawRelevance =/* bHasDynamicData && */SceneProxy->IsShown(View) && View->Family->EngineShowFlags.Particles;
 	Result.bShadowRelevance = bHasDynamicData && SceneProxy->IsShadowCast(View);
 	Result.bDynamicRelevance = bHasDynamicData;
-	if (bHasDynamicData && View->Family->EngineShowFlags.Bounds)
+	if (bHasDynamicData)
 	{
-		Result.bOpaqueRelevance = true;
+		Result.bOpaqueRelevance = View->Family->EngineShowFlags.Bounds;
+		DynamicDataRender->GetMaterialRelevance().SetPrimitiveViewRelevance(Result);
 	}
-	MaterialRelevance.SetPrimitiveViewRelevance(Result);
 
 	return Result;
 }

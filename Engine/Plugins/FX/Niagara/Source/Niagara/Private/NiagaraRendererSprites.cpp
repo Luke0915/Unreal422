@@ -41,7 +41,6 @@ struct FNiagaraDynamicDataSprites : public FNiagaraDynamicDataBase
 	}
 	
 	FMaterialRenderProxy* Material;
-	FMaterialRelevance MaterialRelevance;
 };
 
 /* Mesh collector classes */
@@ -177,24 +176,6 @@ void FNiagaraRendererSprites::CreateRenderThreadResources()
 		RayTracingGeometry.InitResource();
 	}
 #endif
-}
-
-FPrimitiveViewRelevance FNiagaraRendererSprites::GetViewRelevance(const FSceneView* View, const FNiagaraSceneProxy *SceneProxy)const
-{
-	FPrimitiveViewRelevance Result;
-	bool bHasDynamicData = HasDynamicData();
-
-	//Always draw so our LastRenderTime is updated. We may not have dynamic data if we're disabled from visibility culling.
-	Result.bDrawRelevance =/* bHasDynamicData && */SceneProxy->IsShown(View) && View->Family->EngineShowFlags.Particles;
-	Result.bShadowRelevance = bHasDynamicData && SceneProxy->IsShadowCast(View);
-	Result.bDynamicRelevance = bHasDynamicData;
-	if (bHasDynamicData)
-	{
-		Result.bOpaqueRelevance = View->Family->EngineShowFlags.Bounds;
-		DynamicDataRender->GetMaterialRelevance().SetPrimitiveViewRelevance(Result);
-	}
-
-	return Result;
 }
 
 void FNiagaraRendererSprites::ConditionalInitPrimitiveUniformBuffer(const FNiagaraSceneProxy *SceneProxy) const
@@ -667,7 +648,7 @@ FNiagaraDynamicDataBase *FNiagaraRendererSprites::GenerateDynamicData(const FNia
 			check(BaseMaterials_GT.Num() == 1);
 			check(BaseMaterials_GT[0]->CheckMaterialUsage_Concurrent(MATUSAGE_NiagaraSprites));
 			DynamicData->Material = BaseMaterials_GT[0]->GetRenderProxy();
-			DynamicData->SetMaterialRelevance(BaseMaterialRelevance);
+			DynamicData->SetMaterialRelevance(MaterialRelevance);
 		}
 
 		CPUTimeMS = VertexDataTimer.GetElapsedMilliseconds();

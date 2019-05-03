@@ -411,9 +411,9 @@ FNiagaraDynamicDataBase* FNiagaraRendererRibbons::GenerateDynamicData(const FNia
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraGenRibbonVertexData);
 
-	if (Emitter->GetData().GetSimTarget() == ENiagaraSimTarget::CPUSim)
+	if (Emitter->GetData().GetSimTarget() == ENiagaraSimTarget::GPUComputeSim)
 	{
-		//Currently can only do CPU ribbons.
+		return nullptr;
 	}
 
 	SimpleTimer VertexDataTimer;
@@ -455,7 +455,7 @@ FNiagaraDynamicDataBase* FNiagaraRendererRibbons::GenerateDynamicData(const FNia
 	check(BaseMaterials_GT.Num() == 1);
 	check(BaseMaterials_GT[0]->CheckMaterialUsage_Concurrent(MATUSAGE_NiagaraRibbons));
 	DynamicData->Material = BaseMaterials_GT[0]->GetRenderProxy();
-	DynamicData->SetMaterialRelevance(BaseMaterialRelevance);
+	DynamicData->SetMaterialRelevance(MaterialRelevance);
 
 	TArray<int16>& IndexData = DynamicData->IndexData;
 	

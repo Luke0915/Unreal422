@@ -125,26 +125,6 @@ void FNiagaraRendererMeshes::SetupVertexFactory(FNiagaraMeshVertexFactory *InVer
 	InVertexFactory->SetData(Data);
 }
 
-FPrimitiveViewRelevance FNiagaraRendererMeshes::GetViewRelevance(const FSceneView* View, const FNiagaraSceneProxy *SceneProxy)const
-{
-	FPrimitiveViewRelevance Result;
-	bool bHasDynamicData = HasDynamicData();
-	//Always draw so our LastRenderTime is updated. We may not have dynamic data if we're disabled from visibility culling.
-	Result.bDrawRelevance = /*bHasDynamicData && */SceneProxy->IsShown(View) && View->Family->EngineShowFlags.Particles;
-	Result.bShadowRelevance = bHasDynamicData && SceneProxy->IsShadowCast(View);
-	Result.bDynamicRelevance = bHasDynamicData;
-
-	if (bHasDynamicData)
-	{
-		Result.bOpaqueRelevance = MaterialRelevance.bOpaque;
-		Result.bNormalTranslucencyRelevance = MaterialRelevance.bNormalTranslucency;
-		Result.bSeparateTranslucencyRelevance = MaterialRelevance.bSeparateTranslucency;
-		Result.bDistortionRelevance = MaterialRelevance.bDistortion;
-	}
-
-	return Result;
-}
-
 void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraRender);
@@ -454,7 +434,7 @@ FNiagaraDynamicDataBase *FNiagaraRendererMeshes::GenerateDynamicData(const FNiag
 		check(BaseMaterials_GT.Num() == LODModel.Sections.Num());
 
 		DynamicData->Materials.Reset(LODModel.Sections.Num());
-		DynamicData->SetMaterialRelevance(BaseMaterialRelevance);
+		DynamicData->SetMaterialRelevance(MaterialRelevance);
 		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 		{
 			const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];

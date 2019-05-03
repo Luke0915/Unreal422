@@ -140,6 +140,5 @@ protected:
 #endif
 	/** Cached array of materials used from the properties data. Validated with usage flags etc. */
 	TArray<UMaterialInterface*> BaseMaterials_GT;
-	FMaterialRelevance BaseMaterialRelevance;
 };
 
