@@ -26,8 +26,12 @@ class FNiagaraDataSet;
 /** Struct used to pass dynamic data from game thread to render thread */
 struct FNiagaraDynamicDataBase
 {
-	FNiagaraDynamicDataBase(const FNiagaraEmitterInstance* InEmitter);
+	explicit FNiagaraDynamicDataBase(const FNiagaraEmitterInstance* InEmitter);
 	virtual ~FNiagaraDynamicDataBase();
+
+	FNiagaraDynamicDataBase() = delete;
+	FNiagaraDynamicDataBase(FNiagaraDynamicDataBase& Other) = delete;
+	FNiagaraDynamicDataBase& operator=(const FNiagaraDynamicDataBase& Other) = delete;
 
 	FNiagaraDataBuffer* GetParticleDataToRender()const;
 	FORCEINLINE ENiagaraSimTarget GetSimTarget()const { return SimTarget; }
@@ -44,12 +48,6 @@ protected:
 		FNiagaraDataBuffer* CPUParticleData;
 		FNiagaraComputeExecutionContext* GPUExecContext;
 	}Data;
-
-private:
-
-	FNiagaraDynamicDataBase(){}
-	FNiagaraDynamicDataBase(FNiagaraDynamicDataBase& Other){}
-	FNiagaraDynamicDataBase& operator=(const FNiagaraDynamicDataBase& Other){}
 };
 
 
@@ -86,6 +84,10 @@ public:
 
 	FNiagaraRenderer(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);
 	virtual ~FNiagaraRenderer();
+
+	FNiagaraRenderer(const FNiagaraRenderer& Other) = delete;
+	FNiagaraRenderer& operator=(const FNiagaraRenderer& Other) = delete;
+
 	virtual void Initialize(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);
 	virtual void CreateRenderThreadResources() {}
 	virtual void ReleaseRenderThreadResources() {}
@@ -139,9 +141,5 @@ protected:
 	/** Cached array of materials used from the properties data. Validated with usage flags etc. */
 	TArray<UMaterialInterface*> BaseMaterials_GT;
 	FMaterialRelevance BaseMaterialRelevance;
-
-private:
-	FNiagaraRenderer(const FNiagaraRenderer& Other){}
-	FNiagaraRenderer& operator=(const FNiagaraRenderer& Other){}
 };
 
