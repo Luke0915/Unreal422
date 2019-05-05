@@ -10,6 +10,7 @@
 class FNiagaraBoundsCalculator
 {
 public:
+	virtual ~FNiagaraBoundsCalculator() { }
 	virtual void InitAccessors(FNiagaraDataSet& DataSet) = 0;
 	virtual FBox CalculateBounds(const int32 NumInstances, bool& bOutContainsNaN) = 0;
 };
