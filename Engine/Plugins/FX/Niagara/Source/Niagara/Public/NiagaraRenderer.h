@@ -122,7 +122,6 @@ public:
 protected:
 
 	struct FNiagaraDynamicDataBase *DynamicDataRender;
-	FMaterialRelevance MaterialRelevance;
 	
 #if RHI_RAYTRACING
 	FRWBuffer RayTracingDynamicVertexBuffer;
@@ -137,7 +136,9 @@ protected:
 #if STATS
 	TStatId EmitterStatID;
 #endif
+
 	/** Cached array of materials used from the properties data. Validated with usage flags etc. */
 	TArray<UMaterialInterface*> BaseMaterials_GT;
+	FMaterialRelevance BaseMaterialRelevance_GT;
 };
 

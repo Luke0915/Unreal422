@@ -201,7 +201,7 @@ void FNiagaraRenderer::Initialize(ERHIFeatureLevel::Type FeatureLevel, const UNi
 		{
 			Mat = UMaterial::GetDefaultMaterial(MD_Surface);
 		}
-		MaterialRelevance |= Mat->GetRelevance(FeatureLevel);
+		BaseMaterialRelevance_GT |= Mat->GetRelevance(FeatureLevel);
 	}
 }
 

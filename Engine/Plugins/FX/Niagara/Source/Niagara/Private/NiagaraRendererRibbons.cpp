@@ -455,7 +455,7 @@ FNiagaraDynamicDataBase* FNiagaraRendererRibbons::GenerateDynamicData(const FNia
 	check(BaseMaterials_GT.Num() == 1);
 	check(BaseMaterials_GT[0]->CheckMaterialUsage_Concurrent(MATUSAGE_NiagaraRibbons));
 	DynamicData->Material = BaseMaterials_GT[0]->GetRenderProxy();
-	DynamicData->SetMaterialRelevance(MaterialRelevance);
+	DynamicData->SetMaterialRelevance(BaseMaterialRelevance_GT);
 
 	TArray<int16>& IndexData = DynamicData->IndexData;
 	

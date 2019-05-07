@@ -432,7 +432,7 @@ FNiagaraDynamicDataBase *FNiagaraRendererMeshes::GenerateDynamicData(const FNiag
 		check(BaseMaterials_GT.Num() == LODModel.Sections.Num());
 
 		DynamicData->Materials.Reset(LODModel.Sections.Num());
-		DynamicData->SetMaterialRelevance(MaterialRelevance);
+		DynamicData->SetMaterialRelevance(BaseMaterialRelevance_GT);
 		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 		{
 			const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];

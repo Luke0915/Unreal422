@@ -646,7 +646,7 @@ FNiagaraDynamicDataBase *FNiagaraRendererSprites::GenerateDynamicData(const FNia
 			check(BaseMaterials_GT.Num() == 1);
 			check(BaseMaterials_GT[0]->CheckMaterialUsage_Concurrent(MATUSAGE_NiagaraSprites));
 			DynamicData->Material = BaseMaterials_GT[0]->GetRenderProxy();
-			DynamicData->SetMaterialRelevance(MaterialRelevance);
+			DynamicData->SetMaterialRelevance(BaseMaterialRelevance_GT);
 		}
 
 		CPUTimeMS = VertexDataTimer.GetElapsedMilliseconds();
