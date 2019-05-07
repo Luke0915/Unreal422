@@ -86,6 +86,7 @@ private:
 	int32 FacingOffset;
 	int32 AlignmentOffset;
 	int32 SubImageOffset;
+	uint32 MaterialParamValidMask;
 	int32 MaterialParamOffset;
 	int32 MaterialParamOffset1;
 	int32 MaterialParamOffset2;

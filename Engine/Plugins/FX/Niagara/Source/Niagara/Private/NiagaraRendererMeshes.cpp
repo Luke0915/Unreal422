@@ -58,6 +58,7 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 	, ColorOffset(INDEX_NONE)
 	, ScaleOffset(INDEX_NONE)
 	, SizeOffset(INDEX_NONE)
+	, MaterialParamValidMask(0)
 	, MaterialParamOffset(INDEX_NONE)
 	, MaterialParamOffset1(INDEX_NONE)
 	, MaterialParamOffset2(INDEX_NONE)
@@ -97,6 +98,11 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 	Data.GetVariableComponentOffsets(Properties->NormalizedAgeBinding.DataSetVariable, NormalizedAgeOffset, IntDummy);
 	Data.GetVariableComponentOffsets(Properties->MaterialRandomBinding.DataSetVariable, MaterialRandomOffset, IntDummy);
 	Data.GetVariableComponentOffsets(Properties->CustomSortingBinding.DataSetVariable, CustomSortingOffset, IntDummy);
+
+	MaterialParamValidMask = MaterialParamOffset  == -1 ? 0 : 0x1;
+	MaterialParamValidMask |= MaterialParamOffset1 == -1 ? 0 : 0x2;
+	MaterialParamValidMask |= MaterialParamOffset2 == -1 ? 0 : 0x4;
+	MaterialParamValidMask |= MaterialParamOffset3 == -1 ? 0 : 0x8;
 }
 
 void FNiagaraRendererMeshes::ReleaseRenderThreadResources()
@@ -212,6 +218,7 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 				PerViewUniformParameters.TransformDataOffset = TransformOffset;
 				PerViewUniformParameters.ScaleDataOffset = ScaleOffset;
 				PerViewUniformParameters.SizeDataOffset = SizeOffset;
+				PerViewUniformParameters.MaterialParamValidMask = MaterialParamValidMask;
 				PerViewUniformParameters.MaterialParamDataOffset = MaterialParamOffset;
 				PerViewUniformParameters.MaterialParam1DataOffset = MaterialParamOffset1;
 				PerViewUniformParameters.MaterialParam2DataOffset = MaterialParamOffset2;

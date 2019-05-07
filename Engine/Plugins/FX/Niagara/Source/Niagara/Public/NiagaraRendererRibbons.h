@@ -54,6 +54,7 @@ private:
 	int32 ColorDataOffset;
 	int32 NormalizedAgeDataOffset;
 	int32 MaterialRandomDataOffset;
+	uint32 MaterialParamValidMask;
 	int32 MaterialParamOffset;
 	int32 MaterialParamOffset1;
 	int32 MaterialParamOffset2;

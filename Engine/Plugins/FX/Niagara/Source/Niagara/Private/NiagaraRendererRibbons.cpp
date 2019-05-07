@@ -115,6 +115,11 @@ FNiagaraRendererRibbons::FNiagaraRendererRibbons(ERHIFeatureLevel::Type FeatureL
 	Data.GetVariableComponentOffsets(Properties->DynamicMaterial1Binding.DataSetVariable, MaterialParamOffset1, IntDummy);
 	Data.GetVariableComponentOffsets(Properties->DynamicMaterial2Binding.DataSetVariable, MaterialParamOffset2, IntDummy);
 	Data.GetVariableComponentOffsets(Properties->DynamicMaterial3Binding.DataSetVariable, MaterialParamOffset3, IntDummy);
+
+	MaterialParamValidMask = MaterialParamOffset != -1 ? 1 : 0;
+	MaterialParamValidMask |= MaterialParamOffset1 != -1 ? 2 : 0;
+	MaterialParamValidMask |= MaterialParamOffset2 != -1 ? 4 : 0;
+	MaterialParamValidMask |= MaterialParamOffset3 != -1 ? 8 : 0;
 }
 
 
@@ -237,6 +242,7 @@ void FNiagaraRendererRibbons::GetDynamicMeshElements(const TArray<const FSceneVi
 				PerViewUniformParameters.FacingDataOffset = FacingDataOffset;
 				PerViewUniformParameters.NormalizedAgeDataOffset = NormalizedAgeDataOffset;
 				PerViewUniformParameters.MaterialRandomDataOffset = MaterialRandomDataOffset;
+				PerViewUniformParameters.MaterialParamValidMask = MaterialParamValidMask;
 				PerViewUniformParameters.MaterialParamDataOffset = MaterialParamOffset;
 				PerViewUniformParameters.MaterialParam1DataOffset = MaterialParamOffset1;
 				PerViewUniformParameters.MaterialParam2DataOffset = MaterialParamOffset2;

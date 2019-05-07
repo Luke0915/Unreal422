@@ -80,6 +80,7 @@ FNiagaraRendererSprites::FNiagaraRendererSprites(ERHIFeatureLevel::Type FeatureL
 	, FacingOffset(INDEX_NONE)
 	, AlignmentOffset(INDEX_NONE)
 	, SubImageOffset(INDEX_NONE)
+	, MaterialParamValidMask(0)
 	, MaterialParamOffset(INDEX_NONE)
 	, MaterialParamOffset1(INDEX_NONE)
 	, MaterialParamOffset2(INDEX_NONE)
@@ -130,6 +131,11 @@ FNiagaraRendererSprites::FNiagaraRendererSprites(ERHIFeatureLevel::Type FeatureL
 	Data.GetVariableComponentOffsets(Properties->NormalizedAgeBinding.DataSetVariable, NormalizedAgeOffset, IntDummy);
 	Data.GetVariableComponentOffsets(Properties->MaterialRandomBinding.DataSetVariable, MaterialRandomOffset, IntDummy);
 	Data.GetVariableComponentOffsets(Properties->CustomSortingBinding.DataSetVariable, CustomSortingOffset, IntDummy);
+
+	MaterialParamValidMask = MaterialParamOffset != -1 ? 1 : 0;
+	MaterialParamValidMask |= MaterialParamOffset1 != -1 ? 2 : 0;
+	MaterialParamValidMask |= MaterialParamOffset2 != -1 ? 4 : 0;
+	MaterialParamValidMask |= MaterialParamOffset3 != -1 ? 8 : 0;
 }
 
 void FNiagaraRendererSprites::ReleaseRenderThreadResources()
@@ -247,6 +253,7 @@ FNiagaraSpriteUniformBufferRef FNiagaraRendererSprites::CreatePerViewUniformBuff
 	PerViewUniformParameters.RotationDataOffset = RotationOffset;
 	PerViewUniformParameters.SizeDataOffset = SizeOffset;
 	PerViewUniformParameters.ColorDataOffset = ColorOffset;
+	PerViewUniformParameters.MaterialParamValidMask = MaterialParamValidMask;
 	PerViewUniformParameters.MaterialParamDataOffset = MaterialParamOffset;
 	PerViewUniformParameters.MaterialParam1DataOffset = MaterialParamOffset1;
 	PerViewUniformParameters.MaterialParam2DataOffset = MaterialParamOffset2;
