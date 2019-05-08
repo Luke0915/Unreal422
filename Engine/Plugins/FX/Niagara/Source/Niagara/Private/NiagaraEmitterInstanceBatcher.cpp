@@ -151,8 +151,7 @@ void NiagaraEmitterInstanceBatcher::ReleaseTicks()
 	Ticks_RT.Empty(0);
 }
 
-void NiagaraEmitterInstanceBatcher::ResizeBuffersAndGatherResources(FOverlappableTicks& OverlappableTick, FRHICommandList& RHICmdList, TMap<const FNiagaraComputeExecutionContext*, uint32>& ContextToMaxInstancesInBatch,
-	FNiagaraBufferArray& DestDataBuffers, FNiagaraBufferArray& CurrDataBuffers, FNiagaraBufferArray& DestBufferIntFloat, FNiagaraBufferArray& CurrBufferIntFloat)
+void NiagaraEmitterInstanceBatcher::ResizeBuffersAndGatherResources(FOverlappableTicks& OverlappableTick, FRHICommandList& RHICmdList, FNiagaraBufferArray& DestDataBuffers, FNiagaraBufferArray& CurrDataBuffers, FNiagaraBufferArray& DestBufferIntFloat, FNiagaraBufferArray& CurrBufferIntFloat)
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraGPUDispatchSetup_RT);
 
@@ -164,93 +163,37 @@ void NiagaraEmitterInstanceBatcher::ResizeBuffersAndGatherResources(FOverlappabl
 		{
 			FNiagaraComputeInstanceData& Instance = Instances[Index];
 			FNiagaraComputeExecutionContext* Context = Instance.Context;
-			if (Context)
+			if ( Context == nullptr )
 			{
-//				uint32* MaxInstancesInBatch = ContextToMaxInstancesInBatch.Find(Context);
-//				check(MaxInstancesInBatch);
-				check(Context);
-				if (Context->GPUScript_RT->GetShader())
-				{
-					FNiagaraShader* Shader = Context->GPUScript_RT->GetShader();
+				continue;
+			}
 
-					Instance.CurrentData = Context->MainDataSet->GetCurrentData();					
-					Instance.DestinationData = &Context->MainDataSet->BeginSimulate();
+			FNiagaraShader* Shader = Context->GPUScript_RT->GetShader();
+			if ( Shader == nullptr )
+			{
+				continue;
+			}
 
-					FNiagaraDataBuffer* CurrentData = Instance.CurrentData;
-					FNiagaraDataBuffer* DestinationData = Instance.DestinationData;
+			//The buffer containing current simulation state.
+			Instance.CurrentData = Context->MainDataSet->GetCurrentData();
+			//The buffer we're going to write simulation results to.
+			Instance.DestinationData = &Context->MainDataSet->BeginSimulate();
 
-					uint32 PrevNumInstances = CurrentData->GetNumInstances();
-					uint32 NewNumInstances = Instance.SpawnRateInstances + Instance.EventSpawnTotal + PrevNumInstances;
-					check(DestinationData->GetNumInstances() == NewNumInstances);
-					int32 RequiredInstances = FMath::Max(CurrentData->GetNumInstances(), NewNumInstances);
-					{
-						//UE_LOG(LogNiagara, Warning, TEXT("Resize up!"));
-						Instance.DestinationData->AllocateGPU(RequiredInstances + 1, RHICmdList);
-						Instance.DestinationData->SetNumInstances(RequiredInstances);
+			check(Instance.CurrentData && Instance.DestinationData);
+			FNiagaraDataBuffer& CurrentData = *Instance.CurrentData;
+			FNiagaraDataBuffer& DestinationData = *Instance.DestinationData;
 
-						// Commented out as this would need a buffer allocation change (look for all MaxInstancesInBatch)
-/*						// allocate for additional instances spawned and set the new number in the data set, if the new number is greater (meaning if we're spawning in this run)
-						// TODO: interpolated spawning
-						//
-						if (*MaxInstancesInBatch > Context->MainDataSet->CurrData().GetNumInstancesAllocated())
-						{
-							//UE_LOG(LogNiagara, Warning, TEXT("Resize up!"));
-							Context->MainDataSet->CurrData().AllocateGPU(*MaxInstancesInBatch + 1, RHICmdList);
-							Context->MainDataSet->CurrData().SetNumInstances(NewNumInstances);
-						}
+			const uint32 PrevNumInstances = CurrentData.GetNumInstances();
+			const uint32 NewNumInstances = Instance.SpawnRateInstances + Instance.EventSpawnTotal + PrevNumInstances;
 
-						// Note: Woodchuck will not shrink its buffers.
+			//We must assume all particles survive when allocating here. 
+			//If this is not true, the read back in ResolveDatasetWrites will shrink the buffers.
+			const uint32 RequiredInstances = FMath::Max(PrevNumInstances, NewNumInstances);
 
-						// If the PrevData buffers don't exist let's just create them now.
-						if (Context->MainDataSet->PrevData().GetGPUBufferFloat()->Buffer == nullptr)
-						{
-							Context->MainDataSet->PrevData().AllocateGPU(*MaxInstancesInBatch + 1, RHICmdList);
-						}
-
-						//// if we're not spawning, we need to make sure that the current buffer alloc size and number of instances matches the last one
-						//// we may have spawned in the last tick, so the buffers may be different sizes
-						////
-						//else if (Context->MainDataSet->CurrData().GetNumInstances() < Context->MainDataSet->PrevData().GetNumInstances())
-						//{
-						//	//UE_LOG(LogNiagara, Warning, TEXT("Resize down!"));
-						//	Context->MainDataSet->CurrData().AllocateGPU(PrevNumInstances + 1, RHICmdList);
-						//	Context->MainDataSet->CurrData().SetNumInstances(PrevNumInstances);
-						//}*/
-					}
-
-					Context->MainDataSet->EndSimulate();
-
-					if (Shader->FloatInputBufferParam.IsBound())
-					{
-						CurrBufferIntFloat.Add(CurrentData->GetGPUBufferFloat().UAV);
-					}
-					if (Shader->IntInputBufferParam.IsBound())
-					{
-						CurrBufferIntFloat.Add(CurrentData->GetGPUBufferInt().UAV);
-					}
-
-					if (Shader->FloatOutputBufferParam.IsBound())
-					{
-						DestBufferIntFloat.Add(DestinationData->GetGPUBufferFloat().UAV);
-					}
-
-					if (Shader->IntOutputBufferParam.IsBound())
-					{
-						DestBufferIntFloat.Add(DestinationData->GetGPUBufferInt().UAV);
-					}
-
-					// If we don't have an argument buffer this frame there may not be a previous one either.
-					if (CurrentData->GetGPUIndices().Buffer)
-					{
-						CurrDataBuffers.Add(CurrentData->GetGPUIndices().UAV);
-					}
-					// We _must_ always have a current argument buffer.
-					checkSlow(DestinationData->GetGPUIndices().Buffer);
-					DestDataBuffers.Add(DestinationData->GetGPUIndices().UAV);
-				}
-			} // end if Context
-		} // end for (Instances)
-	} // end for (Ticks)
+			DestinationData.AllocateGPU(RequiredInstances + 1, RHICmdList);
+			DestinationData.SetNumInstances(RequiredInstances);
+		}
+	}
 }
 
 void NiagaraEmitterInstanceBatcher::DispatchAllOnCompute(FOverlappableTicks& OverlappableTick, FRHICommandList& RHICmdList, FUniformBufferRHIParamRef ViewUniformBuffer,
@@ -305,7 +248,6 @@ void NiagaraEmitterInstanceBatcher::DispatchAllOnCompute(FOverlappableTicks& Ove
 	RHICmdList.TransitionResources(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToCompute, CurrBufferIntFloat.GetData(), CurrBufferIntFloat.Num());
 	RHICmdList.FlushComputeShaderCache();
 
-
 	{
 		SCOPED_DRAW_EVENT(RHICmdList, NiagaraGPUSimulation);
 		SCOPED_GPU_STAT(RHICmdList, NiagaraGPUSimulation);
@@ -324,6 +266,9 @@ void NiagaraEmitterInstanceBatcher::DispatchAllOnCompute(FOverlappableTicks& Ove
 					// run shader, sim and spawn in a single dispatch
 					uint32 UpdateStartInstance = 0;
 					Run<false>(*Tick, &Instance, UpdateStartInstance, Instance.DestinationData->GetNumInstances(), Context->GPUScript_RT->GetShader(), RHICmdList, ViewUniformBuffer);
+
+					Context->MainDataSet->EndSimulate();
+					Context->SetDataToRender(Instance.DestinationData);
 				}
 			}
 		}
@@ -398,31 +343,9 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList &RHICmdList, FUni
 	SCOPED_DRAW_EVENT(RHICmdList, NiagaraEmitterInstanceBatcher_ExecuteAll);
 
 
-// Commented out as this would need a buffer allocation change (look for all MaxInstancesInBatch)
-	// GROSS MEMORY ALLOCATIONS. Is there a stack allocator for sets?
-	TMap<const FNiagaraComputeExecutionContext*, uint32> ContextToMaxInstancesInBatch;
-/*	for (FNiagaraGPUSystemTick& Tick : Ticks_RT)
-	{
-		uint32 DispatchCount = Tick.Count;
-		FNiagaraComputeInstanceData* Instances = Tick.GetInstanceData();
-
-		for (uint32 i = 0; i < DispatchCount; i++)
-		{
-			const FNiagaraComputeInstanceData& Instance = Instances[i];
-			const FNiagaraComputeExecutionContext* Context = Instance.Context;
-
-			uint32 PrevNumInstances = Context->MainDataSet->PrevData().GetNumInstances();
-			uint32 NewNumInstances = Instance.SpawnRateInstances + Instance.EventSpawnTotal + PrevNumInstances;
-
-			uint32& MaxInstances = ContextToMaxInstancesInBatch.FindOrAdd(Context);
-
-			MaxInstances = FMath::Max(MaxInstances, NewNumInstances);
-		}
-	}*/
-
 	if (GNiagaraOverlapCompute>0)
 	{
-		TArray<FOverlappableTicks> SimPasses;
+		TArray<FOverlappableTicks, TInlineAllocator<2>> SimPasses;
 		{
 			TMap<FNiagaraComputeExecutionContext*, FOverlappableTicks> ContextToTicks;
 
@@ -433,14 +356,6 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList &RHICmdList, FUni
 				FNiagaraComputeInstanceData* data = Tick.GetInstanceData();
 				ContextToTicks.FindOrAdd(data->Context).Add(&Tick);
 			}
-
-			//UE_LOG(LogTemp, Log, TEXT("Context count = %d"), ContextToTicks.Num());
-			//uint32 i = 0;
-			//for (auto& Ticks : ContextToTicks)
-			//{
-			//	UE_LOG(LogTemp, Log, TEXT("Ticks in context %d = %d"), i, Ticks.Value.Num());
-			//	++i;
-			//}
 
 			// Count the maximum number of tick per context to know the number of passes we need to do
 			uint32 NumSimPass = 0;
@@ -460,14 +375,6 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList &RHICmdList, FUni
 					tickPass++;
 				}
 			}
-
-			//UE_LOG(LogTemp, Log, TEXT("Simulation pass count = %d"), NumSimPass);
-			//i = 0;
-			//for (auto& PassTicks : SimPasses)
-			//{
-			//	UE_LOG(LogTemp, Log, TEXT("Ticks in pass %d = %d"), i, PassTicks.Num());
-			//	++i;
-			//}
 		}
 
 		for (auto& SimPass : SimPasses)
@@ -479,11 +386,9 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList &RHICmdList, FUni
 
 			// This initial pass gathers all the buffers that are read from and written to so we can do batch resource transitions.
 			// It also ensures the GPU buffers are large enough to hold everything.
-			ResizeBuffersAndGatherResources(SimPass, RHICmdList, ContextToMaxInstancesInBatch,
-				DestDataBuffers, CurrDataBuffers, DestBufferIntFloat, CurrBufferIntFloat);
+			ResizeBuffersAndGatherResources(SimPass, RHICmdList, DestDataBuffers, CurrDataBuffers, DestBufferIntFloat, CurrBufferIntFloat);
 
-			DispatchAllOnCompute(SimPass, RHICmdList, ViewUniformBuffer,
-				DestDataBuffers, CurrDataBuffers, DestBufferIntFloat, CurrBufferIntFloat);
+			DispatchAllOnCompute(SimPass, RHICmdList, ViewUniformBuffer, DestDataBuffers, CurrDataBuffers, DestBufferIntFloat, CurrBufferIntFloat);
 		}
 	}
 	else
