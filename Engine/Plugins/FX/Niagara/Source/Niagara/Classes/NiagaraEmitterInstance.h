@@ -72,14 +72,12 @@ public:
 
 	FORCEINLINE int32 GetNumParticles()const
 	{
-		if (ParticleDataSet->GetSimTarget() == ENiagaraSimTarget::CPUSim)
+		// Note: For ENiagaraSimTarget::GPUComputeSim this data is latent
+		if (ParticleDataSet->GetCurrentData())
 		{
-			if (ParticleDataSet->GetCurrentData())
-			{
-				return ParticleDataSet->GetCurrentData()->GetNumInstances();
-			}
+			return ParticleDataSet->GetCurrentData()->GetNumInstances();
 		}
-		return 0; //Not as easy as all that for GPU sim. 
+		return 0;
 	}
 	FORCEINLINE int32 GetTotalSpawnedParticles()const	{ return TotalSpawnedParticles; }
 
