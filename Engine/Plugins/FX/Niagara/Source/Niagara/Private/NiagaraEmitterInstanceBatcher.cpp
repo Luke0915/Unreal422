@@ -192,6 +192,9 @@ void NiagaraEmitterInstanceBatcher::ResizeBuffersAndGatherResources(FOverlappabl
 
 			DestinationData.AllocateGPU(RequiredInstances + 1, RHICmdList);
 			DestinationData.SetNumInstances(RequiredInstances);
+
+			Context->MainDataSet->EndSimulate();
+			Context->SetDataToRender(Instance.DestinationData);
 		}
 	}
 }
@@ -266,9 +269,6 @@ void NiagaraEmitterInstanceBatcher::DispatchAllOnCompute(FOverlappableTicks& Ove
 					// run shader, sim and spawn in a single dispatch
 					uint32 UpdateStartInstance = 0;
 					Run<false>(*Tick, &Instance, UpdateStartInstance, Instance.DestinationData->GetNumInstances(), Context->GPUScript_RT->GetShader(), RHICmdList, ViewUniformBuffer);
-
-					Context->MainDataSet->EndSimulate();
-					Context->SetDataToRender(Instance.DestinationData);
 				}
 			}
 		}
