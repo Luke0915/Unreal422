@@ -229,6 +229,7 @@ void UNiagaraGraph::PostLoad()
 			}
 			UE_LOG(LogNiagaraEditor, Log, TEXT("Migrated old metadata entry for variable \"%s\" in \"%s\""), *It.Key().GetName().ToString(), *PathName);
 		}
+		VariableToMetaData_DEPRECATED.Empty();
 	}
 	if (NiagaraVer < FNiagaraCustomVersion::MoveCommonInputMetadataToProperties)
 	{
