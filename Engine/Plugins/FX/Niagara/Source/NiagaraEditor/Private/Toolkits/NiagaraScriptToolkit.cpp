@@ -257,8 +257,8 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 	OnEditedScriptGraphChangedHandle = ScriptViewModel->GetGraphViewModel()->GetGraph()->AddOnGraphNeedsRecompileHandler(
 		FOnGraphChanged::FDelegate::CreateRaw(this, &FNiagaraScriptToolkit::OnEditedScriptGraphChanged));
 
-	DetailsSelection = MakeShareable(new FNiagaraObjectSelection());
-	DetailsSelection->SetSelectedObject(EditedNiagaraScript);
+	DetailsScriptSelection = MakeShareable(new FNiagaraObjectSelection());
+	DetailsScriptSelection->SetSelectedObject(EditedNiagaraScript);
 	
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
 	FMessageLogInitializationOptions LogOptions;
@@ -464,7 +464,7 @@ TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabScriptDetails(const FSpawnTa
 		FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraScriptDetails::MakeInstance, ScriptViewModelWeakPtr)
 	);
 
-	DetailsView->SetObjects(DetailsSelection->GetSelectedObjects().Array());
+	DetailsView->SetObjects(DetailsScriptSelection->GetSelectedObjects().Array());
 
 	return SNew(SDockTab)
 		.Label(LOCTEXT("ScriptDetailsTabLabel", "Script Details"))
@@ -483,7 +483,7 @@ TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabSelectedDetails(const FSpawn
 		.Label(LOCTEXT("SelectedDetailsTabLabel", "Selected Details"))
 		.TabColorScale(GetTabColorScale())
 		[
-			SNew(SNiagaraSelectedObjectsDetails, ScriptViewModel->GetGraphViewModel()->GetSelection())
+			SNew(SNiagaraSelectedObjectsDetails, ScriptViewModel->GetGraphViewModel()->GetNodeSelection(), ScriptViewModel->GetVariableSelection())
 		];
 }
 
@@ -491,10 +491,14 @@ TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabScriptParameters(const FSpaw
 {
 	checkf(Args.GetTabId().TabType == ParametersTabId, TEXT("Wrong tab ID in NiagaraScriptToolkit"));
 
+	TArray<TSharedRef<FNiagaraObjectSelection>> Array;
+	Array.Push(DetailsScriptSelection.ToSharedRef());
+	Array.Push(ScriptViewModel->GetVariableSelection());
+
 	TSharedRef<SDockTab> SpawnedTab =
 		SNew(SDockTab)
 		[
-			SNew(SNiagaraParameterMapView, DetailsSelection.ToSharedRef(), SNiagaraParameterMapView::EToolkitType::SCRIPT, GetToolkitCommands())
+			SNew(SNiagaraParameterMapView, Array, SNiagaraParameterMapView::EToolkitType::SCRIPT, GetToolkitCommands())
 		];
 
 	return SpawnedTab;

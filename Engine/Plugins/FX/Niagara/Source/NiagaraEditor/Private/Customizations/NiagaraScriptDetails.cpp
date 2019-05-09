@@ -159,6 +159,9 @@ void FNiagaraScriptDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder
 		OutputParamCategory.AddCustomBuilder(MakeShared<FNiagaraParameterCollectionCustomNodeBuilder>(OutputCollectionViewModel.ToSharedRef()));
 	}
 	
+	// Disable the metadata header in Script Details panel
+	// TODO: Delete when it isn't useful anymore (when the parameters rework is done)
+	/*
 	IDetailCategoryBuilder& MetadataDetailCategory = DetailBuilder.EditCategory(MetadataCategoryName, LOCTEXT("MetadataParamCategoryName", "Variable Metadata"));
 	MetadataDetailCategory.HeaderContent(
 		SNew(SHorizontalBox)
@@ -184,6 +187,7 @@ void FNiagaraScriptDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder
 	MetaDataBuilder = MakeShared<FNiagaraMetaDataCustomNodeBuilder>();
 	MetaDataBuilder->Initialize(ScriptViewModel->GetGraphViewModel()->GetGraph());
 	MetadataDetailCategory.AddCustomBuilder(MetaDataBuilder.ToSharedRef());
+	*/
 }
 
 FReply FNiagaraScriptDetails::OnRefreshMetadata()

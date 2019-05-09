@@ -11,6 +11,8 @@
 #include "NiagaraParameterStore.h"
 #include "NiagaraGraph.generated.h"
 
+class UNiagaraScriptVariable;
+
 /** This is the type of action that occurred on a given Niagara graph. Note that this should follow from EEdGraphActionType, leaving some slop for growth. */
 enum ENiagaraGraphActionType
 {
@@ -95,7 +97,7 @@ class UNiagaraGraph : public UEdGraph
 
 	//~ Begin UObject Interface
 	virtual void PostLoad() override;
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)override;
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	//~ End UObjet Interface
 	
 	/** Get the source that owns this graph */
@@ -220,12 +222,16 @@ class UNiagaraGraph : public UEdGraph
 	/** Sets the meta-data associated with this variable.*/
 	void SetMetaData(const FNiagaraVariable& InVar, const FNiagaraVariableMetaData& MetaData);
 
-	const TMap<FNiagaraVariable, FNiagaraVariableMetaData>& GetAllMetaData() const;
+	const TMap<FNiagaraVariable, UNiagaraScriptVariable*>& GetAllMetaData() const;
+	TMap<FNiagaraVariable, UNiagaraScriptVariable*>& GetAllMetaData();
 
 	const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& GetParameterReferenceMap() const;
 
 	/** Adds parameter to parameters map setting it as created by the user.*/
 	void AddParameter(const FNiagaraVariable& Parameter);
+
+	/** Adds parameter to parameters map setting it as created by the user.*/
+	void AddParameterReference(const FNiagaraVariable& Parameter, const UEdGraphPin* Pin);
 
 	/** Remove parameter from map and all the pins associated. */
 	void RemoveParameter(const FNiagaraVariable& Parameter);
@@ -292,7 +298,11 @@ private:
 
 	/** Storage of meta-data for variables defined for use explicitly with this graph.*/
 	UPROPERTY()
-	mutable TMap<FNiagaraVariable, FNiagaraVariableMetaData> VariableToMetaData;
+	mutable TMap<FNiagaraVariable, FNiagaraVariableMetaData> VariableToMetaData_DEPRECATED;
+
+	/** Storage of variables defined for use with this graph.*/
+	UPROPERTY()
+	mutable TMap<FNiagaraVariable, UNiagaraScriptVariable*> VariableToScriptVariable;
 	
 	/** A map of parameters in the graph to their referencers. */
 	mutable TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection> ParameterToReferencesMap;

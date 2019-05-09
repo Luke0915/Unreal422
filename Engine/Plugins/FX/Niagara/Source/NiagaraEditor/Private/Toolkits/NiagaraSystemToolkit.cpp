@@ -711,10 +711,13 @@ TSharedRef<SDockTab> FNiagaraSystemToolkit::SpawnTab_SystemParameters(const FSpa
 		ObjectSelection->SetSelectedObject(System);
 	}
 
+	TArray<TSharedRef<FNiagaraObjectSelection>> Array;
+	Array.Push(ObjectSelection);
+
 	TSharedRef<SDockTab> SpawnedTab =
 		SNew(SDockTab)
 		[
-			SAssignNew(ParameterMapView, SNiagaraParameterMapView, ObjectSelection, SNiagaraParameterMapView::EToolkitType::SYSTEM, GetToolkitCommands())
+			SAssignNew(ParameterMapView, SNiagaraParameterMapView, Array, SNiagaraParameterMapView::EToolkitType::SYSTEM, GetToolkitCommands())
 		];
 
 	return SpawnedTab;

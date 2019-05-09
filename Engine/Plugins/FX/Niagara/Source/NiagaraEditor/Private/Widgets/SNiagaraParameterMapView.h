@@ -76,11 +76,11 @@ public:
 
 	virtual ~SNiagaraParameterMapView();
 
-	void Construct(const FArguments& InArgs, const TSharedRef<FNiagaraObjectSelection>& InSelectedObjects, const EToolkitType InToolkitType, const TSharedPtr<FUICommandList>& InToolkitCommands);
+	void Construct(const FArguments& InArgs, const TArray<TSharedRef<FNiagaraObjectSelection>>& InSelectedObjects, const EToolkitType InToolkitType, const TSharedPtr<FUICommandList>& InToolkitCommands);
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
-	/** Wheter the add parameter button should be enabled. */
+	/** Whether the add parameter button should be enabled. */
 	bool ParameterAddEnabled() const;
 
 	/** Adds parameter to the graph parameter store and refreshes the menu. */
@@ -152,7 +152,8 @@ private:
 	TArray<TSharedPtr<SComboButton>> AddParameterButtons;
 
 	/** The selected objects being viewed and edited by this widget. */
-	TSharedPtr<FNiagaraObjectSelection> SelectedObjects;
+	TSharedPtr<FNiagaraObjectSelection> SelectedScriptObjects;
+	TSharedPtr<FNiagaraObjectSelection> SelectedVariableObjects;
 
 	TArray<TWeakObjectPtr<UNiagaraGraph>> Graphs;
 

@@ -51,7 +51,7 @@ void FNiagaraEmitterViewModel::Cleanup()
 
 	if (SharedScriptViewModel.IsValid())
 	{
-		SharedScriptViewModel->GetGraphViewModel()->GetSelection()->OnSelectedObjectsChanged().RemoveAll(this);
+		SharedScriptViewModel->GetGraphViewModel()->GetNodeSelection()->OnSelectedObjectsChanged().RemoveAll(this);
 		SharedScriptViewModel.Reset();
 	}
 

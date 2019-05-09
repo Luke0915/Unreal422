@@ -34,6 +34,7 @@
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "ScopedTransaction.h"
 #include "NiagaraEditorUtilities.h"
+#include "NiagaraScriptVariable.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraParameterMapView"
 
@@ -112,7 +113,7 @@ NiagaraParameterMapSectionID::Type NiagaraParameterMapSectionID::OnGetSectionFro
 
 void FNiagaraParameterMapViewCommands::RegisterCommands()
 {
-	UI_COMMAND(DeleteEntry, "Delete", "Deletes this parameter.", EUserInterfaceActionType::Button, FInputChord(EKeys::Platform_Delete));
+	UI_COMMAND(DeleteEntry, "Delete", "Delete this parameter", EUserInterfaceActionType::Button, FInputChord(EKeys::Platform_Delete));
 }
 
 SNiagaraParameterMapView::~SNiagaraParameterMapView()
@@ -121,7 +122,7 @@ SNiagaraParameterMapView::~SNiagaraParameterMapView()
 	ToolkitCommands->UnmapAction(FNiagaraParameterMapViewCommands::Get().DeleteEntry);
 	ToolkitCommands->UnmapAction(FGenericCommands::Get().Rename);
 
-	TSet<UObject*> Objects = SelectedObjects->GetSelectedObjects();
+	TSet<UObject*> Objects = SelectedScriptObjects->GetSelectedObjects();
 	for (UObject* Object : Objects)
 	{
 		if (UNiagaraSystem* System = Cast<UNiagaraSystem>(Object))
@@ -132,18 +133,27 @@ SNiagaraParameterMapView::~SNiagaraParameterMapView()
 	}
 
 	Graphs.Empty();
-	SelectedObjects->OnSelectedObjectsChanged().RemoveAll(this);
+	SelectedScriptObjects->OnSelectedObjectsChanged().RemoveAll(this);
+	if (SelectedVariableObjects)
+	{
+		SelectedVariableObjects->OnSelectedObjectsChanged().RemoveAll(this);
+	}
 }
 
-void SNiagaraParameterMapView::Construct(const FArguments& InArgs, const TSharedRef<FNiagaraObjectSelection>& InSelectedObjects, const EToolkitType InToolkitType, const TSharedPtr<FUICommandList>& InToolkitCommands)
+void SNiagaraParameterMapView::Construct(const FArguments& InArgs, const TArray<TSharedRef<FNiagaraObjectSelection>>& InSelectedObjects, const EToolkitType InToolkitType, const TSharedPtr<FUICommandList>& InToolkitCommands)
 {
 	bNeedsRefresh = false;
 	ToolkitType = InToolkitType;
 	ToolkitCommands = InToolkitCommands;
 	AddParameterButtons.SetNum(NiagaraParameterMapSectionID::OTHER + 1);
 
-	SelectedObjects = InSelectedObjects;
-	SelectedObjects->OnSelectedObjectsChanged().AddSP(this, &SNiagaraParameterMapView::SelectedObjectsChanged);
+	SelectedScriptObjects = InSelectedObjects[0];
+	SelectedScriptObjects->OnSelectedObjectsChanged().AddSP(this, &SNiagaraParameterMapView::SelectedObjectsChanged);
+	if (InSelectedObjects.Num() == 2)
+	{
+		//SelectedVariableObjects->OnSelectedObjectsChanged().AddSP(this, &SNiagaraParameterMapView::SelectedObjectsChanged);
+		SelectedVariableObjects = InSelectedObjects[1];
+	}
 	
 	// Register all commands for right click on action node
 	{
@@ -255,7 +265,7 @@ void SNiagaraParameterMapView::AddParameter(FNiagaraVariable NewVariable)
 	FNiagaraParameterHandle ParameterHandle;
 	if (NiagaraParameterMapSectionID::OnGetSectionFromVariable(NewVariable, ParameterHandle) == NiagaraParameterMapSectionID::USER)
 	{
-		for (UObject* Object : SelectedObjects->GetSelectedObjects())
+		for (UObject* Object : SelectedScriptObjects->GetSelectedObjects())
 		{
 			if (UNiagaraSystem* System = Cast<UNiagaraSystem>(Object))
 			{
@@ -313,7 +323,8 @@ void SNiagaraParameterMapView::CollectAllActions(FGraphActionListBuilderBase& Ou
 	for (auto& GraphWeakPtr : Graphs)
 	{
 		UNiagaraGraph* Graph = GraphWeakPtr.Get();
-		for (const auto& ParameterElement : FNiagaraEditorUtilities::GetCompiledGraphParameterMapReferences(Graph))
+		for (const auto& ParameterElement : Graph->GetParameterReferenceMap())
+		// for (const auto& ParameterElement : FNiagaraEditorUtilities::GetCompiledGraphParameterMapReferences(Graph)) // TODO(mv): This makes unused module parameters not show up. See CL 6182457.
 		{
 			TArray<FNiagaraGraphParameterReferenceCollection>* Found = ParameterEntries.Find(ParameterElement.Key);
 			if (Found)
@@ -329,7 +340,7 @@ void SNiagaraParameterMapView::CollectAllActions(FGraphActionListBuilderBase& Ou
 		}
 	}
 
-	TSet<UObject*> Objects = SelectedObjects->GetSelectedObjects();
+	TSet<UObject*> Objects = SelectedScriptObjects->GetSelectedObjects();
 	for (UObject* Object : Objects)
 	{
 		if (UNiagaraSystem* System = Cast<UNiagaraSystem>(Object))
@@ -409,7 +420,25 @@ FReply SNiagaraParameterMapView::OnActionDragged(const TArray<TSharedPtr<FEdGrap
 
 void SNiagaraParameterMapView::OnActionSelected(const TArray< TSharedPtr<FEdGraphSchemaAction> >& InActions, ESelectInfo::Type InSelectionType)
 {
-
+	// TODO: Can there be multiple actions and graphs? 
+	if (InActions.Num() == 1 && InActions[0].IsValid() && Graphs[0].IsValid()) 
+	{
+		FNiagaraParameterAction* Action = (FNiagaraParameterAction*)InActions[0].Get();
+		if (Action && Action->Parameter.IsInNameSpace(TEXT("Module"))) 
+		{
+			// Ignore any non-Module variables, as they don't persist, i.e. they get
+			// purged when any variable is renamed due to not being in ParameterToReferencesMap
+			TMap<FNiagaraVariable, UNiagaraScriptVariable*>& AllMetaData = Graphs[0]->GetAllMetaData();
+			if (UNiagaraScriptVariable** FoundScriptVariable = AllMetaData.Find(Action->Parameter))
+			{
+				SelectedVariableObjects->SetSelectedObject(*FoundScriptVariable);
+				return;
+			}
+		}
+	} 
+	
+	// If a variable wasn't selected just clear the current selection
+	SelectedVariableObjects->ClearSelectedObjects();
 }
 
 void SNiagaraParameterMapView::OnActionDoubleClicked(const TArray< TSharedPtr<FEdGraphSchemaAction> >& InActions)
@@ -521,7 +550,7 @@ void SNiagaraParameterMapView::Refresh(bool bRefreshMenu/* = true*/)
 {
 	Graphs.Empty();
 
-	TSet<UObject*> Objects = SelectedObjects->GetSelectedObjects();
+	TSet<UObject*> Objects = SelectedScriptObjects->GetSelectedObjects();
 	for (UObject* Object : Objects)
 	{
 		if (UNiagaraScript* Script = Cast<UNiagaraScript>(Object))
@@ -605,7 +634,7 @@ void SNiagaraParameterMapView::OnDeleteEntry()
 			FNiagaraParameterHandle ParameterHandle;
 			if (NiagaraParameterMapSectionID::OnGetSectionFromVariable(ParameterAction->GetParameter(), ParameterHandle) == NiagaraParameterMapSectionID::USER)
 			{
-				for (UObject* Object : SelectedObjects->GetSelectedObjects())
+				for (UObject* Object : SelectedScriptObjects->GetSelectedObjects())
 				{
 					if (UNiagaraSystem* System = Cast<UNiagaraSystem>(Object))
 					{
@@ -669,7 +698,7 @@ void SNiagaraParameterMapView::OnPostRenameActionNode(const FText& InText, FNiag
 			const FNiagaraVariable NewParameterValidTest = FNiagaraVariable(InAction.Parameter.GetType(), NewName);
 			if (NiagaraParameterMapSectionID::OnGetSectionFromVariable(NewParameterValidTest, ParameterHandle) == NiagaraParameterMapSectionID::USER)
 			{
-				for (UObject* Object : SelectedObjects->GetSelectedObjects())
+				for (UObject* Object : SelectedScriptObjects->GetSelectedObjects())
 				{
 					if (UNiagaraSystem* System = Cast<UNiagaraSystem>(Object))
 					{
