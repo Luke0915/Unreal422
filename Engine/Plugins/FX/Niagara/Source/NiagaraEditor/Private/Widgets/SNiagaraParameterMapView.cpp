@@ -420,6 +420,11 @@ FReply SNiagaraParameterMapView::OnActionDragged(const TArray<TSharedPtr<FEdGrap
 
 void SNiagaraParameterMapView::OnActionSelected(const TArray< TSharedPtr<FEdGraphSchemaAction> >& InActions, ESelectInfo::Type InSelectionType)
 {
+	if (!IsScriptToolkit())
+	{
+		return;
+	}
+	
 	// TODO: Can there be multiple actions and graphs? 
 	if (InActions.Num() == 1 && InActions[0].IsValid() && Graphs[0].IsValid()) 
 	{
