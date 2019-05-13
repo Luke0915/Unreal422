@@ -155,9 +155,16 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 		ValidAliasedInputNames.Add(FNiagaraParameterHandle(*InputFunctionCallNode->GetFunctionName(), InputPin->PinName).GetParameterHandleString());
 
 		TOptional<FNiagaraVariableMetaData> InputMetaData;
-		FText InputCategory = UncategorizedName;
+		if (InputFunctionGraph != nullptr)
+		{
+			InputMetaData = InputFunctionGraph->GetMetaData(InputVariable);
+		}
 
-		FInputData InputData = { InputPin, InputVariable.GetType(), 0, InputCategory, true };
+		FText InputCategory = InputMetaData.IsSet() && InputMetaData->CategoryName.IsEmptyOrWhitespace() == false
+			? InputMetaData->CategoryName
+			: UncategorizedName;
+
+		FInputData InputData = { InputPin, InputVariable.GetType(), InputMetaData ? InputMetaData->EditorSortPriority : 0, InputCategory, true };
 		InputDataCollection.Add(InputData);
 	}
 

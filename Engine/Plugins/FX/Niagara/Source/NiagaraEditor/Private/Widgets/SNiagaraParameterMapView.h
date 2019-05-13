@@ -31,6 +31,7 @@ namespace NiagaraParameterMapSectionID
 	{
 		NONE = 0,
 		MODULE,
+		STATIC_SWITCH,
 		ENGINE,
 		PARAMETERCOLLECTION,
 		USER,
@@ -41,7 +42,7 @@ namespace NiagaraParameterMapSectionID
 	};
 
 	static FText OnGetSectionTitle(const NiagaraParameterMapSectionID::Type InSection);
-	static NiagaraParameterMapSectionID::Type OnGetSectionFromVariable(const FNiagaraVariable& InVar, FNiagaraParameterHandle& OutParameterHandle, const NiagaraParameterMapSectionID::Type DefaultType = NiagaraParameterMapSectionID::Type::NONE);
+	static NiagaraParameterMapSectionID::Type OnGetSectionFromVariable(const FNiagaraVariable& InVar, bool IsStaticSwitchVariable, FNiagaraParameterHandle& OutParameterHandle, const NiagaraParameterMapSectionID::Type DefaultType = NiagaraParameterMapSectionID::Type::NONE);
 };
 
 class FNiagaraParameterMapViewCommands : public TCommands<FNiagaraParameterMapViewCommands>
@@ -91,6 +92,8 @@ public:
 	void RefreshEmitterHandles(const TArray<TSharedPtr<class FNiagaraEmitterHandleViewModel>>& EmitterHandles);
 
 	static TSharedRef<SExpanderArrow> CreateCustomActionExpander(const struct FCustomExpanderData& ActionMenuData);
+
+	static bool IsStaticSwitchParameter(const FNiagaraVariable& Variable, const TArray<TWeakObjectPtr<UNiagaraGraph>>& Graphs);
 
 private:
 	/** Function to bind to SNiagaraAddParameterMenus to filter types we allow creating */

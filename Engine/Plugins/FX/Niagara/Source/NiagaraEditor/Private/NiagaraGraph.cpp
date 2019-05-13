@@ -1387,6 +1387,7 @@ void UNiagaraGraph::SetMetaData(const FNiagaraVariable& InVar, const FNiagaraVar
 void UNiagaraGraph::PurgeUnreferencedMetaData() const
 {
 	TSet<FNiagaraVariable> ReferencedParameters;
+	ReferencedParameters.Append(FindStaticSwitchInputs());
 	const UEdGraphSchema_Niagara* NiagaraSchema = Cast<UEdGraphSchema_Niagara>(Schema);
 	for (UEdGraphNode* Node : Nodes)
 	{
@@ -1407,7 +1408,7 @@ void UNiagaraGraph::PurgeUnreferencedMetaData() const
 	TArray<FNiagaraVariable> VarsToRemove;
 	for (auto It = VariableToScriptVariable.CreateConstIterator(); It; ++It)
 	{
-		if (ReferencedParameters.Contains(It.Key()) == false)
+		if (!ReferencedParameters.Contains(It.Key()))
 		{
 			VarsToRemove.Add(It.Key());
 		}
@@ -1477,6 +1478,27 @@ void UNiagaraGraph::RefreshParameterReferences() const
 		HandledPins.Add(Pin);
 	};
 
+	auto AddStaticParameterReference = [&](const FNiagaraVariable& Variable, const UNiagaraNode* Node)
+	{
+		FNiagaraGraphParameterReferenceCollection* ReferenceCollection = ParameterToReferencesMap.Find(Variable);
+		if (ReferenceCollection == nullptr)
+		{
+			FNiagaraGraphParameterReferenceCollection NewReferenceCollection(true);
+			NewReferenceCollection.Graph = this;
+			ReferenceCollection = &ParameterToReferencesMap.Add(Variable, NewReferenceCollection);
+		}
+		UNiagaraScriptVariable** FoundScriptVariable = VariableToScriptVariable.Find(Variable);
+		if (!FoundScriptVariable)
+		{
+			UNiagaraScriptVariable* NewScriptVariable = NewObject<UNiagaraScriptVariable>(const_cast<UNiagaraGraph*>(this));
+			NewScriptVariable->Variable = Variable;
+			NewScriptVariable->Metadata.bIsStaticSwitch = true;
+			VariableToScriptVariable.Add(Variable, NewScriptVariable);
+		}
+		ReferenceCollection->ParameterReferences.AddUnique(FNiagaraGraphParameterReference(Node->NodeGuid, Node));
+		CandidateUnreferencedParametersToRemove.Remove(Variable);
+	};
+
 	// Add parameter references from parameter map traversals.
 	const TArray<FNiagaraParameterMapHistory> Histories = UNiagaraNodeParameterMapBase::GetParameterMaps(this);
 	for (const FNiagaraParameterMapHistory& History : Histories)
@@ -1502,6 +1524,19 @@ void UNiagaraGraph::RefreshParameterReferences() const
 	const UEdGraphSchema_Niagara* NiagaraSchema = Cast<UEdGraphSchema_Niagara>(Schema);
 	for (UEdGraphNode* Node : Nodes)
 	{
+		if (UNiagaraNodeStaticSwitch* SwitchNode = Cast<UNiagaraNodeStaticSwitch>(Node))
+		{
+			FNiagaraVariable Variable(SwitchNode->GetInputType(), SwitchNode->InputParameterName);
+			AddStaticParameterReference(Variable, SwitchNode);
+		}
+		else if (UNiagaraNodeFunctionCall* FunctionNode = Cast<UNiagaraNodeFunctionCall>(Node))
+		{
+			for (FNiagaraVariable Variable : FunctionNode->PropagatedStaticSwitchParameters)
+			{
+				AddStaticParameterReference(Variable, FunctionNode);
+			}
+		}
+
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
 			if (HandledPins.Contains(Pin) == false)
