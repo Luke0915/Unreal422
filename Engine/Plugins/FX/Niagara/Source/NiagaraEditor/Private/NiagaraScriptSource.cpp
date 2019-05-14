@@ -57,6 +57,11 @@ void UNiagaraScriptSource::ComputeVMCompilationId(FNiagaraVMExecutableDataId& Id
 	}
 }
 
+FGuid UNiagaraScriptSource::GetCompileBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
+{
+	return NodeGraph->GetBaseId(InUsage, InUsageId);
+}
+
 FNiagaraCompileHash UNiagaraScriptSource::GetCompileHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
 {
 	return NodeGraph->GetCompileDataHash(InUsage, InUsageId);

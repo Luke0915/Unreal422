@@ -58,7 +58,6 @@ bool FNiagaraGraphParameterReferenceCollection::WasCreated() const
 
 FNiagaraGraphScriptUsageInfo::FNiagaraGraphScriptUsageInfo() : UsageType(ENiagaraScriptUsage::Function)
 {
-	BaseId = FGuid::NewGuid();
 }
 
 void FNiagaraGraphScriptUsageInfo::PostLoad(UObject* Owner)
@@ -966,9 +965,13 @@ void UNiagaraGraph::RebuildCachedCompileIds(bool bForce)
 			}
 		}
 
-		// Copy the old base id if available
-		if (FoundMatchIdx != INDEX_NONE)
+		if (FoundMatchIdx == INDEX_NONE || CachedUsageInfo[FoundMatchIdx].BaseId.IsValid() == false)
 		{
+			NewUsageCache[i].BaseId = FGuid::NewGuid();
+		}
+		else
+		{
+			//Copy the old base id if available and valid.
 			NewUsageCache[i].BaseId = CachedUsageInfo[FoundMatchIdx].BaseId;
 		}
 
@@ -1048,11 +1051,15 @@ void UNiagaraGraph::RebuildCachedCompileIds(bool bForce)
 		GpuUsageInfo.UsageType = ENiagaraScriptUsage::ParticleGPUComputeScript;
 		GpuUsageInfo.UsageId = FGuid();
 
-		// Copy the old base id if available
 		FNiagaraGraphScriptUsageInfo* OldGpuInfo = CachedUsageInfo.FindByPredicate(
 			[](const FNiagaraGraphScriptUsageInfo& OldInfo) { return OldInfo.UsageType == ENiagaraScriptUsage::ParticleGPUComputeScript && OldInfo.UsageId == FGuid(); });
-		if (OldGpuInfo != nullptr)
+		if (OldGpuInfo == nullptr || OldGpuInfo->BaseId.IsValid() == false)
 		{
+			GpuUsageInfo.BaseId = FGuid::NewGuid();
+		}
+		else
+		{
+			// Copy the old base id if available
 			GpuUsageInfo.BaseId = OldGpuInfo->BaseId;
 		}
 

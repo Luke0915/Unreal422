@@ -466,16 +466,29 @@ void UNiagaraScript::PostLoad()
 		Source->ConditionalPostLoad();
 		if (NiagaraVer < FNiagaraCustomVersion::UseHashesToIdentifyCompileStateOfTopLevelScripts && CachedScriptVMId.CompilerVersionID.IsValid())
 		{
-			FNiagaraCompileHash CompileHash = Source->GetCompileHash(Usage, UsageId);
-			if (CompileHash.IsValid())
+			FGuid BaseId = Source->GetCompileBaseId(Usage, UsageId);
+			if (BaseId.IsValid() == false)
 			{
-				CachedScriptVMId.BaseScriptCompileHash = CompileHash;
+				UE_LOG(LogNiagara, Warning,
+					TEXT("Invalidating compile ids for script %s because it doesn't have a valid base id.  The owning asset will continue to compile on load until it is resaved."),
+					*GetPathName());
+				bool bForceRebuild = true;
+				Source->InvalidateCachedCompileIds();
+				Source->ComputeVMCompilationId(CachedScriptVMId, Usage, UsageId, bForceRebuild);
 			}
 			else
 			{
-				// If the compile hash isn't valid, recompute the entire cached VM Id.
-				bool bForceRebuild = true;
-				Source->ComputeVMCompilationId(CachedScriptVMId, Usage, UsageId, bForceRebuild);
+				FNiagaraCompileHash CompileHash = Source->GetCompileHash(Usage, UsageId);
+				if (CompileHash.IsValid())
+				{
+					CachedScriptVMId.BaseScriptCompileHash = CompileHash;
+				}
+				else
+				{
+					// If the compile hash isn't valid, recompute the entire cached VM Id.
+					bool bForceRebuild = true;
+					Source->ComputeVMCompilationId(CachedScriptVMId, Usage, UsageId, bForceRebuild);
+				}
 			}
 		}
 	}
@@ -1041,22 +1054,26 @@ void UNiagaraScript::BeginCacheForCookedPlatformData(const ITargetPlatform *Targ
 			SystemOwner->WaitForCompilationComplete();
 		}
 
-		if (ensureMsgf(CachedScriptVMId.CompilerVersionID.IsValid() && CachedScriptVMId.BaseScriptID.IsValid() && CachedScriptVMId.BaseScriptCompileHash.IsValid(),
-			TEXT("Can not cache cooked platform data for script %s because it has invalid compile id information.  Forcing a recompile of the owning asset and resaving may fix this."), *GetFullName()))
+		if (CachedScriptVMId.CompilerVersionID.IsValid() == false || CachedScriptVMId.BaseScriptID.IsValid() == false || CachedScriptVMId.BaseScriptCompileHash.IsValid() == false)
 		{
-			TArray<FName> DesiredShaderFormats;
-			TargetPlatform->GetAllTargetedShaderFormats(DesiredShaderFormats);
+			UE_LOG(LogNiagara, Error,
+				TEXT("Failed to cache cooked shader for script %s because it had an invalid cached script id.  This should be fixed by running the console command fx.PreventSystemRecompile with the owning system asset path as the argument and then resaving the assets."),
+				*GetPathName());
+			return;
+		}
 
-			TArray<FNiagaraShaderScript*>& CachedScriptResourcesForPlatform = CachedScriptResourcesForCooking.FindOrAdd(TargetPlatform);
+		TArray<FName> DesiredShaderFormats;
+		TargetPlatform->GetAllTargetedShaderFormats(DesiredShaderFormats);
 
-			// Cache for all the shader formats that the cooking target requires
-			for (int32 FormatIndex = 0; FormatIndex < DesiredShaderFormats.Num(); FormatIndex++)
+		TArray<FNiagaraShaderScript*>& CachedScriptResourcesForPlatform = CachedScriptResourcesForCooking.FindOrAdd(TargetPlatform);
+
+		// Cache for all the shader formats that the cooking target requires
+		for (int32 FormatIndex = 0; FormatIndex < DesiredShaderFormats.Num(); FormatIndex++)
+		{
+			const EShaderPlatform LegacyShaderPlatform = ShaderFormatToLegacyShaderPlatform(DesiredShaderFormats[FormatIndex]);
+			if (FNiagaraUtilities::SupportsGPUParticles(LegacyShaderPlatform))
 			{
-				const EShaderPlatform LegacyShaderPlatform = ShaderFormatToLegacyShaderPlatform(DesiredShaderFormats[FormatIndex]);
-				if (FNiagaraUtilities::SupportsGPUParticles(LegacyShaderPlatform))
-				{
-					CacheResourceShadersForCooking(LegacyShaderPlatform, CachedScriptResourcesForPlatform);
-				}
+				CacheResourceShadersForCooking(LegacyShaderPlatform, CachedScriptResourcesForPlatform);
 			}
 		}
 	}
