@@ -287,7 +287,7 @@ protected:
  * This should be in a proxy create by GT and accessible on RT. Right now we cannot follow a real Proxy pattern since Niagara does not prevent unloading of UI while RT data is still in use.
  * See https://jira.it.epicgames.net/browse/UE-69336
  */
-class FSkeletalMeshGpuDynamicBufferProxy
+class FSkeletalMeshGpuDynamicBufferProxy : public FRenderResource
 {
 public:
 
@@ -295,61 +295,27 @@ public:
 	virtual ~FSkeletalMeshGpuDynamicBufferProxy();
 
 	void Initialise(const FSkeletalMeshLODRenderData& SkeletalMeshLODRenderData);
+
+	virtual void InitRHI() override;
+	virtual void ReleaseRHI() override;
+
 	void NewFrame(const FNDISkeletalMesh_InstanceData* InstanceData, int32 LODIndex);
-	void Release();
 
 	bool DoesBoneDataExist() const { return bBoneGpuBufferValid;}
 
-	/** Encapsulates a GPU read/write structured buffer with its UAV and SRV. */
+	/** Encapsulates a GPU read / CPU write buffer for bone data */
 	struct FSkeletalBuffer
 	{
-		FStructuredBufferRHIRef Buffer;
+		FVertexBufferRHIRef Buffer;
 		FShaderResourceViewRHIRef SRV;
-
-		FSkeletalBuffer() = default;
-
-		~FSkeletalBuffer()
-		{
-			Release();
-		}
-
-		void Initialize(uint32 AdditionalUsage = 0, const TCHAR* InDebugName = NULL)
-		{
-			check(GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5);
-			// Provide a debug name if using Fast VRAM so the allocators diagnostics will work
-			ensure(!((AdditionalUsage & BUF_FastVRAM) && !InDebugName));
-
-			Usage = BUF_ShaderResource | AdditionalUsage;
-			DebugName = InDebugName;
-		}
-
-		void UpdateFromResourceArray(TResourceArray<FMatrix>&& InResourceView)
-		{
-			SRV.SafeRelease();
-			ResourceView = MoveTemp(InResourceView);
-			FRHIResourceCreateInfo CreateInfo(&ResourceView);
-			CreateInfo.DebugName = DebugName;
-			Buffer = RHICreateStructuredBuffer(sizeof(FMatrix), sizeof(FMatrix) * ResourceView.Num(), Usage, CreateInfo);
-			SRV = RHICreateShaderResourceView(Buffer);
-		}
-
-		void Release()
-		{
-			SRV.SafeRelease();
-			Buffer.SafeRelease();
-			ResourceView.Discard();
-		}
-
-	private:
-		TResourceArray<FMatrix> ResourceView;
-		const TCHAR* DebugName = nullptr;
-		uint32 Usage;
 	};
 
 	FSkeletalBuffer& GetRWBufferBone() { return RWBufferBones[CurrentBoneBufferId % 2]; }
 	FSkeletalBuffer& GetRWBufferPrevBone() { return bPrevBoneGpuBufferValid ? RWBufferBones[(CurrentBoneBufferId + 1) % 2] : GetRWBufferBone(); }
 
 private:
+
+	uint32 BoneCount = 0;
 
 	enum { BufferBoneCount = 2 };
 	FSkeletalBuffer RWBufferBones[BufferBoneCount];

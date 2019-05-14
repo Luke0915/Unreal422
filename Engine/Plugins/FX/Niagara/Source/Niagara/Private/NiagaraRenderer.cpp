@@ -36,22 +36,22 @@ public:
 	}
 };
 
-class FNiagaraDummyRWBufferMatrix : public FRenderResource
+class FNiagaraDummyRWBufferFloat4 : public FRenderResource
 {
 public:
-	FNiagaraDummyRWBufferMatrix(const FString InDebugId) : DebugId(InDebugId) {}
+	FNiagaraDummyRWBufferFloat4(const FString InDebugId) : DebugId(InDebugId) {}
 	FString DebugId;
-	FRWBufferStructured Buffer;
+	FRWBuffer Buffer;
 
 	virtual void InitRHI() override
 	{
-		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferMatrix InitRHI %s"), *DebugId);
-		Buffer.Initialize(64, 1, BUF_Static, *DebugId);
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat InitRHI %s"), *DebugId);
+		Buffer.Initialize(sizeof(float) * 4, 1, EPixelFormat::PF_A32B32G32R32F, BUF_Static, *DebugId);
 	}
 
 	virtual void ReleaseRHI() override
 	{
-		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferMatrix ReleaseRHI %s"), *DebugId);
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat4 ReleaseRHI %s"), *DebugId);
 		Buffer.Release();
 	}
 };
@@ -103,11 +103,11 @@ FRWBuffer& FNiagaraRenderer::GetDummyFloatBuffer()
 	return DummyFloatBuffer.Buffer;
 }
 
-FRWBufferStructured& FNiagaraRenderer::GetDummyMatrixBuffer()
+FRWBuffer& FNiagaraRenderer::GetDummyFloat4Buffer()
 {
 	check(IsInRenderingThread());
-	static TGlobalResource<FNiagaraDummyRWBufferMatrix> DummyMatrixBuffer(TEXT("NiagaraRenderer::DummyMatrix"));
-	return DummyMatrixBuffer.Buffer;
+	static TGlobalResource<FNiagaraDummyRWBufferFloat4> GetDummyFloat4Buffer(TEXT("NiagaraRenderer::DummyFloat4"));
+	return GetDummyFloat4Buffer.Buffer;
 }
 
 FRWBuffer& FNiagaraRenderer::GetDummyIntBuffer()

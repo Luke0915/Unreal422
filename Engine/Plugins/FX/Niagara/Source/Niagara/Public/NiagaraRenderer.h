@@ -115,7 +115,7 @@ public:
 #endif
 
 	static FRWBuffer& GetDummyFloatBuffer(); 
-	static FRWBufferStructured& GetDummyMatrixBuffer();
+	static FRWBuffer& GetDummyFloat4Buffer();
 	static FRWBuffer& GetDummyIntBuffer();
 	static FRWBuffer& GetDummyUIntBuffer();
 	

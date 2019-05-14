@@ -330,12 +330,12 @@ void FSkeletalMeshGpuSpawnStaticBuffers::InitRHI()
 		void* BufferData = nullptr;
 		uint32 SizeByte = TriangleCount * sizeof(float);
 		BufferTriangleUniformSamplerProbaRHI = RHICreateAndLockVertexBuffer(SizeByte, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
-		memcpy(BufferData, Prob.GetData(), SizeByte);
+		FMemory::Memcpy(BufferData, Prob.GetData(), SizeByte);
 		RHIUnlockVertexBuffer(BufferTriangleUniformSamplerProbaRHI);
 		BufferTriangleUniformSamplerProbaSRV = RHICreateShaderResourceView(BufferTriangleUniformSamplerProbaRHI, sizeof(float), PF_R32_FLOAT);
 
 		BufferTriangleUniformSamplerAliasRHI = RHICreateAndLockVertexBuffer(SizeByte, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
-		memcpy(BufferData, Alias.GetData(), SizeByte);
+		FMemory::Memcpy(BufferData, Alias.GetData(), SizeByte);
 		RHIUnlockVertexBuffer(BufferTriangleUniformSamplerAliasRHI);
 		BufferTriangleUniformSamplerAliasSRV = RHICreateShaderResourceView(BufferTriangleUniformSamplerAliasRHI, sizeof(uint32), PF_R32_UINT);
 	}
@@ -386,20 +386,30 @@ FSkeletalMeshGpuDynamicBufferProxy::~FSkeletalMeshGpuDynamicBufferProxy()
 
 void FSkeletalMeshGpuDynamicBufferProxy::Initialise(const FSkeletalMeshLODRenderData& SkeletalMeshLODRenderData)
 {
-
-	uint32 SectionCount = SkeletalMeshLODRenderData.RenderSections.Num();
-	uint32 BoneCount = 0;
-	for (uint32 s = 0; s < SectionCount; ++s)
+	BoneCount = 0;
+	for (const FSkelMeshRenderSection& section : SkeletalMeshLODRenderData.RenderSections)
 	{
-		BoneCount += SkeletalMeshLODRenderData.RenderSections[s].BoneMap.Num();
+		BoneCount += section.BoneMap.Num();
 	}
+}
 
-	if (BoneCount)
+void FSkeletalMeshGpuDynamicBufferProxy::InitRHI()
+{
+	for (FSkeletalBuffer& Buffer : RWBufferBones)
 	{
-		for (uint32 i = 0; i < BufferBoneCount; ++i)
-		{
-			RWBufferBones[i].Initialize(BUF_Dynamic, TEXT("SkeletalMeshGpuDynamicBuffer"));
-		}
+		FRHIResourceCreateInfo CreateInfo;
+		CreateInfo.DebugName = TEXT("SkeletalMeshGpuDynamicBuffer");
+		Buffer.Buffer = RHICreateVertexBuffer(sizeof(FVector4) * 3 * BoneCount, BUF_ShaderResource | BUF_Dynamic, CreateInfo);
+		Buffer.SRV = RHICreateShaderResourceView(Buffer.Buffer, sizeof(FVector4), PF_A32B32G32R32F);
+	}
+}
+
+void FSkeletalMeshGpuDynamicBufferProxy::ReleaseRHI()
+{
+	for (FSkeletalBuffer& Buffer : RWBufferBones)
+	{
+		Buffer.Buffer.SafeRelease();
+		Buffer.SRV.SafeRelease();
 	}
 }
 
@@ -417,23 +427,26 @@ void FSkeletalMeshGpuDynamicBufferProxy::NewFrame(const FNDISkeletalMesh_Instanc
 		TArray<FSkelMeshRenderSection>& Sections = LODRenderData.RenderSections;
 		uint32 SectionCount = Sections.Num();
 
-		TResourceArray<FMatrix> AllSectionsRefToLocalMatrices;
-		check(sizeof(FMatrix) == 16*sizeof(float));
+		TArray<FVector4> AllSectionsRefToLocalMatrices;
+		static_assert(sizeof(FVector4) == 4*sizeof(float), "FVector4 should match 4 * floats");
 
-		// Count number of matrices we want before appending all of them according ot the per section mapping from BoneMap
-		uint32 MatrixCount = 0;
-		for (uint32 s = 0; s < SectionCount; ++s)
+		// Count number of matrices we want before appending all of them according to the per section mapping from BoneMap
+		uint32 Float4Count = 0;
+		for ( const FSkelMeshRenderSection& section : Sections )
 		{
-			MatrixCount += Sections[s].BoneMap.Num();
+			Float4Count += section.BoneMap.Num() * 3;
 		}
-		AllSectionsRefToLocalMatrices.Reserve(MatrixCount);
-		for (uint32 s = 0; s < SectionCount; ++s)
+		check(Float4Count == 3 * BoneCount);
+		AllSectionsRefToLocalMatrices.AddUninitialized(Float4Count);
+
+		Float4Count = 0;
+		for ( const FSkelMeshRenderSection& section : Sections )
 		{
-			const FSkelMeshRenderSection& section = Sections[s];
-			MatrixCount = section.BoneMap.Num();
+			const uint32 MatrixCount = section.BoneMap.Num();
 			for (uint32 m = 0; m < MatrixCount; ++m)
 			{
-				AllSectionsRefToLocalMatrices.Add(RefToLocalMatrices[section.BoneMap[m]]);
+				RefToLocalMatrices[section.BoneMap[m]].To3x4MatrixTranspose(&AllSectionsRefToLocalMatrices[Float4Count].X);
+				Float4Count += 3;
 			}
 		}
 
@@ -444,16 +457,13 @@ void FSkeletalMeshGpuDynamicBufferProxy::NewFrame(const FNDISkeletalMesh_Instanc
 			ThisProxy->CurrentBoneBufferId = (ThisProxy->CurrentBoneBufferId + 1) % BufferBoneCount;
 			ThisProxy->bPrevBoneGpuBufferValid = ThisProxy->bBoneGpuBufferValid;
 			ThisProxy->bBoneGpuBufferValid = true;
-			ThisProxy->GetRWBufferBone().UpdateFromResourceArray(MoveTemp(AllSectionsRefToLocalMatrices));
-		});
-	}
-}
 
-void FSkeletalMeshGpuDynamicBufferProxy::Release()
-{
-	for (uint32 i = 0; i < BufferBoneCount; ++i)
-	{
-		RWBufferBones[i].Release();
+			const uint32 NumBytes = AllSectionsRefToLocalMatrices.Num() * sizeof(FVector4);
+
+			void* DstData = RHILockVertexBuffer(ThisProxy->GetRWBufferBone().Buffer, 0, NumBytes, RLM_WriteOnly);
+			FMemory::Memcpy(DstData, AllSectionsRefToLocalMatrices.GetData(), NumBytes);
+			RHIUnlockVertexBuffer(ThisProxy->GetRWBufferBone().Buffer);
+		});
 	}
 }
 
@@ -635,8 +645,8 @@ struct FNiagaraDataInterfaceParametersCS_SkeletalMesh : public FNiagaraDataInter
 			// Bind dummy data for validation purposes only.  Code will not execute due to "EnabledFeatures" bits but validation can not determine that.
 			else
 			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshCurrBonesBuffer, FNiagaraRenderer::GetDummyMatrixBuffer().SRV);
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshPrevBonesBuffer, FNiagaraRenderer::GetDummyMatrixBuffer().SRV);
+				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshCurrBonesBuffer, FNiagaraRenderer::GetDummyFloat4Buffer().SRV);
+				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshPrevBonesBuffer, FNiagaraRenderer::GetDummyFloat4Buffer().SRV);
 				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTriangleMatricesOffsetBuffer, FNiagaraRenderer::GetDummyUIntBuffer().SRV);
 			}
 
@@ -665,8 +675,8 @@ struct FNiagaraDataInterfaceParametersCS_SkeletalMesh : public FNiagaraDataInter
 			SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceInvDeltaTime, 0.0f);
 			SetShaderValue(RHICmdList, ComputeShaderRHI, InputWeightStride, 0);
 
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshCurrBonesBuffer, FNiagaraRenderer::GetDummyMatrixBuffer().SRV);
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshPrevBonesBuffer, FNiagaraRenderer::GetDummyMatrixBuffer().SRV);
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshCurrBonesBuffer, FNiagaraRenderer::GetDummyFloat4Buffer().SRV);
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshPrevBonesBuffer, FNiagaraRenderer::GetDummyFloat4Buffer().SRV);
 			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTriangleMatricesOffsetBuffer, FNiagaraRenderer::GetDummyUIntBuffer().SRV);
 
 			SetShaderValue(RHICmdList, ComputeShaderRHI, EnabledFeatures, 0);
@@ -1119,6 +1129,7 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 
 		MeshGpuSpawnDynamicBuffers = new FSkeletalMeshGpuDynamicBufferProxy();
 		MeshGpuSpawnDynamicBuffers->Initialise(LODData);
+		BeginInitResource(MeshGpuSpawnDynamicBuffers);
 	}
 
 	return true;
@@ -1222,22 +1233,22 @@ void FNDISkeletalMesh_InstanceData::Release()
 	if (MeshGpuSpawnStaticBuffers)
 	{
 		BeginReleaseResource(MeshGpuSpawnStaticBuffers);
-		FSkeletalMeshGpuSpawnStaticBuffers* ParamPointerToRelease = MeshGpuSpawnStaticBuffers;
 		ENQUEUE_RENDER_COMMAND(DeleteResource)(
-			[ParamPointerToRelease](FRHICommandListImmediate& RHICmdList)
+			[ParamPointerToRelease = MeshGpuSpawnStaticBuffers](FRHICommandListImmediate& RHICmdList)
 			{
 				delete ParamPointerToRelease;
 			});
+		MeshGpuSpawnStaticBuffers = nullptr;
 	}
 	if (MeshGpuSpawnDynamicBuffers)
 	{
-		FSkeletalMeshGpuDynamicBufferProxy* ParamPointerToRelease = MeshGpuSpawnDynamicBuffers;
+		BeginReleaseResource(MeshGpuSpawnDynamicBuffers);
 		ENQUEUE_RENDER_COMMAND(DeleteResource)(
-			[ParamPointerToRelease](FRHICommandListImmediate& RHICmdList)
+			[ParamPointerToRelease = MeshGpuSpawnDynamicBuffers](FRHICommandListImmediate& RHICmdList)
 			{
-				ParamPointerToRelease->Release();
 				delete ParamPointerToRelease;
 			});
+		MeshGpuSpawnDynamicBuffers = nullptr;
 	}
 }
 
@@ -1625,19 +1636,70 @@ bool UNiagaraDataInterfaceSkeletalMesh::GetFunctionHLSL(const FName&  Definition
 	GetNiagaraDataInterfaceParametersName(ParamNames, ParamInfo.DataInterfaceHLSLSymbol);
 	FString MeshTriCoordinateStructName = "MeshTriCoordinate";
 
+	static const TCHAR* FormatCommonFunctions = TEXT(R"(
+		void {InstanceFunctionName}_GetIndicesAndWeights(uint VertexIndex, out int4 BlendIndices, out float4 BlendWeights)
+		{
+			uint PackedBlendIndices = {MeshSkinWeightBufferName}[VertexIndex * ({InputWeightStrideName})    ];
+			uint PackedBlendWeights = {MeshSkinWeightBufferName}[VertexIndex * ({InputWeightStrideName}) + 1];
+			BlendIndices.x = PackedBlendIndices & 0xff;
+			BlendIndices.y = PackedBlendIndices >> 8 & 0xff;
+			BlendIndices.z = PackedBlendIndices >> 16 & 0xff;
+			BlendIndices.w = PackedBlendIndices >> 24 & 0xff;
+			BlendWeights.x = float(PackedBlendWeights & 0xff) / 255.0f;
+			BlendWeights.y = float(PackedBlendWeights >> 8 & 0xff) / 255.0f;
+			BlendWeights.z = float(PackedBlendWeights >> 16 & 0xff) / 255.0f;
+			BlendWeights.w = float(PackedBlendWeights >> 24 & 0xff) / 255.0f;
+		}
 
-	static const TCHAR *FormatSampleSkinnedTriangleDataWSHeader = TEXT(R"(
+		float3x4 {InstanceFunctionName}_GetPrevBoneMatrix(uint Bone)
+		{
+			return float3x4({MeshPrevBonesBufferName}[Bone * 3], {MeshPrevBonesBufferName}[Bone * 3 + 1], {MeshPrevBonesBufferName}[Bone * 3 + 2]);
+		}
+
+		float3x4 {InstanceFunctionName}_GetPrevSkinningMatrix(uint VertexIndex, int4 BlendIndices, float4 BlendWeights)
+		{
+			// Get the matrix offset for each vertex because BlendIndices are stored relatively to each section start vertex.
+			uint MatrixOffset = {MeshTriangleMatricesOffsetBufferName}[VertexIndex];
+
+			float3x4 Result;
+			Result  = {InstanceFunctionName}_GetPrevBoneMatrix(MatrixOffset + BlendIndices.x) * BlendWeights.x;
+			Result += {InstanceFunctionName}_GetPrevBoneMatrix(MatrixOffset + BlendIndices.y) * BlendWeights.y;
+			Result += {InstanceFunctionName}_GetPrevBoneMatrix(MatrixOffset + BlendIndices.z) * BlendWeights.z;
+			Result += {InstanceFunctionName}_GetPrevBoneMatrix(MatrixOffset + BlendIndices.w) * BlendWeights.w;
+			return Result;
+		}
+
+		float3x4 {InstanceFunctionName}_GetCurrBoneMatrix(uint Bone)
+		{
+			return float3x4({MeshCurrBonesBufferName}[Bone * 3], {MeshCurrBonesBufferName}[Bone * 3 + 1], {MeshCurrBonesBufferName}[Bone * 3 + 2]);
+		}
+
+		float3x4 {InstanceFunctionName}_GetCurrSkinningMatrix(uint VertexIndex, int4 BlendIndices, float4 BlendWeights)
+		{
+			// Get the matrix offset for each vertex because BlendIndices are stored relatively to each section start vertex.
+			uint MatrixOffset = {MeshTriangleMatricesOffsetBufferName}[VertexIndex];
+
+			float3x4 Result;
+			Result  = {InstanceFunctionName}_GetCurrBoneMatrix(MatrixOffset + BlendIndices.x) * BlendWeights.x;
+			Result += {InstanceFunctionName}_GetCurrBoneMatrix(MatrixOffset + BlendIndices.y) * BlendWeights.y;
+			Result += {InstanceFunctionName}_GetCurrBoneMatrix(MatrixOffset + BlendIndices.z) * BlendWeights.z;
+			Result += {InstanceFunctionName}_GetCurrBoneMatrix(MatrixOffset + BlendIndices.w) * BlendWeights.w;
+			return Result;
+		}
+	)");
+
+	static const TCHAR* FormatSampleSkinnedTriangleDataWSHeader = TEXT(R"(
 		void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position, out float3 Out_Velocity, out float3 Out_Normal, out float3 Out_Binormal, out float3 Out_Tangent)
 		{
 			const float In_Interp = 1.0f;
 		)");
 
-	static const TCHAR *FormatSampleSkinnedTriangleDataWSInterpolatedHeader = TEXT(R"(
+	static const TCHAR* FormatSampleSkinnedTriangleDataWSInterpolatedHeader = TEXT(R"(
 		void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, float In_Interp, out float3 Out_Position, out float3 Out_Velocity, out float3 Out_Normal, out float3 Out_Binormal, out float3 Out_Tangent)
 		{
 		)");
 
-	static const TCHAR *FormatSampleSkinnedTriangleDataWSPart0 = TEXT(R"(
+	static const TCHAR* FormatSampleSkinnedTriangleDataWSPart0 = TEXT(R"(
 			const bool SkinningEnabled = {EnabledFeaturesName} & 0x0002;
 
 			uint TriangleIndex = In_Coord.Tri * 3;
@@ -1662,8 +1724,6 @@ bool UNiagaraDataInterfaceSkeletalMesh::GetFunctionHLSL(const FName&  Definition
 
 			if(SkinningEnabled)
 			{
-				int BlendIndices;
-				int BlendWeights;
 				int4 BlendIndices0;
 				int4 BlendIndices1;
 				int4 BlendIndices2;
@@ -1671,93 +1731,31 @@ bool UNiagaraDataInterfaceSkeletalMesh::GetFunctionHLSL(const FName&  Definition
 				float4 BlendWeights1;
 				float4 BlendWeights2;
 
-				BlendIndices = {MeshSkinWeightBufferName}[VertexIndex0 * ({InputWeightStrideName})    ];
-				BlendWeights = {MeshSkinWeightBufferName}[VertexIndex0 * ({InputWeightStrideName}) + 1];
-				BlendIndices0.x = BlendIndices & 0xff;
-				BlendIndices0.y = BlendIndices >> 8 & 0xff;
-				BlendIndices0.z = BlendIndices >> 16 & 0xff;
-				BlendIndices0.w = BlendIndices >> 24 & 0xff;
-				BlendWeights0.x = float(BlendWeights & 0xff) / 255.0f;
-				BlendWeights0.y = float(BlendWeights >> 8 & 0xff) / 255.0f;
-				BlendWeights0.z = float(BlendWeights >> 16 & 0xff) / 255.0f;
-				BlendWeights0.w = float(BlendWeights >> 24 & 0xff) / 255.0f;
-				//
-				BlendIndices = {MeshSkinWeightBufferName}[VertexIndex1 * ({InputWeightStrideName})    ];
-				BlendWeights = {MeshSkinWeightBufferName}[VertexIndex1 * ({InputWeightStrideName}) + 1];
-				BlendIndices1.x = BlendIndices & 0xff;
-				BlendIndices1.y = BlendIndices >> 8 & 0xff;
-				BlendIndices1.z = BlendIndices >> 16 & 0xff;
-				BlendIndices1.w = BlendIndices >> 24 & 0xff;
-				BlendWeights1.x = float(BlendWeights & 0xff) / 255.0f;
-				BlendWeights1.y = float(BlendWeights >> 8 & 0xff) / 255.0f;
-				BlendWeights1.z = float(BlendWeights >> 16 & 0xff) / 255.0f;
-				BlendWeights1.w = float(BlendWeights >> 24 & 0xff) / 255.0f;
-				//
-				BlendIndices = {MeshSkinWeightBufferName}[VertexIndex2 * ({InputWeightStrideName})    ];
-				BlendWeights = {MeshSkinWeightBufferName}[VertexIndex2 * ({InputWeightStrideName}) + 1];
-				BlendIndices2.x = BlendIndices & 0xff;
-				BlendIndices2.y = BlendIndices >> 8 & 0xff;
-				BlendIndices2.z = BlendIndices >> 16 & 0xff;
-				BlendIndices2.w = BlendIndices >> 24 & 0xff;
-				BlendWeights2.x = float(BlendWeights & 0xff) / 255.0f;
-				BlendWeights2.y = float(BlendWeights >> 8 & 0xff) / 255.0f;
-				BlendWeights2.z = float(BlendWeights >> 16 & 0xff) / 255.0f;
-				BlendWeights2.w = float(BlendWeights >> 24 & 0xff) / 255.0f;
+				{InstanceFunctionName}_GetIndicesAndWeights(VertexIndex0, BlendIndices0, BlendWeights0);
+				{InstanceFunctionName}_GetIndicesAndWeights(VertexIndex1, BlendIndices1, BlendWeights1);
+				{InstanceFunctionName}_GetIndicesAndWeights(VertexIndex2, BlendIndices2, BlendWeights2);
 
-				// Get the matrix offset for each vertex because BlendIndices are stored relatively to each section start vertex.
-				uint matrixOffset0 = {MeshTriangleMatricesOffsetBufferName}[VertexIndex0];
-				uint matrixOffset1 = {MeshTriangleMatricesOffsetBufferName}[VertexIndex1];
-				uint matrixOffset2 = {MeshTriangleMatricesOffsetBufferName}[VertexIndex2];
-		)");
-	// Cut in two parts to avoid "string too big" error. Can be fixed using function calls to do the skinning.
-	static const TCHAR *FormatSampleSkinnedTriangleDataWSPart1 = TEXT(R"(
-				// Skin previous state
-				float4x4 PrevBoneMatrix0;
-				float4x4 PrevBoneMatrix1;
-				float4x4 PrevBoneMatrix2;
-				PrevBoneMatrix0  = BlendWeights0.x * {MeshPrevBonesBufferName}[matrixOffset0 + BlendIndices0.x];
-				PrevBoneMatrix0 += BlendWeights0.y * {MeshPrevBonesBufferName}[matrixOffset0 + BlendIndices0.y];
-				PrevBoneMatrix0 += BlendWeights0.z * {MeshPrevBonesBufferName}[matrixOffset0 + BlendIndices0.z];
-				PrevBoneMatrix0 += BlendWeights0.w * {MeshPrevBonesBufferName}[matrixOffset0 + BlendIndices0.w];
-				PrevBoneMatrix1  = BlendWeights1.x * {MeshPrevBonesBufferName}[matrixOffset1 + BlendIndices1.x];
-				PrevBoneMatrix1 += BlendWeights1.y * {MeshPrevBonesBufferName}[matrixOffset1 + BlendIndices1.y];
-				PrevBoneMatrix1 += BlendWeights1.z * {MeshPrevBonesBufferName}[matrixOffset1 + BlendIndices1.z];
-				PrevBoneMatrix1 += BlendWeights1.w * {MeshPrevBonesBufferName}[matrixOffset1 + BlendIndices1.w];
-				PrevBoneMatrix2  = BlendWeights2.x * {MeshPrevBonesBufferName}[matrixOffset2 + BlendIndices2.x];
-				PrevBoneMatrix2 += BlendWeights2.y * {MeshPrevBonesBufferName}[matrixOffset2 + BlendIndices2.y];
-				PrevBoneMatrix2 += BlendWeights2.z * {MeshPrevBonesBufferName}[matrixOffset2 + BlendIndices2.z];
-				PrevBoneMatrix2 += BlendWeights2.w * {MeshPrevBonesBufferName}[matrixOffset2 + BlendIndices2.w];
+				float3x4 PrevBoneMatrix0 = {InstanceFunctionName}_GetPrevSkinningMatrix(VertexIndex0, BlendIndices0, BlendWeights0);
+				float3x4 PrevBoneMatrix1 = {InstanceFunctionName}_GetPrevSkinningMatrix(VertexIndex1, BlendIndices1, BlendWeights1);
+				float3x4 PrevBoneMatrix2 = {InstanceFunctionName}_GetPrevSkinningMatrix(VertexIndex2, BlendIndices2, BlendWeights2);
 				PrevVertex0 = mul( PrevBoneMatrix0, float4(Vertex0, 1.0f) ).xyz;
 				PrevVertex1 = mul( PrevBoneMatrix1, float4(Vertex1, 1.0f) ).xyz;
 				PrevVertex2 = mul( PrevBoneMatrix2, float4(Vertex2, 1.0f) ).xyz;
 
-				// Skin current state
-				float4x4 BoneMatrix0;
-				float4x4 BoneMatrix1;
-				float4x4 BoneMatrix2;
-				BoneMatrix0  = BlendWeights0.x * {MeshCurrBonesBufferName}[matrixOffset0 + BlendIndices0.x];
-				BoneMatrix0 += BlendWeights0.y * {MeshCurrBonesBufferName}[matrixOffset0 + BlendIndices0.y];
-				BoneMatrix0 += BlendWeights0.z * {MeshCurrBonesBufferName}[matrixOffset0 + BlendIndices0.z];
-				BoneMatrix0 += BlendWeights0.w * {MeshCurrBonesBufferName}[matrixOffset0 + BlendIndices0.w];
-				BoneMatrix1  = BlendWeights1.x * {MeshCurrBonesBufferName}[matrixOffset1 + BlendIndices1.x];
-				BoneMatrix1 += BlendWeights1.y * {MeshCurrBonesBufferName}[matrixOffset1 + BlendIndices1.y];
-				BoneMatrix1 += BlendWeights1.z * {MeshCurrBonesBufferName}[matrixOffset1 + BlendIndices1.z];
-				BoneMatrix1 += BlendWeights1.w * {MeshCurrBonesBufferName}[matrixOffset1 + BlendIndices1.w];
-				BoneMatrix2  = BlendWeights2.x * {MeshCurrBonesBufferName}[matrixOffset2 + BlendIndices2.x];
-				BoneMatrix2 += BlendWeights2.y * {MeshCurrBonesBufferName}[matrixOffset2 + BlendIndices2.y];
-				BoneMatrix2 += BlendWeights2.z * {MeshCurrBonesBufferName}[matrixOffset2 + BlendIndices2.z];
-				BoneMatrix2 += BlendWeights2.w * {MeshCurrBonesBufferName}[matrixOffset2 + BlendIndices2.w];
-				Vertex0 = mul( BoneMatrix0, float4(Vertex0, 1.0f) ).xyz;
-				Vertex1 = mul( BoneMatrix1, float4(Vertex1, 1.0f) ).xyz;
-				Vertex2 = mul( BoneMatrix2, float4(Vertex2, 1.0f) ).xyz;
+				float3x4 CurrBoneMatrix0 = {InstanceFunctionName}_GetCurrSkinningMatrix(VertexIndex0, BlendIndices0, BlendWeights0);
+				float3x4 CurrBoneMatrix1 = {InstanceFunctionName}_GetCurrSkinningMatrix(VertexIndex1, BlendIndices1, BlendWeights1);
+				float3x4 CurrBoneMatrix2 = {InstanceFunctionName}_GetCurrSkinningMatrix(VertexIndex2, BlendIndices2, BlendWeights2);
+				Vertex0 = mul( CurrBoneMatrix0, float4(Vertex0, 1.0f) ).xyz;
+				Vertex1 = mul( CurrBoneMatrix1, float4(Vertex1, 1.0f) ).xyz;
+				Vertex2 = mul( CurrBoneMatrix2, float4(Vertex2, 1.0f) ).xyz;
 
 				// Not using InverseTranspose of matrices so assuming uniform scaling only (same as SkinCache)
-				TangentX0.xyz = mul( BoneMatrix0, float4(TangentX0.xyz, 0.0f) ).xyz;
-				TangentZ0.xyz = mul( BoneMatrix0, float4(TangentZ0.xyz, 0.0f) ).xyz;
-				TangentX1.xyz = mul( BoneMatrix1, float4(TangentX1.xyz, 0.0f) ).xyz;
-				TangentZ1.xyz = mul( BoneMatrix1, float4(TangentZ1.xyz, 0.0f) ).xyz;
-				TangentX2.xyz = mul( BoneMatrix2, float4(TangentX2.xyz, 0.0f) ).xyz;
-				TangentZ2.xyz = mul( BoneMatrix2, float4(TangentZ2.xyz, 0.0f) ).xyz;
+				TangentX0.xyz = mul( CurrBoneMatrix0, float4(TangentX0.xyz, 0.0f) ).xyz;
+				TangentZ0.xyz = mul( CurrBoneMatrix0, float4(TangentZ0.xyz, 0.0f) ).xyz;
+				TangentX1.xyz = mul( CurrBoneMatrix1, float4(TangentX1.xyz, 0.0f) ).xyz;
+				TangentZ1.xyz = mul( CurrBoneMatrix1, float4(TangentZ1.xyz, 0.0f) ).xyz;
+				TangentX2.xyz = mul( CurrBoneMatrix2, float4(TangentX2.xyz, 0.0f) ).xyz;
+				TangentZ2.xyz = mul( CurrBoneMatrix2, float4(TangentZ2.xyz, 0.0f) ).xyz;
 			}
 
 			// Evaluate current and previous world position
@@ -1786,149 +1784,148 @@ bool UNiagaraDataInterfaceSkeletalMesh::GetFunctionHLSL(const FName&  Definition
 		)");
 
 
-	if (true)	// make sure mesh has vertex and index buffer?
+	TMap<FString, FStringFormatArg> ArgsSample = {
+		{TEXT("InstanceFunctionName"), InstanceFunctionName},
+		{TEXT("MeshTriCoordinateStructName"), MeshTriCoordinateStructName},
+		{TEXT("MeshIndexBufferName"), ParamNames.MeshIndexBufferName},
+		{TEXT("MeshVertexBufferName"), ParamNames.MeshVertexBufferName},
+		{TEXT("MeshSkinWeightBufferName"), ParamNames.MeshSkinWeightBufferName},
+		{TEXT("MeshCurrBonesBufferName"), ParamNames.MeshCurrBonesBufferName},
+		{TEXT("MeshPrevBonesBufferName"), ParamNames.MeshPrevBonesBufferName},
+		{TEXT("MeshTangentBufferName"), ParamNames.MeshTangentBufferName},
+		{TEXT("MeshTexCoordBufferName"), ParamNames.MeshTexCoordBufferName},
+		{TEXT("MeshTriangleSamplerProbaBufferName"), ParamNames.MeshTriangleSamplerProbaBufferName},
+		{TEXT("MeshTriangleSamplerAliasBufferName"), ParamNames.MeshTriangleSamplerAliasBufferName},
+		{TEXT("MeshTriangleMatricesOffsetBufferName"), ParamNames.MeshTriangleMatricesOffsetBufferName},
+		{TEXT("MeshTriangleCountName"), ParamNames.MeshTriangleCountName},
+		{TEXT("InstanceTransformName"), ParamNames.InstanceTransformName},
+		{TEXT("InstancePrevTransformName"), ParamNames.InstancePrevTransformName},
+		{TEXT("InstanceInvDeltaTimeName"), ParamNames.InstanceInvDeltaTimeName},
+		{TEXT("EnabledFeaturesName"), ParamNames.EnabledFeaturesName},
+		{TEXT("InputWeightStrideName"), ParamNames.InputWeightStrideName},
+		{TEXT("NumTexCoordName"), ParamNames.NumTexCoordName},
+	};
+
+	if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::RandomTriCoordName)
 	{
-		TMap<FString, FStringFormatArg> ArgsSample = {
-			{TEXT("InstanceFunctionName"), InstanceFunctionName},
-			{TEXT("MeshTriCoordinateStructName"), MeshTriCoordinateStructName},
-			{TEXT("MeshIndexBufferName"), ParamNames.MeshIndexBufferName},
-			{TEXT("MeshVertexBufferName"), ParamNames.MeshVertexBufferName},
-			{TEXT("MeshSkinWeightBufferName"), ParamNames.MeshSkinWeightBufferName},
-			{TEXT("MeshCurrBonesBufferName"), ParamNames.MeshCurrBonesBufferName},
-			{TEXT("MeshPrevBonesBufferName"), ParamNames.MeshPrevBonesBufferName},
-			{TEXT("MeshTangentBufferName"), ParamNames.MeshTangentBufferName},
-			{TEXT("MeshTexCoordBufferName"), ParamNames.MeshTexCoordBufferName},
-			{TEXT("MeshTriangleSamplerProbaBufferName"), ParamNames.MeshTriangleSamplerProbaBufferName},
-			{TEXT("MeshTriangleSamplerAliasBufferName"), ParamNames.MeshTriangleSamplerAliasBufferName},
-			{TEXT("MeshTriangleMatricesOffsetBufferName"), ParamNames.MeshTriangleMatricesOffsetBufferName},
-			{TEXT("MeshTriangleCountName"), ParamNames.MeshTriangleCountName},
-			{TEXT("InstanceTransformName"), ParamNames.InstanceTransformName},
-			{TEXT("InstancePrevTransformName"), ParamNames.InstancePrevTransformName},
-			{TEXT("InstanceInvDeltaTimeName"), ParamNames.InstanceInvDeltaTimeName},
-			{TEXT("EnabledFeaturesName"), ParamNames.EnabledFeaturesName},
-			{TEXT("InputWeightStrideName"), ParamNames.InputWeightStrideName},
-			{TEXT("NumTexCoordName"), ParamNames.NumTexCoordName},
-		};
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (out {MeshTriCoordinateStructName} Out_Coord)
+			{
+				const bool UniformTriangleSamplingEnable = {EnabledFeaturesName} & 0x0001;
 
-		if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::RandomTriCoordName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-				void {InstanceFunctionName} (out {MeshTriCoordinateStructName} Out_Coord)
+				float RandT0 = NiagaraInternalNoise(1, 2, 3);
+				[branch]
+				if (!UniformTriangleSamplingEnable)
 				{
-					const bool UniformTriangleSamplingEnable = {EnabledFeaturesName} & 0x0001;
+					// Uniform triangle id selection
+					Out_Coord.Tri = min(uint(RandT0*float({MeshTriangleCountName})), {MeshTriangleCountName}-1); // avoid % by using mul/min to Tri = MeshTriangleCountName
+				}
+				else
+				{
+					// Uniform area weighted position selection (using alias method from Alias method from FWeightedRandomSampler)
+					uint TriangleIndex = min(uint(RandT0*float({MeshTriangleCountName})), {MeshTriangleCountName}-1);
+					float TriangleProbability = {MeshTriangleSamplerProbaBufferName}[TriangleIndex];
 
-					float RandT0 = NiagaraInternalNoise(1, 2, 3);
-					[branch]
-					if (!UniformTriangleSamplingEnable)
+					// Alias check
+					float RandT1 = NiagaraInternalNoise(1, 2, 3);
+					if( RandT1 > TriangleProbability )
 					{
-						// Uniform triangle id selection
-						Out_Coord.Tri = min(uint(RandT0*float({MeshTriangleCountName})), {MeshTriangleCountName}-1); // avoid % by using mul/min to Tri = MeshTriangleCountName
+						TriangleIndex = {MeshTriangleSamplerAliasBufferName}[TriangleIndex];
 					}
-					else
-					{
-						// Uniform area weighted position selection (using alias method from Alias method from FWeightedRandomSampler)
-						uint TriangleIndex = min(uint(RandT0*float({MeshTriangleCountName})), {MeshTriangleCountName}-1);
-						float TriangleProbability = {MeshTriangleSamplerProbaBufferName}[TriangleIndex];
+					Out_Coord.Tri = TriangleIndex;
+				}
 
-						// Alias check
-						float RandT1 = NiagaraInternalNoise(1, 2, 3);
-						if( RandT1 > TriangleProbability )
-						{
-							TriangleIndex = {MeshTriangleSamplerAliasBufferName}[TriangleIndex];
-						}
-						Out_Coord.Tri = TriangleIndex;
-					}
-
-					float r0 = NiagaraInternalNoise(1, 2, 3);
-					float r1 = NiagaraInternalNoise(1, 2, 3);
-					float sqrt0 = sqrt(r0);
-					float sqrt1 = sqrt(r1);
-					Out_Coord.BaryCoord = float3(1.0f - sqrt0, sqrt0 * (1.0 - r1), r1 * sqrt0);
-				//	Out_Coord.BaryCoord = float3(1.0f, 0.0f, 0.0f);
+				float r0 = NiagaraInternalNoise(1, 2, 3);
+				float r1 = NiagaraInternalNoise(1, 2, 3);
+				float sqrt0 = sqrt(r0);
+				float sqrt1 = sqrt(r1);
+				Out_Coord.BaryCoord = float3(1.0f - sqrt0, sqrt0 * (1.0 - r1), r1 * sqrt0);
+			//	Out_Coord.BaryCoord = float3(1.0f, 0.0f, 0.0f);
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetSkinnedTriangleDataWSName)
+	{
+		OutHLSL += FString::Format(FormatCommonFunctions, ArgsSample);
+		OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSHeader, ArgsSample);
+		OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSPart0, ArgsSample);
+	}
+	else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetSkinnedTriangleDataWSInterpName)
+	{
+		OutHLSL += FString::Format(FormatCommonFunctions, ArgsSample);
+		OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSInterpolatedHeader, ArgsSample);
+		OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSPart0, ArgsSample);
+	}
+	else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriColorName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float4 Out_Color)
+				{
+					Out_Color = 0.0f;
 				}
 				)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::IsValidTriCoordName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetSkinnedTriangleDataName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetSkinnedTriangleDataInterpName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetSkinnedTriangleDataWSName)
-		{
-			OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSHeader, ArgsSample);
-			OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSPart0, ArgsSample);
-			OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSPart1, ArgsSample);
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetSkinnedTriangleDataWSInterpName)
-		{
-			OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSInterpolatedHeader, ArgsSample);
-			OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSPart0, ArgsSample);
-			OutHLSL += FString::Format(FormatSampleSkinnedTriangleDataWSPart1, ArgsSample);
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriColorName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-					void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float4 Out_Color)
-					{
-						Out_Color = 0.0f;
-					}
-					)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriUVName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, in int In_UVSet, out float2 Out_UV)
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriUVName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, in int In_UVSet, out float2 Out_UV)
+			{
+				if({NumTexCoordName}>0)
 				{
-					if({NumTexCoordName}>0)
-					{
-						uint TriangleIndex = In_Coord.Tri * 3;
-						uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ];
-						uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1];
-						uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2];
+					uint TriangleIndex = In_Coord.Tri * 3;
+					uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ];
+					uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1];
+					uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2];
 
-						uint stride = {NumTexCoordName};
-						uint SelectedUVSet = clamp(In_UVSet, 0, {NumTexCoordName}-1);
-						float2 UV0 = {MeshTexCoordBufferName}[VertexIndex0 * stride + SelectedUVSet];
-						float2 UV1 = {MeshTexCoordBufferName}[VertexIndex1 * stride + SelectedUVSet];
-						float2 UV2 = {MeshTexCoordBufferName}[VertexIndex2 * stride + SelectedUVSet];
+					uint stride = {NumTexCoordName};
+					uint SelectedUVSet = clamp(In_UVSet, 0, {NumTexCoordName}-1);
+					float2 UV0 = {MeshTexCoordBufferName}[VertexIndex0 * stride + SelectedUVSet];
+					float2 UV1 = {MeshTexCoordBufferName}[VertexIndex1 * stride + SelectedUVSet];
+					float2 UV2 = {MeshTexCoordBufferName}[VertexIndex2 * stride + SelectedUVSet];
 
-						Out_UV = UV0 * In_Coord.BaryCoord.x + UV1 * In_Coord.BaryCoord.y + UV2 * In_Coord.BaryCoord.z;
-					}
-					else	
-					{
-						Out_UV = 0.0f;
-					}
+					Out_UV = UV0 * In_Coord.BaryCoord.x + UV1 * In_Coord.BaryCoord.y + UV2 * In_Coord.BaryCoord.z;
 				}
-				)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriangleCountName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriangleAtName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriCoordVerticesName)
-		{
-			// unimplemented();
-		}
-
-		OutHLSL += TEXT("\n");
-		return true;
+				else	
+				{
+					Out_UV = 0.0f;
+				}
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	//else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::IsValidTriCoordName)
+	//{
+	//	// unimplemented();
+	//}
+	//else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetSkinnedTriangleDataName)
+	//{
+	//	// unimplemented();
+	//}
+	//else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetSkinnedTriangleDataInterpName)
+	//{
+	//	// unimplemented();
+	//}
+	//else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriangleCountName)
+	//{
+	//	// unimplemented();
+	//}
+	//else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriangleAtName)
+	//{
+	//	// unimplemented();
+	//}
+	//else if (DefinitionFunctionName == FSkeletalMeshInterfaceHelper::GetTriCoordVerticesName)
+	//{
+	//}
+	else
+	{
+		// This function is not support
+		return false;
 	}
 
-	return false;
+	OutHLSL += TEXT("\n");
+	return true;
 
 }
 void UNiagaraDataInterfaceSkeletalMesh::GetParameterDefinitionHLSL(FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
@@ -1939,8 +1936,8 @@ void UNiagaraDataInterfaceSkeletalMesh::GetParameterDefinitionHLSL(FNiagaraDataI
 	OutHLSL += TEXT("Buffer<uint> ") + ParamNames.MeshIndexBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<float> ") + ParamNames.MeshVertexBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<uint> ") + ParamNames.MeshSkinWeightBufferName + TEXT(";\n");
-	OutHLSL += TEXT("StructuredBuffer<float4x4> ") + ParamNames.MeshCurrBonesBufferName + TEXT(";\n");	// could use float3x4 if we want to pay the conversion cost on CPU when uploading
-	OutHLSL += TEXT("StructuredBuffer<float4x4> ") + ParamNames.MeshPrevBonesBufferName + TEXT(";\n");
+	OutHLSL += TEXT("Buffer<float4> ") + ParamNames.MeshCurrBonesBufferName + TEXT(";\n");
+	OutHLSL += TEXT("Buffer<float4> ") + ParamNames.MeshPrevBonesBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<float4> ") + ParamNames.MeshTangentBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<float2> ") + ParamNames.MeshTexCoordBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<float> ") + ParamNames.MeshTriangleSamplerProbaBufferName + TEXT(";\n");
