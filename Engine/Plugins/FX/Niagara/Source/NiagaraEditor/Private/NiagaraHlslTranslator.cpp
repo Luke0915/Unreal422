@@ -1676,8 +1676,6 @@ void FHlslNiagaraTranslator::DefineDataInterfaceHLSL(FString &InHlslOutput)
 		UNiagaraDataInterface* CDO = Cast<UNiagaraDataInterface>(*FoundCDO);
 		if (CDO && CDO->CanExecuteOnTarget(ENiagaraSimTarget::GPUComputeSim))
 		{
-			TArray<FNiagaraFunctionSignature> DataInterfaceFunctions;
-			CDO->GetFunctions(DataInterfaceFunctions);
 			FString OwnerIDString = Info.Name.ToString();
 			FString SanitizedOwnerIDString = GetSanitizedSymbolName(OwnerIDString, true);
 
@@ -1690,14 +1688,22 @@ void FHlslNiagaraTranslator::DefineDataInterfaceHLSL(FString &InHlslOutput)
 
 			// grab the function hlsl from the interface
 			//
-			for (int32 FuncIdx = 0; FuncIdx < DataInterfaceFunctions.Num(); FuncIdx++)
+			const TSet<FNiagaraFunctionSignature>* DataInterfaceFunctions = DataInterfaceRegisteredFunctions.Find(Info.Type.GetFName());
+			if (DataInterfaceFunctions != nullptr)
 			{
-				FNiagaraFunctionSignature Sig = DataInterfaceFunctions[FuncIdx];	// make a copy so we can modify the owner id and get the correct hlsl signature
-				Sig.OwnerName = Info.Name;
-				FString DefStr = GetFunctionSignatureSymbol(Sig);
+				for (const FNiagaraFunctionSignature& OriginalSig : *DataInterfaceFunctions)
+				{
+					FNiagaraFunctionSignature Sig = OriginalSig;	// make a copy so we can modify the owner id and get the correct hlsl signature
+					Sig.OwnerName = Info.Name;
+					FString DefStr = GetFunctionSignatureSymbol(Sig);
 
-				bool HlslOK = CDO->GetFunctionHLSL(Sig.Name, DefStr, DIParamInfo[NewIdx], InterfaceFunctionHLSL);
-				ensure(HlslOK == true);
+					const bool HlslOK = CDO->GetFunctionHLSL(Sig.Name, DefStr, DIParamInfo[NewIdx], InterfaceFunctionHLSL);
+					if (HlslOK == false)
+					{
+						Error(FText::Format(LOCTEXT("GPUDataInterfaceFunctionNotSupported", "DataInterface {0} function {1} cannot run on the GPU or is not implemented."), FText::FromName(Info.Type.GetFName()), FText::FromName(Sig.Name))
+							, nullptr, nullptr);
+					}
+				}
 			}
 		}
 		else
@@ -4840,20 +4846,16 @@ void FHlslNiagaraTranslator::RegisterFunctionCall(ENiagaraScriptUsage ScriptUsag
 			{
 				TArray<FNiagaraFunctionSignature> DataInterfaceFunctions;
 				CDO->GetFunctions(DataInterfaceFunctions);
-				bool bFoundMatch = false;
-				for (const FNiagaraFunctionSignature& Sig : DataInterfaceFunctions)
-				{
-					if (Sig == OutSignature)
-					{
-						bFoundMatch = true;
-					}
-				}
 
+				const bool bFoundMatch = DataInterfaceFunctions.ContainsByPredicate([&](const FNiagaraFunctionSignature& Sig) -> bool { return Sig == OutSignature; });
 				if (!bFoundMatch)
 				{
 					Error(LOCTEXT("FunctionCallDataInterfaceMissing", "Function call signature does not match DataInterface possible signatures?"), nullptr, nullptr);
 					return;
 				}
+
+				// We only use this for GPU systems currently so that we emit only the functionality required
+				DataInterfaceRegisteredFunctions.FindOrAdd(Info.Type.GetFName()).Add(OutSignature);
 
 				if (Info.UserPtrIdx != INDEX_NONE && CompilationTarget != ENiagaraSimTarget::GPUComputeSim)
 				{

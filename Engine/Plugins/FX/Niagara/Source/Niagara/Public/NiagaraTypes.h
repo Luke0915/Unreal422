@@ -421,6 +421,19 @@ public:
 #endif
 	}
 
+	FName GetFName() const
+	{
+		if ( IsValid() == false )
+		{
+			return FName();
+		}
+		if ( Enum != nullptr )
+		{
+			return Enum->GetFName();
+		}
+		return GetStruct()->GetFName();
+	}
+
 	FString GetName()const
 	{
 		if (IsValid() == false)
