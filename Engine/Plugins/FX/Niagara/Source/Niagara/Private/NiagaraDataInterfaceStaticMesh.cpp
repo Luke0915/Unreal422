@@ -17,16 +17,17 @@ const FString UNiagaraDataInterfaceStaticMesh::MeshIndexBufferName(TEXT("IndexBu
 const FString UNiagaraDataInterfaceStaticMesh::MeshVertexBufferName(TEXT("VertexBuffer_"));
 const FString UNiagaraDataInterfaceStaticMesh::MeshTangentBufferName(TEXT("TangentBuffer_"));
 const FString UNiagaraDataInterfaceStaticMesh::MeshTexCoordBufferName(TEXT("TexCoordBuffer_"));
+const FString UNiagaraDataInterfaceStaticMesh::MeshColorBufferName(TEXT("ColorBuffer_"));
 const FString UNiagaraDataInterfaceStaticMesh::MeshSectionBufferName(TEXT("SectionBuffer_"));
 const FString UNiagaraDataInterfaceStaticMesh::MeshTriangleBufferName(TEXT("TriangleBuffer_"));
 const FString UNiagaraDataInterfaceStaticMesh::SectionCountName(TEXT("SectionCount_"));
 const FString UNiagaraDataInterfaceStaticMesh::InstanceTransformName(TEXT("InstanceTransform_"));
+const FString UNiagaraDataInterfaceStaticMesh::InstanceTransformInverseTransposedName(TEXT("InstanceTransformInverseTransposed_"));
 const FString UNiagaraDataInterfaceStaticMesh::InstancePrevTransformName(TEXT("InstancePrevTransform_"));
 const FString UNiagaraDataInterfaceStaticMesh::InstanceInvDeltaTimeName(TEXT("InstanceInvDeltaTime_"));
+const FString UNiagaraDataInterfaceStaticMesh::InstanceWorldVelocityName(TEXT("InstanceWorldVelocity_"));
 const FString UNiagaraDataInterfaceStaticMesh::AreaWeightedSamplingName(TEXT("AreaWeightedSamplingName_"));
 const FString UNiagaraDataInterfaceStaticMesh::NumTexCoordName(TEXT("NumTexCoordName_"));
-
-
 
 FStaticMeshFilteredAreaWeightedSectionSampler::FStaticMeshFilteredAreaWeightedSectionSampler()
 	: Res(nullptr)
@@ -60,8 +61,6 @@ float FStaticMeshFilteredAreaWeightedSectionSampler::GetWeights(TArray<float>& O
 
 //////////////////////////////////////////////////////////////////////////
 // FStaticMeshGpuSpawnBuffer
-
-
 FStaticMeshGpuSpawnBuffer::~FStaticMeshGpuSpawnBuffer()
 {
 	//ValidSections.Empty();
@@ -84,7 +83,7 @@ void FStaticMeshGpuSpawnBuffer::Initialise(const FStaticMeshLODResources& Res, c
 	{
 		uint32 ValidSectionId = ValidSection[i];
 		const FStaticMeshSection& Section = Res.Sections[ValidSectionId];
-		SectionInfo NewSectionInfo = { Section.FirstIndex, Section.NumTriangles, Prob[i], (uint32)Alias[i] };
+		SectionInfo NewSectionInfo = { Section.FirstIndex / 3, Section.NumTriangles, Prob[i], (uint32)Alias[i] };
 		ValidSections.Add(NewSectionInfo);
 
 		check(!bIsGpuUniformlyDistributedSampling || bIsGpuUniformlyDistributedSampling && Res.AreaWeightedSectionSamplers[ValidSectionId].GetProb().Num() == Section.NumTriangles);
@@ -101,6 +100,7 @@ void FStaticMeshGpuSpawnBuffer::InitRHI()
 	MeshTangentBufferSrv = SectionRenderData->VertexBuffers.StaticMeshVertexBuffer.GetTangentsSRV();
 	MeshTexCoordBufferSrv = SectionRenderData->VertexBuffers.StaticMeshVertexBuffer.GetTexCoordsSRV();
 	NumTexCoord = SectionRenderData->VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
+	MeshColorBufferSRV = SectionRenderData->VertexBuffers.ColorVertexBuffer.GetColorComponentsSRV();
 
 	uint32 SizeByte = ValidSections.Num() * sizeof(SectionInfo);
 	if (SizeByte > 0)
@@ -109,7 +109,7 @@ void FStaticMeshGpuSpawnBuffer::InitRHI()
 		void* BufferData = nullptr;
 		BufferSectionRHI = RHICreateAndLockVertexBuffer(SizeByte, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
 		SectionInfo* SectionInfoBuffer = (SectionInfo*)BufferData;
-		memcpy(SectionInfoBuffer, ValidSections.GetData(), SizeByte);
+		FMemory::Memcpy(SectionInfoBuffer, ValidSections.GetData(), SizeByte);
 		RHIUnlockVertexBuffer(BufferSectionRHI);
 		BufferSectionSRV = RHICreateShaderResourceView(BufferSectionRHI, sizeof(SectionInfo), PF_R32G32B32A32_UINT);
 	}
@@ -120,6 +120,13 @@ void FStaticMeshGpuSpawnBuffer::ReleaseRHI()
 	MeshIndexBufferSrv.SafeRelease();
 	BufferSectionSRV.SafeRelease();
 	BufferSectionRHI.SafeRelease();
+
+	MeshIndexBufferSrv.SafeRelease();
+	MeshVertexBufferSrv.SafeRelease();
+	MeshTangentBufferSrv.SafeRelease();
+	MeshTexCoordBufferSrv.SafeRelease();
+	MeshColorBufferSRV.SafeRelease();
+	BufferSectionSRV.SafeRelease();
 }
 
 
@@ -404,27 +411,34 @@ struct FNDIStaticMeshParametersName
 	FString MeshVertexBufferName;
 	FString MeshTangentBufferName;
 	FString MeshTexCoordBufferName;
+	FString MeshColorBufferName;
 	FString MeshSectionBufferName;
 	FString MeshTriangleBufferName;
 	FString SectionCountName;
 	FString InstanceTransformName;
+	FString InstanceTransformInverseTransposedName;
 	FString InstancePrevTransformName;
 	FString InstanceInvDeltaTimeName;
+	FString InstanceWorldVelocityName;
 	FString AreaWeightedSamplingName;
 	FString NumTexCoordName;
 };
+
 static void GetNiagaraDataInterfaceParametersName(FNDIStaticMeshParametersName& Names, const FString& Suffix)
 {
 	Names.MeshIndexBufferName = UNiagaraDataInterfaceStaticMesh::MeshIndexBufferName + Suffix;
 	Names.MeshVertexBufferName = UNiagaraDataInterfaceStaticMesh::MeshVertexBufferName + Suffix;
 	Names.MeshTangentBufferName = UNiagaraDataInterfaceStaticMesh::MeshTangentBufferName + Suffix;
 	Names.MeshTexCoordBufferName = UNiagaraDataInterfaceStaticMesh::MeshTexCoordBufferName + Suffix;
+	Names.MeshColorBufferName = UNiagaraDataInterfaceStaticMesh::MeshColorBufferName + Suffix;
 	Names.MeshSectionBufferName = UNiagaraDataInterfaceStaticMesh::MeshSectionBufferName + Suffix;
 	Names.MeshTriangleBufferName = UNiagaraDataInterfaceStaticMesh::MeshTriangleBufferName + Suffix;
 	Names.SectionCountName = UNiagaraDataInterfaceStaticMesh::SectionCountName + Suffix;
 	Names.InstanceTransformName = UNiagaraDataInterfaceStaticMesh::InstanceTransformName + Suffix;
+	Names.InstanceTransformInverseTransposedName = UNiagaraDataInterfaceStaticMesh::InstanceTransformInverseTransposedName + Suffix;
 	Names.InstancePrevTransformName = UNiagaraDataInterfaceStaticMesh::InstancePrevTransformName + Suffix;
 	Names.InstanceInvDeltaTimeName = UNiagaraDataInterfaceStaticMesh::InstanceInvDeltaTimeName + Suffix;
+	Names.InstanceWorldVelocityName = UNiagaraDataInterfaceStaticMesh::InstanceWorldVelocityName + Suffix;
 	Names.AreaWeightedSamplingName = UNiagaraDataInterfaceStaticMesh::AreaWeightedSamplingName + Suffix;
 	Names.NumTexCoordName = UNiagaraDataInterfaceStaticMesh::NumTexCoordName + Suffix;
 }
@@ -440,12 +454,15 @@ struct FNiagaraDataInterfaceParametersCS_StaticMesh : public FNiagaraDataInterfa
 		MeshVertexBuffer.Bind(ParameterMap, *ParamNames.MeshVertexBufferName);
 		MeshTangentBuffer.Bind(ParameterMap, *ParamNames.MeshTangentBufferName);
 		MeshTexCoordBuffer.Bind(ParameterMap, *ParamNames.MeshTexCoordBufferName);
+		MeshColorBuffer.Bind(ParameterMap, *ParamNames.MeshColorBufferName);
 		MeshSectionBuffer.Bind(ParameterMap, *ParamNames.MeshSectionBufferName);
 		MeshTriangleBuffer.Bind(ParameterMap, *ParamNames.MeshTriangleBufferName);
 		SectionCount.Bind(ParameterMap, *ParamNames.SectionCountName);
 		InstanceTransform.Bind(ParameterMap, *ParamNames.InstanceTransformName);
+		InstanceTransformInverseTransposed.Bind(ParameterMap, *ParamNames.InstanceTransformInverseTransposedName);
 		InstancePrevTransform.Bind(ParameterMap, *ParamNames.InstancePrevTransformName);
 		InstanceInvDeltaTime.Bind(ParameterMap, *ParamNames.InstanceInvDeltaTimeName);
+		InstanceWorldVelocity.Bind(ParameterMap, *ParamNames.InstanceWorldVelocityName);
 		AreaWeightedSampling.Bind(ParameterMap, *ParamNames.AreaWeightedSamplingName);
 		NumTexCoord.Bind(ParameterMap, *ParamNames.NumTexCoordName);
 
@@ -465,12 +482,15 @@ struct FNiagaraDataInterfaceParametersCS_StaticMesh : public FNiagaraDataInterfa
 		Ar << MeshVertexBuffer;
 		Ar << MeshTangentBuffer;
 		Ar << MeshTexCoordBuffer;
+		Ar << MeshColorBuffer;
 		Ar << SectionCount;
 		Ar << MeshSectionBuffer;
 		Ar << MeshTriangleBuffer;
 		Ar << InstanceTransform;
+		Ar << InstanceTransformInverseTransposed;
 		Ar << InstancePrevTransform;
 		Ar << InstanceInvDeltaTime;
+		Ar << InstanceWorldVelocity;
 		Ar << AreaWeightedSampling;
 		Ar << NumTexCoord;
 	}
@@ -498,6 +518,7 @@ struct FNiagaraDataInterfaceParametersCS_StaticMesh : public FNiagaraDataInterfa
 				{
 					SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTexCoordBuffer, SpawnBuffer->GetBufferTexCoordSRV());
 				}
+				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshColorBuffer, SpawnBuffer->GetBufferColorSRV());
 
 				check(SpawnBuffer); // should always be allocated, we always need the GPU buffer for a GpuSimulation.
 				SetShaderValue(RHICmdList, ComputeShaderRHI, SectionCount, SpawnBuffer->GetValidSectionCount());
@@ -507,9 +528,14 @@ struct FNiagaraDataInterfaceParametersCS_StaticMesh : public FNiagaraDataInterfa
 					SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTriangleBuffer, SpawnBuffer->GetBufferUniformTriangleSamplingSRV());
 				}
 
+				const float InvDeltaTime = Data->DeltaSeconds > 0.0f ? 1.0f / Data->DeltaSeconds : 0.0f;
+				const FVector DeltaPosition = Data->Transform.GetOrigin() - Data->PrevTransform.GetOrigin();
+
 				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceTransform, Data->Transform);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceTransformInverseTransposed, Data->Transform.InverseFast().GetTransposed());
 				SetShaderValue(RHICmdList, ComputeShaderRHI, InstancePrevTransform, Data->PrevTransform);
-				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceInvDeltaTime, 1.0f / Data->DeltaSeconds);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceInvDeltaTime, InvDeltaTime);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceWorldVelocity, DeltaPosition * InvDeltaTime);
 				SetShaderValue(RHICmdList, ComputeShaderRHI, AreaWeightedSampling, Data->bIsGpuUniformlyDistributedSampling ? 1 : 0);
 			}
 			else
@@ -520,14 +546,17 @@ struct FNiagaraDataInterfaceParametersCS_StaticMesh : public FNiagaraDataInterfa
 
 				SetShaderValue(RHICmdList, ComputeShaderRHI, NumTexCoord, 0);
 				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTexCoordBuffer, FNiagaraRenderer::GetDummyFloatBuffer().SRV);
+				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshColorBuffer, FNiagaraRenderer::GetDummyFloatBuffer().SRV);
 
 				SetShaderValue(RHICmdList, ComputeShaderRHI, SectionCount, 0);
 				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSectionBuffer, FNiagaraRenderer::GetDummyFloatBuffer().SRV);
 				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTriangleBuffer, FNiagaraRenderer::GetDummyFloatBuffer().SRV);
 
 				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceTransform, FMatrix::Identity);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceTransformInverseTransposed, FMatrix::Identity);
 				SetShaderValue(RHICmdList, ComputeShaderRHI, InstancePrevTransform, FMatrix::Identity);
 				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceInvDeltaTime, 1.0f);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, InstanceWorldVelocity, FVector::ZeroVector);
 				SetShaderValue(RHICmdList, ComputeShaderRHI, AreaWeightedSampling, 0);
 			}
 		}
@@ -540,12 +569,15 @@ private:
 	FShaderResourceParameter MeshVertexBuffer;
 	FShaderResourceParameter MeshTangentBuffer;
 	FShaderResourceParameter MeshTexCoordBuffer;
+	FShaderResourceParameter MeshColorBuffer;
 	FShaderResourceParameter MeshSectionBuffer;
 	FShaderResourceParameter MeshTriangleBuffer;
 	FShaderParameter SectionCount;
 	FShaderParameter InstanceTransform;
+	FShaderParameter InstanceTransformInverseTransposed;
 	FShaderParameter InstancePrevTransform;
 	FShaderParameter InstanceInvDeltaTime;
+	FShaderParameter InstanceWorldVelocity;
 	FShaderParameter AreaWeightedSampling;
 	FShaderParameter NumTexCoord;
 };
@@ -626,7 +658,6 @@ void FNiagaraDataInterfaceProxyStaticMesh::ConsumePerInstanceDataFromGameThread(
 
 //////////////////////////////////////////////////////////////////////////
 
-
 UNiagaraDataInterfaceStaticMesh::UNiagaraDataInterfaceStaticMesh(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, DefaultMesh(nullptr)
@@ -637,8 +668,6 @@ UNiagaraDataInterfaceStaticMesh::UNiagaraDataInterfaceStaticMesh(FObjectInitiali
 {
 	Proxy = MakeShared<FNiagaraDataInterfaceProxyStaticMesh, ESPMode::ThreadSafe>();
 }
-
-
 
 void UNiagaraDataInterfaceStaticMesh::PostInitProperties()
 {
@@ -653,8 +682,8 @@ void UNiagaraDataInterfaceStaticMesh::PostInitProperties()
 		FNiagaraTypeRegistry::Register(FMeshTriCoordinate::StaticStruct(), true, true, false);
 	}
 }
-#if WITH_EDITOR
 
+#if WITH_EDITOR
 void UNiagaraDataInterfaceStaticMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -701,7 +730,6 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Section")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -710,11 +738,8 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::RandomTriCoordName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -725,12 +750,11 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FNiagaraTypeDefinition::GetFloatDef()), TEXT("Start")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FNiagaraTypeDefinition::GetFloatDef()), TEXT("Range")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
+#if WITH_EDITORONLY_DATA
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_RandomTriCoordVCFiltered", "If bSupportingVertexColorSampling is set on the data source, will randomly find a triangle whose red channel is within the Start to Start + Range color range."));
+#endif
 		OutFunctions.Add(Sig);
 	}
 
@@ -740,11 +764,8 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Section")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -753,13 +774,9 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriPositionName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -768,14 +785,10 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriPositionAndVelocityName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Velocity")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -784,13 +797,9 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriPositionWSName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -799,13 +808,9 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriNormalName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Normal")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//	Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -814,13 +819,9 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriNormalWSName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Normal")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -829,15 +830,11 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriTangentsName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Tangent")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Binormal")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Normal")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -846,15 +843,11 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriTangentsWSName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Tangent")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Binormal")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Normal")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -863,13 +856,9 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriColorName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetColorDef(), TEXT("Color")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -878,14 +867,10 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		Sig.Name = StaticMeshHelpers::GetTriUVName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Tri Index")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Bary Coord")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("UV Set")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("UV")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -893,11 +878,9 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = StaticMeshHelpers::GetMeshLocalToWorldName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetMatrix4Def(), TEXT("Transform")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -905,11 +888,9 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = StaticMeshHelpers::GetMeshLocalToWorldInverseTransposedName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetMatrix4Def(), TEXT("Transform")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -917,11 +898,9 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = StaticMeshHelpers::GetMeshWorldVelocityName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh")));
-		//Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(FMeshTriCoordinate::StaticStruct()), TEXT("Coord")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Velocity")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 
@@ -936,7 +915,6 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("GetVertexPositionDesc", "Returns the local space vertex position for the passed vertex.");
 #endif
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	} 
 	
@@ -951,7 +929,6 @@ void UNiagaraDataInterfaceStaticMesh::GetFunctions(TArray<FNiagaraFunctionSignat
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("GetVertexPositionWSDesc", "Returns the world space vertex position for the passed vertex.");
 #endif
-		//Sig.Owner = *GetFullName();
 		OutFunctions.Add(Sig);
 	}
 }
@@ -1086,7 +1063,7 @@ void UNiagaraDataInterfaceStaticMesh::GetVMExternalFunction(const FVMExternalFun
 	}
 	else if (BindingInfo.Name == StaticMeshHelpers::GetTriNormalName)
 	{
-		check(BindingInfo.GetNumInputs() == 6 && BindingInfo.GetNumOutputs() == 3);
+		check(BindingInfo.GetNumInputs() == 5 && BindingInfo.GetNumOutputs() == 3);
 		bNeedsVertMain = true;
 		TNDIExplicitBinder<FNDITransformHandlerNoop, NDI_FUNC_BINDER(UNiagaraDataInterfaceStaticMesh, GetTriCoordNormal)>::Bind(this, BindingInfo, InstanceData, OutFunc);
 	}
@@ -1342,7 +1319,7 @@ FORCEINLINE int32 UNiagaraDataInterfaceStaticMesh::RandomTriIndex<TIntegralConst
 	int32 SecIdx = RandomSection<TIntegralConstant<bool, true>, true>(RandStream, Res, InstData);
 	FStaticMeshSection&  Sec = Res.Sections[SecIdx];
 	int32 Tri = Res.AreaWeightedSectionSamplers[SecIdx].GetEntryIndex(RandStream.GetFraction(), RandStream.GetFraction());
-	return Sec.FirstIndex + Tri * 3;
+	return (Sec.FirstIndex / 3) + Tri;
 }
 
 template<>
@@ -1351,7 +1328,7 @@ FORCEINLINE int32 UNiagaraDataInterfaceStaticMesh::RandomTriIndex<TIntegralConst
 	int32 SecIdx = RandomSection<TIntegralConstant<bool, true>, false>(RandStream, Res, InstData);
 	FStaticMeshSection&  Sec = Res.Sections[SecIdx];
 	int32 Tri = Res.AreaWeightedSectionSamplers[SecIdx].GetEntryIndex(RandStream.GetFraction(), RandStream.GetFraction());
-	return Sec.FirstIndex + Tri * 3;
+	return (Sec.FirstIndex / 3) + Tri;
 }
 
 template<>
@@ -1360,7 +1337,7 @@ FORCEINLINE int32 UNiagaraDataInterfaceStaticMesh::RandomTriIndex<TIntegralConst
 	int32 SecIdx = RandomSection<TIntegralConstant<bool, false>, true>(RandStream, Res, InstData);
 	FStaticMeshSection&  Sec = Res.Sections[SecIdx];
 	int32 Tri = RandStream.RandRange(0, Sec.NumTriangles - 1);
-	return Sec.FirstIndex + Tri * 3;	
+	return (Sec.FirstIndex / 3) + Tri;
 }
 
 template<>
@@ -1369,7 +1346,7 @@ FORCEINLINE int32 UNiagaraDataInterfaceStaticMesh::RandomTriIndex<TIntegralConst
 	int32 SecIdx = RandomSection<TIntegralConstant<bool, false>, false>(RandStream, Res, InstData);
 	FStaticMeshSection&  Sec = Res.Sections[SecIdx];
 	int32 Tri = RandStream.RandRange(0, Sec.NumTriangles - 1);
-	return Sec.FirstIndex + Tri * 3;
+	return (Sec.FirstIndex / 3) + Tri;
 }
 
 template<typename TAreaWeighted>
@@ -1466,7 +1443,9 @@ void UNiagaraDataInterfaceStaticMesh::RandomTriCoordVertexColorFiltered(FVectorV
 template<>
 FORCEINLINE int32 UNiagaraDataInterfaceStaticMesh::RandomTriIndexOnSection<TIntegralConstant<bool, true>>(FRandomStream& RandStream, FStaticMeshLODResources& Res, int32 SecIdx, FNDIStaticMesh_InstanceData* InstData)
 {
-	return Res.AreaWeightedSectionSamplers[SecIdx].GetEntryIndex(RandStream.GetFraction(), RandStream.GetFraction());
+	FStaticMeshSection&  Sec = Res.Sections[SecIdx];
+	int32 Tri = Res.AreaWeightedSectionSamplers[SecIdx].GetEntryIndex(RandStream.GetFraction(), RandStream.GetFraction());
+	return (Sec.FirstIndex / 3) + Tri;
 }
 
 template<>
@@ -1474,7 +1453,7 @@ FORCEINLINE int32 UNiagaraDataInterfaceStaticMesh::RandomTriIndexOnSection<TInte
 {
 	FStaticMeshSection&  Sec = Res.Sections[SecIdx];
 	int32 Tri = RandStream.RandRange(0, Sec.NumTriangles - 1);
-	return Sec.FirstIndex + Tri * 3;
+	return (Sec.FirstIndex / 3) + Tri;
 }
 
 template<typename TAreaWeighted>
@@ -1490,9 +1469,11 @@ void UNiagaraDataInterfaceStaticMesh::RandomTriCoordOnSection(FVectorVMContext& 
 
 	FStaticMeshLODResources& Res = InstData->Mesh->RenderData->LODResources[0];
 	FIndexArrayView Indices = Res.IndexBuffer.GetArrayView();
+	const int32 MaxSection = Res.Sections.Num() - 1;
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
-		int32 SecIdx = SectionIdxParam.Get();
+
+		int32 SecIdx = FMath::Clamp(SectionIdxParam.Get(), 0, MaxSection);
 		*OutTri.GetDest() = RandomTriIndexOnSection<TAreaWeighted>(Context.RandStream, Res, SecIdx, InstData);
 		FVector Bary = RandomBarycentricCoord(Context.RandStream);
 		*OutBaryX.GetDest() = Bary.X;
@@ -1958,317 +1939,414 @@ bool UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FName&  DefinitionFu
 		{TEXT("MeshVertexBufferName"), ParamNames.MeshVertexBufferName},
 		{TEXT("MeshTangentBufferName"), ParamNames.MeshTangentBufferName},
 		{TEXT("MeshTexCoordBufferName"), ParamNames.MeshTexCoordBufferName},
+		{TEXT("MeshColorBufferName"), ParamNames.MeshColorBufferName},
 		{TEXT("InstanceTransformName"), ParamNames.InstanceTransformName},
+		{TEXT("InstanceTransformInverseTransposed"), ParamNames.InstanceTransformInverseTransposedName},
 		{TEXT("InstancePrevTransformName"), ParamNames.InstancePrevTransformName},
 		{TEXT("InstanceInvDeltaTimeName"), ParamNames.InstanceInvDeltaTimeName},
+		{TEXT("InstanceWorldVelocity"), ParamNames.InstanceWorldVelocityName},
 		{TEXT("AreaWeightedSamplingName"), ParamNames.AreaWeightedSamplingName},
 		{TEXT("NumTexCoordName"), ParamNames.NumTexCoordName},
 	};
 
-	if (true)	// make sure mesh has vertex and index buffer?
+	if (DefinitionFunctionName == StaticMeshHelpers::RandomSectionName)
 	{
-		if (DefinitionFunctionName == StaticMeshHelpers::RandomSectionName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::RandomTriCoordName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-				void {InstanceFunctionName} (out {MeshTriCoordinateStructName} Out_Coord)
-				{
-					float RandS0 = NiagaraInternalNoise(1, 2, 3);
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (out int Out_Section)
+			{
+				float RandS0 = NiagaraInternalNoise(1, 2, 3);
+				// Uniform sampling on mesh surface  (using alias method from Alias method from FWeightedRandomSampler)
+				uint SectionIndex = min(uint(RandS0 * float({SectionCountName})), {SectionCountName}-1);
+				uint4 SectionData = {MeshSectionBufferName}[SectionIndex];
 
-					// Uniform sampling on mesh surface  (using alias method from Alias method from FWeightedRandomSampler)
-					uint SectionIndex = min(uint(RandS0 * float({SectionCountName})), {SectionCountName}-1);
-					uint4 SectionData = {MeshSectionBufferName}[SectionIndex];
+				// Alias check
+				float RandS1 = NiagaraInternalNoise(1, 2, 3);
+				if( RandS1 > asfloat(SectionData.z) )
+				{
+					SectionIndex = SectionData.w;
+				}
+				Out_Section = SectionIndex;
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::RandomTriCoordName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (out {MeshTriCoordinateStructName} Out_Coord)
+			{
+				float RandS0 = NiagaraInternalNoise(1, 2, 3);
+
+				// Uniform sampling on mesh surface  (using alias method from Alias method from FWeightedRandomSampler)
+				uint SectionIndex = min(uint(RandS0 * float({SectionCountName})), {SectionCountName}-1);
+				uint4 SectionData = {MeshSectionBufferName}[SectionIndex];
+
+				// Alias check
+				float RandS1 = NiagaraInternalNoise(1, 2, 3);
+				if( RandS1 > asfloat(SectionData.z) )
+				{
+					SectionData = {MeshSectionBufferName}[SectionData.w];
+				}
+
+				uint SectionFirstTriangle  = SectionData.x;
+				uint SectionTriangleCount = SectionData.y;
+
+				float RandT0 = NiagaraInternalNoise(1, 2, 3);
+				[branch]
+				if({AreaWeightedSamplingName}==0)
+				{
+					// Uniform triangle id selection
+					Out_Coord.Tri = SectionFirstTriangle + min(uint(RandT0*float(SectionTriangleCount)), SectionTriangleCount-1); // avoid % by using mul/min to Tri = SectionTriangleCount
+				}
+				else
+				{
+					// Uniform area weighted position selection (using alias method from Alias method from FWeightedRandomSampler)
+					uint TriangleIndex = min(uint(RandT0*float(SectionTriangleCount)), SectionTriangleCount-1);
+					uint4 TriangleData = {MeshTriangleBufferName}[SectionFirstTriangle + TriangleIndex];
 
 					// Alias check
-					float RandS1 = NiagaraInternalNoise(1, 2, 3);
-					if( RandS1 > asfloat(SectionData.z) )
+					float RandT1 = NiagaraInternalNoise(1, 2, 3);
+					if( RandT1 > asfloat(TriangleData.x) )
 					{
-						SectionData = {MeshSectionBufferName}[SectionData.w];
+						TriangleIndex = TriangleData.y;
 					}
-
-					uint SectionFirstIndex    = SectionData.x;
-					uint SectionTriangleCount = SectionData.y;
-
-					float RandT0 = NiagaraInternalNoise(1, 2, 3);
-					[branch]
-					if({AreaWeightedSamplingName}==0)
-					{
-						// Uniform triangle id selection
-						Out_Coord.Tri = SectionFirstIndex + 3 * min(uint(RandT0*float(SectionTriangleCount)), SectionTriangleCount-1); // avoid % by using mul/min to Tri = SectionTriangleCount
-					}
-					else
-					{
-						// Uniform area weighted position selection (using alias method from Alias method from FWeightedRandomSampler)
-						uint FirstTriangleProb = SectionFirstIndex / 3;
-						uint TriangleIndex = min(uint(RandT0*float(SectionTriangleCount)), SectionTriangleCount-1);
-						uint4 TriangleData = {MeshTriangleBufferName}[FirstTriangleProb + TriangleIndex];
-
-
-						// Alias check
-						float RandT1 = NiagaraInternalNoise(1, 2, 3);
-						if( RandT1 > asfloat(TriangleData.x) )
-						{
-							TriangleIndex = TriangleData.y;
-						}
-						Out_Coord.Tri = SectionFirstIndex + 3 * TriangleIndex;
-					}
-
-					float r0 = NiagaraInternalNoise(1, 2, 3);
-					float r1 = NiagaraInternalNoise(1, 2, 3);
-					float sqrt0 = sqrt(r0);
-					float sqrt1 = sqrt(r1);
-					Out_Coord.BaryCoord = float3(1.0f - sqrt0, sqrt0 * (1.0 - r1), r1 * sqrt0);
+					Out_Coord.Tri = SectionFirstTriangle + TriangleIndex;
 				}
-				)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::RandomTriCoordVCFilteredName)
+
+				float r0 = NiagaraInternalNoise(1, 2, 3);
+				float r1 = NiagaraInternalNoise(1, 2, 3);
+				float sqrt0 = sqrt(r0);
+				float sqrt1 = sqrt(r1);
+				Out_Coord.BaryCoord = float3(1.0f - sqrt0, sqrt0 * (1.0 - r1), r1 * sqrt0);
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	//else if (DefinitionFunctionName == StaticMeshHelpers::RandomTriCoordVCFilteredName)
+	//{
+	//}
+	else if (DefinitionFunctionName == StaticMeshHelpers::RandomTriCoordOnSectionName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in int In_Section, out {MeshTriCoordinateStructName} Out_Coord)
+			{
+				int Section = clamp(In_Section, 0, {SectionCountName} - 1);
+
+				uint4 SectionData = {MeshSectionBufferName}[Section];
+				uint SectionFirstTriangle = SectionData.x;
+				uint SectionTriangleCount = SectionData.y;
+
+				float RandT0 = NiagaraInternalNoise(1, 2, 3);
+				[branch]
+				if({AreaWeightedSamplingName}==0)
+				{
+					// Uniform triangle id selection
+					Out_Coord.Tri = SectionFirstTriangle + min(uint(RandT0*float(SectionTriangleCount)), SectionTriangleCount-1); // avoid % by using mul/min to Tri = SectionTriangleCount
+				}
+				else
+				{
+					// Uniform area weighted position selection (using alias method from Alias method from FWeightedRandomSampler)
+					uint TriangleIndex = min(uint(RandT0*float(SectionTriangleCount)), SectionTriangleCount-1);
+					uint4 TriangleData = {MeshTriangleBufferName}[SectionFirstTriangle + TriangleIndex];
+
+					// Alias check
+					float RandT1 = NiagaraInternalNoise(1, 2, 3);
+					if( RandT1 > asfloat(TriangleData.x) )
+					{
+						TriangleIndex = TriangleData.y;
+					}
+					Out_Coord.Tri = SectionFirstTriangle + TriangleIndex;
+				}
+
+				float r0 = NiagaraInternalNoise(1, 2, 3);
+				float r1 = NiagaraInternalNoise(1, 2, 3);
+				float sqrt0 = sqrt(r0);
+				float sqrt1 = sqrt(r1);
+				Out_Coord.BaryCoord = float3(1.0f - sqrt0, sqrt0 * (1.0 - r1), r1 * sqrt0);
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriPositionName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position)
+			{
+				uint TriangleIndex = In_Coord.Tri * 3;
+				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
+				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
+				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
+
+				// I could not find a R32G32B32f format to create an SRV on that buffer. So float load it is for now...
+				float3 vertex0 = float3({MeshVertexBufferName}[VertexIndex0], {MeshVertexBufferName}[VertexIndex0+1], {MeshVertexBufferName}[VertexIndex0+2]);
+				float3 vertex1 = float3({MeshVertexBufferName}[VertexIndex1], {MeshVertexBufferName}[VertexIndex1+1], {MeshVertexBufferName}[VertexIndex1+2]);
+				float3 vertex2 = float3({MeshVertexBufferName}[VertexIndex2], {MeshVertexBufferName}[VertexIndex2+1], {MeshVertexBufferName}[VertexIndex2+2]);
+				Out_Position = vertex0 * In_Coord.BaryCoord.x + vertex1 * In_Coord.BaryCoord.y + vertex2 * In_Coord.BaryCoord.z;
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriPositionWSName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position)
+			{
+				uint TriangleIndex = In_Coord.Tri * 3;
+				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
+				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
+				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
+
+				// I could not find a R32G32B32f format to create an SRV on that buffer. So float load it is for now...
+				float3 vertex0 = float3({MeshVertexBufferName}[VertexIndex0], {MeshVertexBufferName}[VertexIndex0+1], {MeshVertexBufferName}[VertexIndex0+2]);
+				float3 vertex1 = float3({MeshVertexBufferName}[VertexIndex1], {MeshVertexBufferName}[VertexIndex1+1], {MeshVertexBufferName}[VertexIndex1+2]);
+				float3 vertex2 = float3({MeshVertexBufferName}[VertexIndex2], {MeshVertexBufferName}[VertexIndex2+1], {MeshVertexBufferName}[VertexIndex2+2]);
+				float3 Position = vertex0 * In_Coord.BaryCoord.x + vertex1 * In_Coord.BaryCoord.y + vertex2 * In_Coord.BaryCoord.z;
+
+				Out_Position = mul(float4(Position, 1.0), {InstanceTransformName}).xyz;
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriNormalName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+		void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Normal)
 		{
-			// unimplemented();
+			uint TriangleIndex = In_Coord.Tri * 3;
+			uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
+			uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
+			uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
+
+			float3 Normal0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyz);
+			float3 Normal1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyz);
+			float3 Normal2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyz);
+
+			float3 Normal   = Normal0 * In_Coord.BaryCoord.x + Normal1 * In_Coord.BaryCoord.y + Normal2 * In_Coord.BaryCoord.z;
+
+			Out_Normal = normalize(Normal);
 		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::RandomTriCoordOnSectionName)
+		)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriNormalWSName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+		void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Normal)
 		{
-			// unimplemented();
+			uint TriangleIndex = In_Coord.Tri * 3;
+			uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
+			uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
+			uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
+
+			float3 Normal0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyz);
+			float3 Normal1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyz);
+			float3 Normal2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyz);
+
+			float3 Normal   = Normal0 * In_Coord.BaryCoord.x + Normal1 * In_Coord.BaryCoord.y + Normal2 * In_Coord.BaryCoord.z;
+
+			Out_Normal = normalize(mul(float4(Normal, 0.0), {InstanceTransformName}).xyz);
 		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriPositionName)
+		)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriTangentsName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+		void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
 		{
-			static const TCHAR *FormatSample = TEXT(R"(
-				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position)
+			uint TriangleIndex = In_Coord.Tri * 3;
+			uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
+			uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
+			uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
+
+			float3 TangentX0 = TangentBias({MeshTangentBufferName}[VertexIndex0  ].xyz);
+			float4 TangentZ0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyzw);
+			float3 TangentX1 = TangentBias({MeshTangentBufferName}[VertexIndex1  ].xyz);
+			float4 TangentZ1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyzw);
+			float3 TangentX2 = TangentBias({MeshTangentBufferName}[VertexIndex2  ].xyz);
+			float4 TangentZ2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyzw);
+
+			float3 Binormal0   = cross(TangentZ0.xyz, TangentX0.xyz) * TangentZ0.w;
+			float3 Binormal1   = cross(TangentZ1.xyz, TangentX1.xyz) * TangentZ1.w;
+			float3 Binormal2   = cross(TangentZ2.xyz, TangentX2.xyz) * TangentZ2.w;
+
+			Out_Normal   = normalize(TangentZ0.xyz * In_Coord.BaryCoord.x + TangentZ1.xyz * In_Coord.BaryCoord.y + TangentZ2.xyz * In_Coord.BaryCoord.z);  // Normal is TangentZ
+			Out_Tangent  = normalize(TangentX0.xyz * In_Coord.BaryCoord.x + TangentX1.xyz * In_Coord.BaryCoord.y + TangentX2.xyz * In_Coord.BaryCoord.z);
+			Out_Binormal = normalize(Binormal0.xyz * In_Coord.BaryCoord.x + Binormal1.xyz * In_Coord.BaryCoord.y + Binormal2.xyz * In_Coord.BaryCoord.z);
+		}
+		)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriTangentsWSName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+		void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
+		{
+			uint TriangleIndex = In_Coord.Tri * 3;
+			uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
+			uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
+			uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
+
+			float3 TangentX0 = TangentBias({MeshTangentBufferName}[VertexIndex0  ].xyz);
+			float4 TangentZ0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyzw);
+			float3 TangentX1 = TangentBias({MeshTangentBufferName}[VertexIndex1  ].xyz);
+			float4 TangentZ1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyzw);
+			float3 TangentX2 = TangentBias({MeshTangentBufferName}[VertexIndex2  ].xyz);
+			float4 TangentZ2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyzw);
+
+			float3 Binormal0   = cross(TangentZ0.xyz, TangentX0.xyz) * TangentZ0.w;
+			float3 Binormal1   = cross(TangentZ1.xyz, TangentX1.xyz) * TangentZ1.w;
+			float3 Binormal2   = cross(TangentZ2.xyz, TangentX2.xyz) * TangentZ2.w;
+
+			float3 Normal   = TangentZ0.xyz * In_Coord.BaryCoord.x + TangentZ1.xyz * In_Coord.BaryCoord.y + TangentZ2.xyz * In_Coord.BaryCoord.z;  // Normal is TangentZ
+			float3 Tangent  = TangentX0.xyz * In_Coord.BaryCoord.x + TangentX1.xyz * In_Coord.BaryCoord.y + TangentX2.xyz * In_Coord.BaryCoord.z;
+			float3 Binormal = Binormal0.xyz * In_Coord.BaryCoord.x + Binormal1.xyz * In_Coord.BaryCoord.y + Binormal2.xyz * In_Coord.BaryCoord.z;
+
+			float3 NormalWorld  = normalize(mul(float4(Normal  , 0.0), {InstanceTransformName}).xyz);
+			float3 TangentWorld = normalize(mul(float4(Tangent , 0.0), {InstanceTransformName}).xyz);
+			float3 BinormalWorld= normalize(mul(float4(Binormal, 0.0), {InstanceTransformName}).xyz);
+
+			Out_Normal = NormalWorld;
+			Out_Tangent = TangentWorld;
+			Out_Binormal = BinormalWorld;
+		}
+		)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriColorName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float4 Out_Color)
+			{
+				uint TriangleIndex = In_Coord.Tri * 3;
+				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ];
+				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1];
+				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2];
+
+				float4 Color0 = {MeshColorBufferName}[VertexIndex0] FMANUALFETCH_COLOR_COMPONENT_SWIZZLE;
+				float4 Color1 = {MeshColorBufferName}[VertexIndex1] FMANUALFETCH_COLOR_COMPONENT_SWIZZLE;
+				float4 Color2 = {MeshColorBufferName}[VertexIndex2] FMANUALFETCH_COLOR_COMPONENT_SWIZZLE;
+
+				Out_Color = Color0 * In_Coord.BaryCoord.x + Color1 * In_Coord.BaryCoord.y + Color2 * In_Coord.BaryCoord.z;
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriUVName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, in int In_UVSet, out float2 Out_UV)
+			{
+				if({NumTexCoordName}>0)
 				{
 					uint TriangleIndex = In_Coord.Tri * 3;
-					uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
-					uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
-					uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
+					uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ];
+					uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1];
+					uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2];
 
-					// I could not find a R32G32B32f format to create an SRV on that buffer. So float load it is for now...
-					float3 vertex0 = float3({MeshVertexBufferName}[VertexIndex0], {MeshVertexBufferName}[VertexIndex0+1], {MeshVertexBufferName}[VertexIndex0+2]);
-					float3 vertex1 = float3({MeshVertexBufferName}[VertexIndex1], {MeshVertexBufferName}[VertexIndex1+1], {MeshVertexBufferName}[VertexIndex1+2]);
-					float3 vertex2 = float3({MeshVertexBufferName}[VertexIndex2], {MeshVertexBufferName}[VertexIndex2+1], {MeshVertexBufferName}[VertexIndex2+2]);
-					Out_Position = vertex0 * In_Coord.BaryCoord.x + vertex1 * In_Coord.BaryCoord.y + vertex2 * In_Coord.BaryCoord.z;
+					uint stride = {NumTexCoordName};
+					uint SelectedUVSet = clamp(In_UVSet, 0, {NumTexCoordName}-1);
+					float2 UV0 = {MeshTexCoordBufferName}[VertexIndex0 * stride + SelectedUVSet];
+					float2 UV1 = {MeshTexCoordBufferName}[VertexIndex1 * stride + SelectedUVSet];
+					float2 UV2 = {MeshTexCoordBufferName}[VertexIndex2 * stride + SelectedUVSet];
+
+					Out_UV = UV0 * In_Coord.BaryCoord.x + UV1 * In_Coord.BaryCoord.y + UV2 * In_Coord.BaryCoord.z;
 				}
-				)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriPositionWSName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position)
+				else	
 				{
-					uint TriangleIndex = In_Coord.Tri * 3;
-					uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
-					uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
-					uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
-
-					// I could not find a R32G32B32f format to create an SRV on that buffer. So float load it is for now...
-					float3 vertex0 = float3({MeshVertexBufferName}[VertexIndex0], {MeshVertexBufferName}[VertexIndex0+1], {MeshVertexBufferName}[VertexIndex0+2]);
-					float3 vertex1 = float3({MeshVertexBufferName}[VertexIndex1], {MeshVertexBufferName}[VertexIndex1+1], {MeshVertexBufferName}[VertexIndex1+2]);
-					float3 vertex2 = float3({MeshVertexBufferName}[VertexIndex2], {MeshVertexBufferName}[VertexIndex2+1], {MeshVertexBufferName}[VertexIndex2+2]);
-					float3 Position = vertex0 * In_Coord.BaryCoord.x + vertex1 * In_Coord.BaryCoord.y + vertex2 * In_Coord.BaryCoord.z;
-
-					Out_Position = mul(float4(Position, 1.0), {InstanceTransformName}).xyz;
+					Out_UV = 0.0f;
 				}
-				)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriNormalName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
-			{
-				uint TriangleIndex = In_Coord.Tri * 3;
-				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
-				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
-				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
-
-				float3 Normal0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyz);
-				float3 Normal1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyz);
-				float3 Normal2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyz);
-
-				float3 Normal   = Normal0 * In_Coord.BaryCoord.x + Normal1 * In_Coord.BaryCoord.y + Normal2 * In_Coord.BaryCoord.z;
-
-				Out_Normal = normalize(Normal);
 			}
 			)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriNormalWSName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetTriPositionAndVelocityName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position, out float3 Out_Velocity)
 			{
 				uint TriangleIndex = In_Coord.Tri * 3;
-				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
-				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
-				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
+				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
+				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
+				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
 
-				float3 Normal0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyz);
-				float3 Normal1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyz);
-				float3 Normal2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyz);
+				// I could not find a R32G32B32f format to create an SRV on that buffer. So float load it is for now...
+				float3 vertex0 = float3({MeshVertexBufferName}[VertexIndex0], {MeshVertexBufferName}[VertexIndex0+1], {MeshVertexBufferName}[VertexIndex0+2]);
+				float3 vertex1 = float3({MeshVertexBufferName}[VertexIndex1], {MeshVertexBufferName}[VertexIndex1+1], {MeshVertexBufferName}[VertexIndex1+2]);
+				float3 vertex2 = float3({MeshVertexBufferName}[VertexIndex2], {MeshVertexBufferName}[VertexIndex2+1], {MeshVertexBufferName}[VertexIndex2+2]);
+				float3 WSPos = vertex0 * In_Coord.BaryCoord.x + vertex1 * In_Coord.BaryCoord.y + vertex2 * In_Coord.BaryCoord.z;
+				float3 PrevWSPos = WSPos;
 
-				float3 Normal   = Normal0 * In_Coord.BaryCoord.x + Normal1 * In_Coord.BaryCoord.y + Normal2 * In_Coord.BaryCoord.z;
+				WSPos = mul(float4(WSPos,1.0), {InstanceTransformName}).xyz;
+				PrevWSPos = mul(float4(PrevWSPos,1.0), {InstancePrevTransformName}).xyz;
 
-				Out_Normal = normalize(mul(float4(Normal, 0.0), {InstanceTransformName}).xyz);
+				Out_Position = WSPos;
+				Out_Velocity = (WSPos - PrevWSPos) * {InstanceInvDeltaTimeName};
 			}
 			)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriTangentsName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetMeshLocalToWorldName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (out float4x4 Out_Transform)
 			{
-				uint TriangleIndex = In_Coord.Tri * 3;
-				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
-				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
-				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
-
-				float3 TangentX0 = TangentBias({MeshTangentBufferName}[VertexIndex0  ].xyz);
-				float4 TangentZ0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyzw);
-				float3 TangentX1 = TangentBias({MeshTangentBufferName}[VertexIndex1  ].xyz);
-				float4 TangentZ1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyzw);
-				float3 TangentX2 = TangentBias({MeshTangentBufferName}[VertexIndex2  ].xyz);
-				float4 TangentZ2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyzw);
-
-				float3 Binormal0   = cross(TangentZ0.xyz, TangentX0.xyz) * TangentZ0.w;
-				float3 Binormal1   = cross(TangentZ1.xyz, TangentX1.xyz) * TangentZ1.w;
-				float3 Binormal2   = cross(TangentZ2.xyz, TangentX2.xyz) * TangentZ2.w;
-
-				Out_Normal   = normalize(TangentZ0.xyz * In_Coord.BaryCoord.x + TangentZ1.xyz * In_Coord.BaryCoord.y + TangentZ2.xyz * In_Coord.BaryCoord.z);  // Normal is TangentZ
-				Out_Tangent  = normalize(TangentX0.xyz * In_Coord.BaryCoord.x + TangentX1.xyz * In_Coord.BaryCoord.y + TangentX2.xyz * In_Coord.BaryCoord.z);
-				Out_Binormal = normalize(Binormal0.xyz * In_Coord.BaryCoord.x + Binormal1.xyz * In_Coord.BaryCoord.y + Binormal2.xyz * In_Coord.BaryCoord.z);
+				Out_Transform = {InstanceTransformName};
 			}
 			)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriTangentsWSName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-			void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Tangent, out float3 Out_Binormal, out float3 Out_Normal)
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetMeshLocalToWorldInverseTransposedName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (out float4x4 Out_Transform)
 			{
-				uint TriangleIndex = In_Coord.Tri * 3;
-				uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 2;
-				uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 2;
-				uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 2;
-
-				float3 TangentX0 = TangentBias({MeshTangentBufferName}[VertexIndex0  ].xyz);
-				float4 TangentZ0 = TangentBias({MeshTangentBufferName}[VertexIndex0+1].xyzw);
-				float3 TangentX1 = TangentBias({MeshTangentBufferName}[VertexIndex1  ].xyz);
-				float4 TangentZ1 = TangentBias({MeshTangentBufferName}[VertexIndex1+1].xyzw);
-				float3 TangentX2 = TangentBias({MeshTangentBufferName}[VertexIndex2  ].xyz);
-				float4 TangentZ2 = TangentBias({MeshTangentBufferName}[VertexIndex2+1].xyzw);
-
-				float3 Binormal0   = cross(TangentZ0.xyz, TangentX0.xyz) * TangentZ0.w;
-				float3 Binormal1   = cross(TangentZ1.xyz, TangentX1.xyz) * TangentZ1.w;
-				float3 Binormal2   = cross(TangentZ2.xyz, TangentX2.xyz) * TangentZ2.w;
-
-				float3 Normal   = TangentZ0.xyz * In_Coord.BaryCoord.x + TangentZ1.xyz * In_Coord.BaryCoord.y + TangentZ2.xyz * In_Coord.BaryCoord.z;  // Normal is TangentZ
-				float3 Tangent  = TangentX0.xyz * In_Coord.BaryCoord.x + TangentX1.xyz * In_Coord.BaryCoord.y + TangentX2.xyz * In_Coord.BaryCoord.z;
-				float3 Binormal = Binormal0.xyz * In_Coord.BaryCoord.x + Binormal1.xyz * In_Coord.BaryCoord.y + Binormal2.xyz * In_Coord.BaryCoord.z;
-
-				float3 NormalWorld  = normalize(mul(float4(Normal  , 0.0), {InstanceTransformName}).xyz);
-				float3 TangentWorld = normalize(mul(float4(Tangent , 0.0), {InstanceTransformName}).xyz);
-				float3 BinormalWorld= normalize(mul(float4(Binormal, 0.0), {InstanceTransformName}).xyz);
-
-				Out_Normal = NormalWorld;
-				Out_Tangent = TangentWorld;
-				Out_Binormal = BinormalWorld;
+				Out_Transform = {InstanceTransformInverseTransposed};
 			}
 			)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriColorName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-					void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float4 Out_Color)
-					{
-						Out_Color = 0.0f;
-					}
-					)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriUVName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, in int In_UVSet, out float2 Out_UV)
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetMeshWorldVelocityName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+			void {InstanceFunctionName} (out float3 Out_Velocity)
+			{
+				Out_Velocity = {InstanceWorldVelocity};
+			}
+			)");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetVertexPositionName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+				void {InstanceFunctionName} (in int VertexIndex, out float3 Out_Position)
 				{
-					if({NumTexCoordName}>0)
-					{
-						uint TriangleIndex = In_Coord.Tri * 3;
-						uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ];
-						uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1];
-						uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2];
-
-						uint stride = {NumTexCoordName};
-						uint SelectedUVSet = clamp(In_UVSet, 0, {NumTexCoordName}-1);
-						float2 UV0 = {MeshTexCoordBufferName}[VertexIndex0 * stride + SelectedUVSet];
-						float2 UV1 = {MeshTexCoordBufferName}[VertexIndex1 * stride + SelectedUVSet];
-						float2 UV2 = {MeshTexCoordBufferName}[VertexIndex2 * stride + SelectedUVSet];
-
-						Out_UV = UV0 * In_Coord.BaryCoord.x + UV1 * In_Coord.BaryCoord.y + UV2 * In_Coord.BaryCoord.z;
-					}
-					else	
-					{
-						Out_UV = 0.0f;
-					}
+					VertexIndex *= 3;
+					Out_Position = float3({MeshVertexBufferName}[VertexIndex], {MeshVertexBufferName}[VertexIndex+1], {MeshVertexBufferName}[VertexIndex+2]);
 				}
 				)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetTriPositionAndVelocityName)
-		{
-			static const TCHAR *FormatSample = TEXT(R"(
-				void {InstanceFunctionName} (in {MeshTriCoordinateStructName} In_Coord, out float3 Out_Position, out float3 Out_Velocity)
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else if (DefinitionFunctionName == StaticMeshHelpers::GetVertexPositionWSName)
+	{
+		static const TCHAR *FormatSample = TEXT(R"(
+				void {InstanceFunctionName} (in int VertexIndex, out float3 Out_Position)
 				{
-					uint TriangleIndex = In_Coord.Tri * 3;
-					uint VertexIndex0 = {MeshIndexBufferName}[TriangleIndex  ] * 3;
-					uint VertexIndex1 = {MeshIndexBufferName}[TriangleIndex+1] * 3;
-					uint VertexIndex2 = {MeshIndexBufferName}[TriangleIndex+2] * 3;
-
-					// I could not find a R32G32B32f format to create an SRV on that buffer. So float load it is for now...
-					float3 vertex0 = float3({MeshVertexBufferName}[VertexIndex0], {MeshVertexBufferName}[VertexIndex0+1], {MeshVertexBufferName}[VertexIndex0+2]);
-					float3 vertex1 = float3({MeshVertexBufferName}[VertexIndex1], {MeshVertexBufferName}[VertexIndex1+1], {MeshVertexBufferName}[VertexIndex1+2]);
-					float3 vertex2 = float3({MeshVertexBufferName}[VertexIndex2], {MeshVertexBufferName}[VertexIndex2+1], {MeshVertexBufferName}[VertexIndex2+2]);
-					float3 WSPos = vertex0 * In_Coord.BaryCoord.x + vertex1 * In_Coord.BaryCoord.y + vertex2 * In_Coord.BaryCoord.z;
-					float3 PrevWSPos = WSPos;
-
-					WSPos = mul(float4(WSPos,1.0), {InstanceTransformName}).xyz;
-					PrevWSPos = mul(float4(PrevWSPos,1.0), {InstancePrevTransformName}).xyz;
-
-					Out_Position = WSPos;
-					Out_Velocity = (WSPos - PrevWSPos) * {InstanceInvDeltaTimeName};
+					VertexIndex *= 3;
+					Out_Position = float3({MeshVertexBufferName}[VertexIndex], {MeshVertexBufferName}[VertexIndex+1], {MeshVertexBufferName}[VertexIndex+2]);
+					Out_Position = mul(float4(Out_Position, 1.0), {InstanceTransformName}).xyz;
 				}
 				)");
-			OutHLSL += FString::Format(FormatSample, ArgsSample);
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetMeshLocalToWorldName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetMeshLocalToWorldInverseTransposedName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetMeshWorldVelocityName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetVertexPositionName)
-		{
-			// unimplemented();
-		}
-		else if (DefinitionFunctionName == StaticMeshHelpers::GetVertexPositionWSName)
-		{
-			// unimplemented();
-		}
-
-		OutHLSL += TEXT("\n");
-		return true;
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+	}
+	else
+	{
+		// This function is not support
+		return false;
 	}
 
-	return false;
+	OutHLSL += TEXT("\n");
+	return true;
 }
 
 void UNiagaraDataInterfaceStaticMesh::GetParameterDefinitionHLSL(FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
@@ -2280,12 +2358,15 @@ void UNiagaraDataInterfaceStaticMesh::GetParameterDefinitionHLSL(FNiagaraDataInt
 	OutHLSL += TEXT("Buffer<float> ") + ParamNames.MeshVertexBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<float4> ") + ParamNames.MeshTangentBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<float2> ") + ParamNames.MeshTexCoordBufferName + TEXT(";\n");
+	OutHLSL += TEXT("Buffer<float4> ") + ParamNames.MeshColorBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<uint4> ") + ParamNames.MeshSectionBufferName + TEXT(";\n");
 	OutHLSL += TEXT("Buffer<uint4> ") + ParamNames.MeshTriangleBufferName + TEXT(";\n");
 	OutHLSL += TEXT("uint ") + ParamNames.SectionCountName + TEXT(";\n");
 	OutHLSL += TEXT("float4x4 ") + ParamNames.InstanceTransformName + TEXT(";\n");
+	OutHLSL += TEXT("float4x4 ") + ParamNames.InstanceTransformInverseTransposedName + TEXT(";\n");
 	OutHLSL += TEXT("float4x4 ") + ParamNames.InstancePrevTransformName + TEXT(";\n");
 	OutHLSL += TEXT("float ") + ParamNames.InstanceInvDeltaTimeName + TEXT(";\n");
+	OutHLSL += TEXT("float4 ") + ParamNames.InstanceWorldVelocityName + TEXT(";\n");
 	OutHLSL += TEXT("uint ") + ParamNames.AreaWeightedSamplingName + TEXT(";\n");	// Could be used for other flags
 	OutHLSL += TEXT("uint ") + ParamNames.NumTexCoordName + TEXT(";\n");
 }
@@ -2303,13 +2384,10 @@ void UNiagaraDataInterfaceStaticMesh::ProvidePerInstanceDataForRenderThread(void
 	DataToPass->PrevTransform = InstanceData->PrevTransform;
 }
 
-FNiagaraDataInterfaceParametersCS* 
-UNiagaraDataInterfaceStaticMesh::ConstructComputeParameters() const 
+FNiagaraDataInterfaceParametersCS* UNiagaraDataInterfaceStaticMesh::ConstructComputeParameters() const 
 {
 	return new FNiagaraDataInterfaceParametersCS_StaticMesh();
 }
-
-
 
 //////////////////////////////////////////////////////////////////////////
 

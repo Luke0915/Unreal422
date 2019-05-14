@@ -61,6 +61,7 @@ public:
 	FShaderResourceViewRHIParamRef GetBufferTangentSRV() const { return MeshTangentBufferSrv; }
 	FShaderResourceViewRHIParamRef GetBufferTexCoordSRV() const { return MeshTexCoordBufferSrv; }
 	FShaderResourceViewRHIParamRef GetBufferIndexSRV() const { return MeshIndexBufferSrv; }
+	FShaderResourceViewRHIParamRef GetBufferColorSRV() const { return MeshColorBufferSRV; }
 
 	FShaderResourceViewRHIParamRef GetBufferUniformTriangleSamplingSRV() const { return BufferUniformTriangleSamplingSRV; }
 
@@ -89,10 +90,11 @@ protected:
 
 	// Cached SRV to gpu buffers of the mesh we spawn from 
 	FShaderResourceViewRHIRef MeshIndexBufferSrv;
-	FShaderResourceViewRHIParamRef MeshVertexBufferSrv;
-	FShaderResourceViewRHIParamRef MeshTangentBufferSrv;
-	FShaderResourceViewRHIParamRef MeshTexCoordBufferSrv;
+	FShaderResourceViewRHIRef MeshVertexBufferSrv;
+	FShaderResourceViewRHIRef MeshTangentBufferSrv;
+	FShaderResourceViewRHIRef MeshTexCoordBufferSrv;
 	uint32 NumTexCoord;
+	FShaderResourceViewRHIRef MeshColorBufferSRV;
 };
 
 struct FNDIStaticMesh_InstanceData
@@ -215,12 +217,15 @@ public:
 	static const FString MeshVertexBufferName;
 	static const FString MeshTangentBufferName;
 	static const FString MeshTexCoordBufferName;
+	static const FString MeshColorBufferName;
 	static const FString MeshSectionBufferName;
 	static const FString MeshTriangleBufferName;
 	static const FString SectionCountName;
 	static const FString InstanceTransformName;
+	static const FString InstanceTransformInverseTransposedName;
 	static const FString InstancePrevTransformName;
 	static const FString InstanceInvDeltaTimeName;
+	static const FString InstanceWorldVelocityName;
 	static const FString AreaWeightedSamplingName;
 	static const FString NumTexCoordName;
 
