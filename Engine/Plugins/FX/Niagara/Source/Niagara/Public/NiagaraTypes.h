@@ -321,6 +321,7 @@ public:
 		: bAdvancedDisplay(false)
 		, EditorSortPriority(0)
 		, bInlineEditConditionToggle(false)
+		, bIsStaticSwitch(false)
 	{
 	}
 public:
