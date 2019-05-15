@@ -924,10 +924,10 @@ void UNiagaraComponent::SendRenderDynamicData_Concurrent()
 		ENQUEUE_RENDER_COMMAND(ResetDataSetBuffers)(
 			[NiagaraProxy, DynamicData = MoveTemp(NewDynamicData)](FRHICommandListImmediate& RHICmdList)
 		{
-			const TArray<FNiagaraRenderer*>& EmitterRenderers = NiagaraProxy->GetEmitterRenderers();
-			for (int32 i = 0; i < EmitterRenderers.Num(); ++i)
+			const TArray<FNiagaraRenderer*>& EmitterRenderers_RT = NiagaraProxy->GetEmitterRenderers();
+			for (int32 i = 0; i < EmitterRenderers_RT.Num(); ++i)
 			{
-				if (FNiagaraRenderer* Renderer = EmitterRenderers[i])
+				if (FNiagaraRenderer* Renderer = EmitterRenderers_RT[i])
 				{
 					Renderer->SetDynamicData_RenderThread(DynamicData[i]);
 				}
