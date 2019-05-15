@@ -524,9 +524,9 @@ void FNiagaraDataBuffer::Allocate(uint32 InNumInstances, bool bMaintainExisting)
 
 	DEC_MEMORY_STAT_BY(STAT_NiagaraParticleMemory, FloatData.Max() + Int32Data.Max());
 
-	int32 OldFloatStride = FloatStride;
+	const uint32 OldFloatStride = FloatStride;
 	TArray<uint8> OldFloatData;
-	int32 OldInt32Stride = Int32Stride;
+	const uint32 OldInt32Stride = Int32Stride;
 	TArray<uint8> OldIntData;
 
 	if (bMaintainExisting)
@@ -549,20 +549,22 @@ void FNiagaraDataBuffer::Allocate(uint32 InNumInstances, bool bMaintainExisting)
 	{
 		if (FloatStride != OldFloatStride && FloatStride > 0 && OldFloatStride > 0)
 		{
+			const uint32 BytesToCopy = FMath::Min(OldFloatStride, FloatStride);
 			for (int32 CompIdx = (int32)Owner->TotalFloatComponents-1; CompIdx >= 0; --CompIdx)
 			{
 				uint8* Src = OldFloatData.GetData() + OldFloatStride * CompIdx;
 				uint8* Dst = FloatData.GetData() + FloatStride * CompIdx;
-				FMemory::Memcpy(Dst, Src, FloatStride);
+				FMemory::Memcpy(Dst, Src, BytesToCopy);
 			}
 		}
 		if (Int32Stride != OldInt32Stride && Int32Stride > 0 && OldInt32Stride > 0)
 		{
+			const uint32 BytesToCopy = FMath::Min(OldInt32Stride, Int32Stride);
 			for (int32 CompIdx = (int32)Owner->TotalInt32Components - 1; CompIdx >= 0; --CompIdx)
 			{
 				uint8* Src = OldIntData.GetData() + OldInt32Stride * CompIdx;
 				uint8* Dst = Int32Data.GetData() + Int32Stride * CompIdx;
-				FMemory::Memcpy(Dst, Src, Int32Stride);
+				FMemory::Memcpy(Dst, Src, BytesToCopy);
 			}
 		}
 	}
