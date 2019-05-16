@@ -1485,7 +1485,7 @@ void UNiagaraGraph::RefreshParameterReferences() const
 		HandledPins.Add(Pin);
 	};
 
-	auto AddStaticParameterReference = [&](const FNiagaraVariable& Variable, const UNiagaraNode* Node)
+	auto AddStaticParameterReference = [&](const FNiagaraVariable& Variable, UNiagaraNode* Node)
 	{
 		FNiagaraGraphParameterReferenceCollection* ReferenceCollection = ParameterToReferencesMap.Find(Variable);
 		if (ReferenceCollection == nullptr)
