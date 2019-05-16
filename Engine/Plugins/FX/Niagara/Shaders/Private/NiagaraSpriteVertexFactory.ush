@@ -5,8 +5,8 @@
 	Shared by standard sprite particles and SubUV sprite particles.
 =============================================================================*/
 
-#include "VertexFactoryCommon.ush"
-#include "ParticleVertexFactoryCommon.ush"
+#include "/Engine/Private/VertexFactoryCommon.ush"
+#include "/Engine/Private/ParticleVertexFactoryCommon.ush"
 #include "NiagaraVFParticleAccess.usf"
 
 // These are only enabled for SM5 due to limited interpolators elsewhere

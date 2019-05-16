@@ -4,7 +4,7 @@
 	MeshParticleVertexFactory.usf: Mesh particle vertex factory shader code.
 =============================================================================*/
 
-#include "VertexFactoryCommon.ush"
+#include "/Engine/Private/VertexFactoryCommon.ush"
 #include "NiagaraVFParticleAccess.usf"
 
 // These are only enabled for SM5 due to limited interpolators elsewhere

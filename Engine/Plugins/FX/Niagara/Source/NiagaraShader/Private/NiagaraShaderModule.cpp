@@ -2,10 +2,20 @@
 
 #include "NiagaraShaderModule.h"
 #include "Modules/ModuleManager.h"
+#include "Interfaces/IPluginManager.h"
 
 IMPLEMENT_MODULE(INiagaraShaderModule, NiagaraShader);
 
 INiagaraShaderModule* INiagaraShaderModule::Singleton(nullptr);
+
+void INiagaraShaderModule::StartupModule()
+{
+	Singleton = this;
+
+	// Maps virtual shader source directory /Plugin/FX/Niagara to the plugin's actual Shaders directory.
+	FString PluginShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("Niagara"))->GetBaseDir(), TEXT("Shaders"));
+	AddShaderSourceDirectoryMapping(TEXT("/Plugin/FX/Niagara"), PluginShaderDir);
+}
 
 FDelegateHandle INiagaraShaderModule::SetOnProcessShaderCompilationQueue(FOnProcessQueue InOnProcessQueue)
 {

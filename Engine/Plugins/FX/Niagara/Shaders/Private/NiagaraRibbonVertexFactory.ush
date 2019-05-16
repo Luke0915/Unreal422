@@ -4,7 +4,7 @@
 	ParticleBeamTrailVertexFactory.hlsl: Particle vertex factory shader code.
 =============================================================================*/
 
-#include "VertexFactoryCommon.ush"
+#include "/Engine/Private/VertexFactoryCommon.ush"
 #include "NiagaraVFParticleAccess.usf"
 
 #define USE_PARTICLE_POSITION (FEATURE_LEVEL >= FEATURE_LEVEL_SM5 && NEEDS_PARTICLE_POSITION)

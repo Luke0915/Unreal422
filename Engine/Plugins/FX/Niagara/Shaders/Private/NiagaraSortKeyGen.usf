@@ -13,7 +13,7 @@
 		SORT_CUSTOM_DESCENDING
 ------------------------------------------------------------------------------*/
 
-#include "Common.ush"
+#include "/Engine/Private/Common.ush"
 
 #define NIAGARA_KEYGEN 1
 #include "NiagaraVFParticleAccess.usf"
