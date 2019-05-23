@@ -193,14 +193,31 @@ void NiagaraEmitterInstanceBatcher::ResizeBuffersAndGatherResources(FOverlappabl
 			DestinationData.AllocateGPU(RequiredInstances + 1, RHICmdList);
 			DestinationData.SetNumInstances(RequiredInstances);
 
+			if ( Shader->FloatInputBufferParam.IsBound() )
+			{
+				CurrDataBuffers.Add(CurrentData.GetGPUBufferFloat().UAV);
+			}
+			if ( Shader->IntInputBufferParam.IsBound() )
+			{
+				CurrBufferIntFloat.Add(CurrentData.GetGPUBufferInt().UAV);
+			}
+
+			if ( Shader->FloatOutputBufferParam.IsBound() )
+			{
+				DestDataBuffers.Add(DestinationData.GetGPUBufferFloat().UAV);
+			}
+			if ( Shader->IntOutputBufferParam.IsBound() )
+			{
+				DestBufferIntFloat.Add(DestinationData.GetGPUBufferInt().UAV);
+			}
+
 			Context->MainDataSet->EndSimulate();
 			Context->SetDataToRender(Instance.DestinationData);
 		}
 	}
 }
 
-void NiagaraEmitterInstanceBatcher::DispatchAllOnCompute(FOverlappableTicks& OverlappableTick, FRHICommandList& RHICmdList, FUniformBufferRHIParamRef ViewUniformBuffer,
-	FNiagaraBufferArray& DestDataBuffers, FNiagaraBufferArray& CurrDataBuffers, FNiagaraBufferArray& DestBufferIntFloat, FNiagaraBufferArray& CurrBufferIntFloat)
+void NiagaraEmitterInstanceBatcher::DispatchAllOnCompute(FOverlappableTicks& OverlappableTick, FRHICommandList& RHICmdList, FUniformBufferRHIParamRef ViewUniformBuffer, FNiagaraBufferArray& DestDataBuffers, FNiagaraBufferArray& CurrDataBuffers, FNiagaraBufferArray& DestBufferIntFloat, FNiagaraBufferArray& CurrBufferIntFloat)
 {
 	FRHICommandListImmediate& RHICmdListImmediate = FRHICommandListExecutor::GetImmediateCommandList();
 
@@ -753,6 +770,8 @@ void NiagaraEmitterInstanceBatcher::ResolveParticleSortBuffers(FRHICommandListIm
 
 			LastCount = SortBuffer.UsedIndexCount;
 		}
+
+		RHICmdList.TransitionResources(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EComputeToCompute, UAVs, NumBuffers);
 
 		CopyBufferCS->SetParameters(RHICmdList, ParticleSortBuffers.GetSortedVertexBufferSRV(ResultBufferIndex), UAVs, UsedIndexCounts, StartingIndex, NumBuffers);
 		DispatchComputeShader(RHICmdList, *CopyBufferCS, FMath::DivideAndRoundUp(LastCount - StartingIndex, NIAGARA_COPY_BUFFER_THREAD_COUNT), 1, 1);
