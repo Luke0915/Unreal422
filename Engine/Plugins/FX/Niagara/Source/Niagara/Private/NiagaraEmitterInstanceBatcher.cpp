@@ -32,7 +32,7 @@ DECLARE_GPU_STAT_NAMED(NiagaraIndexBufferClear, TEXT("Niagara index buffer clear
 
 uint32 FNiagaraComputeExecutionContext::TickCounter = 0;
 
-int32 GNiagaraOverlapCompute = -1;
+int32 GNiagaraOverlapCompute = 1;
 static FAutoConsoleVariableRef CVarNiagaraUseAsyncCompute(
 	TEXT("fx.NiagaraOverlapCompute"),
 	GNiagaraOverlapCompute,
