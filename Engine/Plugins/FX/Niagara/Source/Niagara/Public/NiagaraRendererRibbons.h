@@ -17,7 +17,7 @@ class FNiagaraDataSet;
 class NIAGARA_API FNiagaraRendererRibbons : public FNiagaraRenderer
 {
 public:
-	FNiagaraRendererRibbons(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);
+	FNiagaraRendererRibbons(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);	// FNiagaraRenderer Interface 
 
 	// FNiagaraRenderer Interface 
 	virtual void CreateRenderThreadResources() override;
@@ -31,6 +31,9 @@ public:
 	//FNiagaraInterface END
 
 	FORCEINLINE void AddDynamicParam(TArray<FNiagaraRibbonVertexDynamicParameter>& ParamData, const FVector4& DynamicParam);
+protected:
+	static void GenerateIndexBuffer(uint16* OutIndices, const TArray<int32>& SegmentData, int32 MaxTessellation, bool bInvertOrder, bool bCullTwistedStrips);
+
 private:
 	class FNiagaraRibbonVertexFactory *VertexFactory;
 	mutable TUniformBuffer<FPrimitiveUniformShaderParameters> WorldSpacePrimitiveUniformBuffer;
@@ -59,4 +62,13 @@ private:
 	int32 MaterialParamOffset1;
 	int32 MaterialParamOffset2;
 	int32 MaterialParamOffset3;
+
+	// Average curvature of the segments.
+	mutable float TessellationAngle = 0;
+	// Average angle of the curvature of the segments (in radian).
+	mutable float TessellationCurvature = 0;
+	// Average twist of the segments.
+	mutable float TessellationTwistAngle = 0;
+	// Average twist curvature of the segments.
+	mutable float TessellationTwistCurvature = 0;
 };
