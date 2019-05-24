@@ -25,6 +25,7 @@ void FNiagaraSharedObject::FlushDeletionList()
 		int32 i = 0;
 		while (i < DeferredDeletionList.Num())
 		{
+			check(DeferredDeletionList[i] != nullptr);
 			if (DeferredDeletionList[i]->IsInUse() == false)
 			{
 				delete DeferredDeletionList[i];
