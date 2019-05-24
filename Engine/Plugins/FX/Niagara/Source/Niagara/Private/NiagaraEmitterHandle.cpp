@@ -24,23 +24,6 @@ FNiagaraEmitterHandle::FNiagaraEmitterHandle() :
 {
 }
 
-FNiagaraEmitterHandle::FNiagaraEmitterHandle(UNiagaraEmitter& Emitter)
-	: Id(FGuid::NewGuid())
-	, IdName(*Id.ToString())
-	, bIsEnabled(true)
-	, Name(TEXT("Emitter"))
-#if WITH_EDITORONLY_DATA
-	, Source(&Emitter)
-	, LastMergedSource(&Emitter)
-	, bIsolated(false)
-#endif
-	, Instance(&Emitter)
-{
-#if WITH_EDITORONLY_DATA
-	Instance->GraphSource->MarkNotSynchronized(InitialNotSynchronizedReason);
-#endif
-}
-
 #if WITH_EDITORONLY_DATA
 FNiagaraEmitterHandle::FNiagaraEmitterHandle(UNiagaraEmitter& InSourceEmitter, FName InName, UNiagaraSystem& InOuterSystem)
 	: Id(FGuid::NewGuid())
@@ -52,8 +35,10 @@ FNiagaraEmitterHandle::FNiagaraEmitterHandle(UNiagaraEmitter& InSourceEmitter, F
 	, bIsolated(false)
 	, Instance(Cast<UNiagaraEmitter>(StaticDuplicateObject(Source, &InOuterSystem)))
 {
+	Instance->ClearFlags(RF_Standalone | RF_Public);
 	Instance->SetUniqueEmitterName(Name.ToString());
 	Instance->GraphSource->MarkNotSynchronized(InitialNotSynchronizedReason);
+	LastMergedSource->ClearFlags(RF_Standalone | RF_Public);
 }
 
 FNiagaraEmitterHandle::FNiagaraEmitterHandle(const FNiagaraEmitterHandle& InHandleToDuplicate, FName InDuplicateName, UNiagaraSystem& InDuplicateOwnerSystem)
@@ -167,9 +152,15 @@ FString FNiagaraEmitterHandle::GetUniqueInstanceName()const
 
 bool FNiagaraEmitterHandle::IsSynchronizedWithSource() const
 {
+	if (Source == nullptr && LastMergedSource == nullptr)
+	{
+		// If the emitter has no source and no last merged source than it is synchronized by default.
+		return true;
+	}
+
 	if (Source == nullptr || LastMergedSource == nullptr)
 	{
-		// If either the source or last merged sources is missing, then we're not synchronized.  The
+		// If either only the source or only the last merged sources is missing, then we're not synchronized.  The
 		// merge logic will detect this and print an appropriate message to the log.
 		return false;
 	}
@@ -256,6 +247,12 @@ INiagaraModule::FMergeEmitterResults FNiagaraEmitterHandle::MergeSourceChanges()
 		LastMergedSource->ClearFlags(RF_Standalone | RF_Public);
 	}
 	return MergeResults;
+}
+
+void FNiagaraEmitterHandle::RemoveSource()
+{
+	Source = nullptr;
+	LastMergedSource = nullptr;
 }
 
 #endif

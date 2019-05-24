@@ -39,6 +39,7 @@
 #include "AssetRegistryModule.h"
 #include "ARFilter.h"
 #include "EdGraph/EdGraphPin.h"
+#include "INiagaraEditorTypeUtilities.h"
 #include "ViewModels/Stack/NiagaraStackInputCategory.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackViewModel"
@@ -284,7 +285,11 @@ FText UNiagaraStackFunctionInput::GetTooltipText(EValueMode InValueMode) const
 	TOptional<FNiagaraVariableMetaData> MetaData;
 	if (FNiagaraConstants::IsNiagaraConstant(ValueVariable))
 	{
-		MetaData = *FNiagaraConstants::GetConstantMetaData(ValueVariable);
+		const FNiagaraVariableMetaData* FoundMetaData = FNiagaraConstants::GetConstantMetaData(ValueVariable);
+		if (FoundMetaData)
+		{
+			MetaData = *FoundMetaData;
+		}
 	}
 	else if (NodeGraph != nullptr)
 	{
@@ -591,8 +596,8 @@ void UNiagaraStackFunctionInput::RefreshValues()
 		}
 	}
 
-	bCanReset.Reset();
-	bCanResetToBase.Reset();
+	bCanResetCache.Reset();
+	bCanResetToBaseCache.Reset();
 	ValueChangedDelegate.Broadcast();
 }
 
@@ -1060,63 +1065,61 @@ bool UNiagaraStackFunctionInput::CanReset() const
 		// Static switch parameters only hold a single value in the default pin, so we disable resetting to prevent a special implementation for them
 		return false;
 	}
-	if (bCanReset.IsSet())
+	if (bCanResetCache.IsSet() == false)
 	{
-		return bCanReset.GetValue();
-	}
-
-	bool bNewCanReset;
-	if (InputValues.Mode == EValueMode::Data)
-	{
-		// For data values a copy of the default object should have been created automatically and attached to the override pin for this input.  If a 
-		// copy of the default object wasn't created, the input can be reset to create one.  If a copy of the data object is available it can be
-		// reset if it's different from it's default value.
-		bool bHasDataValueObject = InputValues.DataObjects.GetValueObject() != nullptr;
-		bool bHasDefaultDataValueObject = InputValues.DataObjects.GetDefaultValueObject() != nullptr;
-		bool bIsDataValueDifferentFromDefaultDataValue = bHasDataValueObject && bHasDefaultDataValueObject
-			&& InputValues.DataObjects.GetValueObject()->Equals(InputValues.DataObjects.GetDefaultValueObject()) == false;
-		bNewCanReset = bHasDataValueObject == false || bHasDefaultDataValueObject == false || bIsDataValueDifferentFromDefaultDataValue;
-	}
-	else
-	{
-		UEdGraphPin* DefaultPin = GetDefaultPin();
-		if (ensure(DefaultPin != nullptr))
-		{			
-			if(DefaultPin->LinkedTo.Num() == 0)
-			{
-				if (GetOverridePin() != nullptr)
+		bool bNewCanReset;
+		if (InputValues.Mode == EValueMode::Data)
+		{
+			// For data values a copy of the default object should have been created automatically and attached to the override pin for this input.  If a 
+			// copy of the default object wasn't created, the input can be reset to create one.  If a copy of the data object is available it can be
+			// reset if it's different from it's default value.
+			bool bHasDataValueObject = InputValues.DataObjects.GetValueObject() != nullptr;
+			bool bHasDefaultDataValueObject = InputValues.DataObjects.GetDefaultValueObject() != nullptr;
+			bool bIsDataValueDifferentFromDefaultDataValue = bHasDataValueObject && bHasDefaultDataValueObject
+				&& InputValues.DataObjects.GetValueObject()->Equals(InputValues.DataObjects.GetDefaultValueObject()) == false;
+			bNewCanReset = bHasDataValueObject == false || bHasDefaultDataValueObject == false || bIsDataValueDifferentFromDefaultDataValue;
+		}
+		else
+		{
+			UEdGraphPin* DefaultPin = GetDefaultPin();
+			if (ensure(DefaultPin != nullptr))
+			{			
+				if(DefaultPin->LinkedTo.Num() == 0)
 				{
-					bNewCanReset = true;
-				}
-				else if (IsRapidIterationCandidate())
-				{
-					FNiagaraVariable DefaultVar = GetDefaultVariableForRapidIterationParameter();
-					bool bHasValidLocalValue = InputValues.LocalStruct.IsValid();
-					bool bHasValidDefaultValue = DefaultVar.IsValid();
-					bNewCanReset = bHasValidLocalValue && bHasValidDefaultValue && FNiagaraEditorUtilities::DataMatches(DefaultVar, *InputValues.LocalStruct.Get()) == false;
+					if (GetOverridePin() != nullptr)
+					{
+						bNewCanReset = true;
+					}
+					else if (IsRapidIterationCandidate())
+					{
+						FNiagaraVariable DefaultVar = GetDefaultVariableForRapidIterationParameter();
+						bool bHasValidLocalValue = InputValues.LocalStruct.IsValid();
+						bool bHasValidDefaultValue = DefaultVar.IsValid();
+						bNewCanReset = bHasValidLocalValue && bHasValidDefaultValue && FNiagaraEditorUtilities::DataMatches(DefaultVar, *InputValues.LocalStruct.Get()) == false;
+					}
+					else
+					{
+						bNewCanReset = false;
+					}
 				}
 				else
 				{
-					bNewCanReset = false;
-				}
-			}
-			else
-			{
-				if (FNiagaraStackGraphUtilities::IsValidDefaultDynamicInput(*SourceScript, *DefaultPin))
-				{
-					UEdGraphPin* OverridePin = GetOverridePin();
-					bNewCanReset = OverridePin == nullptr || FNiagaraStackGraphUtilities::DoesDynamicInputMatchDefault(GetEmitterViewModel()->GetEmitter()->GetUniqueEmitterName(), *SourceScript,
-						*OwningFunctionCallNode, *OverridePin, InputParameterHandle.GetName(), *DefaultPin) == false;
-				}
-				else
-				{
-					bNewCanReset = GetOverridePin() != nullptr;
+					if (FNiagaraStackGraphUtilities::IsValidDefaultDynamicInput(*SourceScript, *DefaultPin))
+					{
+						UEdGraphPin* OverridePin = GetOverridePin();
+						bNewCanReset = OverridePin == nullptr || FNiagaraStackGraphUtilities::DoesDynamicInputMatchDefault(GetEmitterViewModel()->GetEmitter()->GetUniqueEmitterName(), *SourceScript,
+							*OwningFunctionCallNode, *OverridePin, InputParameterHandle.GetName(), *DefaultPin) == false;
+					}
+					else
+					{
+						bNewCanReset = GetOverridePin() != nullptr;
+					}
 				}
 			}
 		}
+		bCanResetCache = bNewCanReset;
 	}
-	bCanReset = bNewCanReset;
-	return bCanReset.GetValue();
+	return bCanResetCache.GetValue();
 }
 
 FNiagaraVariable UNiagaraStackFunctionInput::GetDefaultVariableForRapidIterationParameter() const
@@ -1260,16 +1263,11 @@ bool UNiagaraStackFunctionInput::IsStaticParameter() const
 	return ParameterBehavior == EStackParameterBehavior::Static;
 }
 
-bool UNiagaraStackFunctionInput::EmitterHasBase() const
-{
-	return GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset;
-}
-
 bool UNiagaraStackFunctionInput::CanResetToBase() const
 {
-	if (EmitterHasBase())
+	if (HasBaseEmitter())
 	{
-		if (bCanResetToBase.IsSet() == false)
+		if (bCanResetToBaseCache.IsSet() == false)
 		{
 			bool bIsModuleInput = OwningFunctionCallNode == OwningModuleNode;
 			if (bIsModuleInput)
@@ -1281,7 +1279,7 @@ bool UNiagaraStackFunctionInput::CanResetToBase() const
 				{
 					const UNiagaraEmitter* BaseEmitter = FNiagaraStackGraphUtilities::GetBaseEmitter(*GetEmitterViewModel()->GetEmitter(), GetSystemViewModel()->GetSystem());
 
-					bCanResetToBase = BaseEmitter != nullptr && MergeManager->IsModuleInputDifferentFromBase(
+					bCanResetToBaseCache = BaseEmitter != nullptr && MergeManager->IsModuleInputDifferentFromBase(
 						*GetEmitterViewModel()->GetEmitter(),
 						*BaseEmitter,
 						OutputNode->GetUsage(),
@@ -1291,15 +1289,15 @@ bool UNiagaraStackFunctionInput::CanResetToBase() const
 				}
 				else
 				{
-					bCanResetToBase = false;
+					bCanResetToBaseCache = false;
 				}
 			}
 			else
 			{
-				bCanResetToBase = false;
+				bCanResetToBaseCache = false;
 			}
 		}
-		return bCanResetToBase.GetValue();
+		return bCanResetToBaseCache.GetValue();
 	}
 	return false;
 }
@@ -1529,7 +1527,7 @@ bool UNiagaraStackFunctionInput::GetShowEditConditionInline() const
 
 bool UNiagaraStackFunctionInput::GetEditConditionEnabled() const
 {
-	return EditCondition.GetConditionIsEnabled();
+	return EditCondition.IsValid() && EditCondition.GetConditionIsEnabled();
 }
 
 void UNiagaraStackFunctionInput::SetEditConditionEnabled(bool bIsEnabled)
@@ -1588,6 +1586,44 @@ void UNiagaraStackFunctionInput::GetSearchItems(TArray<FStackSearchItem>& Search
 	if (GetShouldPassFilterForVisibleCondition() && GetIsInlineEditConditionToggle() == false)
 	{
 		SearchItems.Add({ FName("DisplayName"), GetDisplayName() });
+
+		if (InputValues.Mode == EValueMode::Local && InputType.IsValid() && InputValues.LocalStruct->IsValid())
+		{
+			FNiagaraVariable LocalValue = FNiagaraVariable(InputType, "");
+			LocalValue.SetData(InputValues.LocalStruct->GetStructMemory());
+			TSharedPtr<INiagaraEditorTypeUtilities, ESPMode::ThreadSafe> ParameterTypeUtilities = FNiagaraEditorModule::Get().GetTypeUtilities(RapidIterationParameter.GetType());
+			if (ParameterTypeUtilities.IsValid() && ParameterTypeUtilities->CanHandlePinDefaults())
+			{
+				FText SearchText = ParameterTypeUtilities->GetSearchTextFromValue(LocalValue);
+				if (SearchText.IsEmpty() == false)
+				{
+					SearchItems.Add({ FName("LocalValueText"), SearchText });
+				}
+			}
+		}
+		else if (InputValues.Mode == EValueMode::Linked)
+		{
+			SearchItems.Add({ FName("LinkedParamName"), FText::FromName(InputValues.LinkedHandle.GetParameterHandleString()) });
+		}
+		else if (InputValues.Mode == EValueMode::Dynamic && InputValues.DynamicNode.Get() != nullptr)
+		{
+			SearchItems.Add({ FName("LinkedDynamicInputName"), InputValues.DynamicNode->GetNodeTitle(ENodeTitleType::MenuTitle)});
+		}
+		else if (InputValues.Mode == EValueMode::Data && InputValues.DataObjects.IsValid())
+		{
+			if (InputValues.DataObjects.GetValueObject() != nullptr)
+			{
+				SearchItems.Add({ FName("LinkedDataInterfaceName"), FText::FromString(InputValues.DataObjects.GetValueObject()->GetName()) });
+			}
+			if (InputValues.DataObjects.GetDefaultValueObject() != nullptr)
+			{
+				SearchItems.Add({ FName("LinkedDataInterfaceDefaultName"), InputValues.DataObjects.GetDefaultValueObject()->GetClass()->GetDisplayNameText() });
+			}
+		}
+		else if (InputValues.Mode == EValueMode::Expression && InputValues.ExpressionNode.Get() != nullptr)
+		{
+			SearchItems.Add({ FName("LinkedExpressionText"), InputValues.ExpressionNode->GetHlslText() });
+		}
 	}
 }
 
@@ -1602,8 +1638,8 @@ void UNiagaraStackFunctionInput::OnGraphChanged(const struct FEdGraphEditAction&
 
 void UNiagaraStackFunctionInput::OnRapidIterationParametersChanged()
 {
-	bCanReset.Reset();
-	bCanResetToBase.Reset();
+	bCanResetCache.Reset();
+	bCanResetToBaseCache.Reset();
 	if (ensureMsgf(OwningModuleNode.IsValid() && OwningFunctionCallNode.IsValid(), TEXT("Stack entry with invalid module or function call not cleaned up.")))
 	{
 		if (bUpdatingLocalValueDirectly == false && IsRapidIterationCandidate() && (OverridePinCache.IsSet() == false || OverridePinCache.GetValue() == nullptr))
@@ -1615,8 +1651,8 @@ void UNiagaraStackFunctionInput::OnRapidIterationParametersChanged()
 
 void UNiagaraStackFunctionInput::OnScriptSourceChanged()
 {
-	bCanReset.Reset();
-	bCanResetToBase.Reset();
+	bCanResetCache.Reset();
+	bCanResetToBaseCache.Reset();
 }
 
 UNiagaraNodeParameterMapSet* UNiagaraStackFunctionInput::GetOverrideNode() const

@@ -15,6 +15,7 @@ struct FNiagaraVariable;
 struct FNiagaraTypeDefinition;
 class UNiagaraGraph;
 class UNiagaraSystem;
+class FNiagaraSystemViewModel;
 struct FNiagaraEmitterHandle;
 class UNiagaraEmitter;
 class UNiagaraScript;
@@ -181,4 +182,10 @@ namespace FNiagaraEditorUtilities
 	const FNiagaraEmitterHandle* GetEmitterHandleForEmitter(UNiagaraSystem& System, UNiagaraEmitter& Emitter);
 
 	NIAGARAEDITOR_API FText FormatScriptAssetDescription(FText Description, FName Path);
+
+	void ResetSystemsThatReferenceSystemViewModel(const FNiagaraSystemViewModel& ReferencedSystemViewModel);
+
+	TArray<UNiagaraComponent*> GetComponentsThatReferenceSystem(const UNiagaraSystem& ReferencedSystem);
+
+	TArray<UNiagaraComponent*> GetComponentsThatReferenceSystemViewModel(const FNiagaraSystemViewModel& ReferencedSystemViewModel);
 };

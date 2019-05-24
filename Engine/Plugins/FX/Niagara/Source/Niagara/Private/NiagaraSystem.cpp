@@ -621,14 +621,10 @@ bool UNiagaraSystem::IsValid()const
 FNiagaraEmitterHandle UNiagaraSystem::AddEmitterHandle(UNiagaraEmitter& SourceEmitter, FName EmitterName)
 {
 	FNiagaraEmitterHandle EmitterHandle(SourceEmitter, EmitterName, *this);
-	EmitterHandles.Add(EmitterHandle);
-	RefreshSystemParametersFromEmitter(EmitterHandle);
-	return EmitterHandle;
-}
-
-FNiagaraEmitterHandle UNiagaraSystem::AddEmitterHandleWithoutCopying(UNiagaraEmitter& Emitter)
-{
-	FNiagaraEmitterHandle EmitterHandle(Emitter);
+	if (SourceEmitter.bIsTemplateAsset)
+	{
+		EmitterHandle.RemoveSource();
+	}
 	EmitterHandles.Add(EmitterHandle);
 	RefreshSystemParametersFromEmitter(EmitterHandle);
 	return EmitterHandle;

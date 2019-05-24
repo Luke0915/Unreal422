@@ -9,8 +9,17 @@
 #include "ContentStreaming.h"
 
 #include "NiagaraWorldManager.h"
-
 #include "NiagaraDataInterfaceStaticMesh.h"
+
+#if WITH_EDITOR
+int32 GForceNiagaraSpawnAttachedSolo = 0;
+static FAutoConsoleVariableRef CVarForceNiagaraSpawnAttachedSolo(
+	TEXT("fx.ForceNiagaraSpawnAttachedSolo"),
+	GForceNiagaraSpawnAttachedSolo,
+	TEXT("If > 0 Niagara systems which are spawned attached will be force to spawn in solo mode for debugging.\n"),
+	ECVF_Default
+);
+#endif
 
 UNiagaraFunctionLibrary::UNiagaraFunctionLibrary(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -78,6 +87,12 @@ UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttached(UNiagaraSystem* 
 		else
 		{
 			PSC = CreateNiagaraSystem(SystemTemplate, AttachToComponent->GetWorld(), AttachToComponent->GetOwner(), bAutoDestroy, EPSCPoolMethod::None);
+#if WITH_EDITOR
+			if (GForceNiagaraSpawnAttachedSolo > 0)
+			{
+				PSC->SetForceSolo(true);
+			}
+#endif
 			PSC->RegisterComponentWithWorld(AttachToComponent->GetWorld());
 
 			PSC->AttachToComponent(AttachToComponent, FAttachmentTransformRules::KeepRelativeTransform, AttachPointName);
@@ -127,6 +142,12 @@ UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttached(
 				PSC = CreateNiagaraSystem(SystemTemplate, World, AttachToComponent->GetOwner(), bAutoDestroy, PoolingMethod);
 				if (PSC)
 				{
+#if WITH_EDITOR
+					if (GForceNiagaraSpawnAttachedSolo > 0)
+					{
+						PSC->SetForceSolo(true);
+					}
+#endif
 					PSC->SetupAttachment(AttachToComponent, AttachPointName);
 
 					if (LocationType == EAttachLocation::KeepWorldPosition)
