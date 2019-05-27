@@ -511,6 +511,9 @@ private:
 
 	FMaskFilter MoveIgnoreMask;
 
+	/** Custom data that can be read by a material through a material parameter expression. Set data using SetCustomPrimitiveData* functions */
+	UPROPERTY()
+	FCustomPrimitiveData CustomPrimitiveData;
 public:
 	/**
 	 * Determine whether a Character can step up onto this component.
@@ -607,20 +610,26 @@ public:
 	float BoundsScale;
 
 	/** Last time the component was submitted for rendering (called FScene::AddPrimitive). */
-	UPROPERTY(transient)
 	float LastSubmitTime;
 
+private:
 	/**
 	 * The value of WorldSettings->TimeSeconds for the frame when this component was last rendered.  This is written
 	 * from the render thread, which is up to a frame behind the game thread, so you should allow this time to
 	 * be at least a frame behind the game thread's world time before you consider the actor non-visible.
 	 */
-	UPROPERTY(transient)
-	float LastRenderTime;
+	mutable float LastRenderTime;
 
 	/** Same as LastRenderTimeOnScreen but only updated if the component is on screen. Used by the texture streamer. */
-	UPROPERTY(transient)
-	float LastRenderTimeOnScreen;
+	mutable float LastRenderTimeOnScreen;
+
+	friend class FPrimitiveSceneInfo;
+
+public:
+
+	void SetLastRenderTime(float InLastRenderTime);
+	float GetLastRenderTime() const { return LastRenderTime; }
+	float GetLastRenderTimeOnScreen() const { return LastRenderTimeOnScreen; }
 
 	/**
 	 * Set of actors to ignore during component sweeps in MoveComponent().
@@ -704,6 +713,28 @@ public:
 	/** Get the mask filter checked when others move into us. */
 	FMaskFilter GetMaskFilterOnBodyInstance(FMaskFilter InMaskFilter) const { return BodyInstance.GetMaskFilter(); }
 
+	/** Set custom primitive data at index DataIndex. */
+	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
+	void SetCustomPrimitiveDataFloat(int32 DataIndex, float Value);
+
+	/** Set custom primitive data, two floats at once, from index DataIndex to index DataIndex + 2. */
+	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
+	void SetCustomPrimitiveDataVector2(int32 DataIndex, FVector2D Value);
+
+	/** Set custom primitive data, three floats at once, from index DataIndex to index DataIndex + 3. */
+	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
+	void SetCustomPrimitiveDataVector3(int32 DataIndex, FVector Value);
+
+	/** Set custom primitive data, four floats at once, from index DataIndex to index DataIndex + 4. */
+	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
+	void SetCustomPrimitiveDataVector4(int32 DataIndex, FVector4 Value);
+
+	/** 
+	 * Get the custom primitive data for this primitive component.
+	 * @return The payload of custom data that will be set on the primitive and accessible in the material through a material expression.
+	 */
+	const FCustomPrimitiveData& GetCustomPrimitiveData() const { return CustomPrimitiveData; }
+
 #if WITH_EDITOR
 	/** Override delegate used for checking the selection state of a component */
 	DECLARE_DELEGATE_RetVal_OneParam( bool, FSelectionOverride, const UPrimitiveComponent* );
@@ -711,6 +742,10 @@ public:
 #endif
 
 protected:
+
+	/** Insert an array of floats into the CustomPrimitiveData, starting at the given index */
+	void SetCustomPrimitiveDataInternal(int32 DataIndex, const TArray<float>& Values);
+
 	/** Set of components that this component is currently overlapping. */
 	TArray<FOverlapInfo> OverlappingComponents;
 

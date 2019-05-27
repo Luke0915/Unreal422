@@ -46,8 +46,35 @@ static const int INTERNAL_LOAD_OBJECT_RECURSION_LIMIT = 16;
 
 static TAutoConsoleVariable<int32> CVarAllowAsyncLoading( TEXT( "net.AllowAsyncLoading" ), 0, TEXT( "Allow async loading" ) );
 static TAutoConsoleVariable<int32> CVarIgnoreNetworkChecksumMismatch( TEXT( "net.IgnoreNetworkChecksumMismatch" ), 0, TEXT( "" ) );
+static TAutoConsoleVariable<int32> CVarReservedNetGuidSize(TEXT("net.ReservedNetGuidSize"), 512, TEXT("Reserved size in bytes for NetGUID serialization"));
 extern FAutoConsoleVariableRef CVarEnableMultiplayerWorldOriginRebasing;
 extern TAutoConsoleVariable<int32> CVarFilterGuidRemapping;
+
+static float GGuidCacheTrackAsyncLoadingGUIDTreshold = 0.f;
+static FAutoConsoleVariableRef CVarTrackAsyncLoadingGUIDTreshold(
+	TEXT("net.TrackAsyncLoadingGUIDThreshold"),
+	GGuidCacheTrackAsyncLoadingGUIDTreshold,
+	TEXT("When > 0, any objects that take longer than the threshold to async load will be tracked."
+		" Threshold in seconds, @see FNetGUIDCache::ConsumeDelinquencyAnalytics. Used for Debugging and Analytics")
+);
+
+static float GPackageMapTrackQueuedActorTreshold = 0.f;
+static FAutoConsoleVariableRef CVarTrackQueuedActorTreshold(
+	TEXT("net.TrackQueuedActorThreshold"),
+	GPackageMapTrackQueuedActorTreshold,
+	TEXT("When > 0, any actors that spend longer than the threshold with queued bunches will be tracked."
+		" Threshold in seconds, @see UPackageMap::ConsumeDelinquencyAnalytics. Used for Debugging and Analytics")
+);
+
+static int32 GDelinquencyNumberOfTopOffendersToTrack = 10;
+static FAutoConsoleVariableRef CVarDelinquencyNumberOfTopOffendersToTrack(
+	TEXT("net.DelinquencyNumberOfTopOffendersToTrack"),
+	GDelinquencyNumberOfTopOffendersToTrack,
+	TEXT("When > 0 , this will be the number of 'TopOffenders' that are tracked by the PackageMap and GuidCache for"
+		" Queued Actors and Async Loads respectively."
+		" net.TrackAsyncLoadingGUIDThreshold / net.TrackQueuedActorThreshold still dictate whether or not any of these"
+		" items are tracked.")
+);
 
 void BroadcastNetFailure(UNetDriver* Driver, ENetworkFailure::Type FailureType, const FString& ErrorStr)
 {
@@ -89,7 +116,8 @@ void BroadcastNetFailure(UNetDriver* Driver, ENetworkFailure::Type FailureType, 
 -----------------------------------------------------------------------------*/
 UPackageMapClient::UPackageMapClient(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-  , Connection(nullptr)
+	, Connection(nullptr)
+	, DelinquentQueuedActors(GDelinquencyNumberOfTopOffendersToTrack > 0 ? GDelinquencyNumberOfTopOffendersToTrack : 0)
 {
 }
 
@@ -1006,10 +1034,9 @@ UObject* UPackageMapClient::ResolvePathAndAssignNetGUID( const FNetworkGUID& Net
 //
 //--------------------------------------------------------------------
 
-// MAX_BUNCH_SIZE is in bits, so shift to get bytes.
+
 // TODO: This limit might not actually need to be enforced anymore.
-static const int32 MAX_GUID_MEMORY = MAX_BUNCH_SIZE >> 3;
-static const int32 MAX_GUID_COUNT = 2048;
+constexpr int32 MAX_GUID_COUNT = 2048;
 
 bool UPackageMapClient::ExportNetGUIDForReplay(FNetworkGUID& NetGUID, UObject* Object, FString& PathName, UObject* ObjOuter)
 {
@@ -1020,14 +1047,18 @@ bool UPackageMapClient::ExportNetGUIDForReplay(FNetworkGUID& NetGUID, UObject* O
 	{
 		TGuardValue<bool> ExportingGUID(GuidCache->IsExportingNetGUIDBunch, true);
 
+		const int32 MaxReservedSize(CVarReservedNetGuidSize.GetValueOnAnyThread());
+
 		TArray<uint8>& GUIDMemory = ExportGUIDArchives.Emplace_GetRef();
-		GUIDMemory.Reserve(MAX_GUID_MEMORY);
+		GUIDMemory.Reserve(MaxReservedSize);
 
 		FMemoryWriter Writer(GUIDMemory);
 		InternalWriteObject(Writer, NetGUID, Object, PathName, ObjOuter);
 
 		check(!Writer.IsError());
-		ensureMsgf(GUIDMemory.Num() <= MAX_GUID_MEMORY, TEXT("ExportNetGUIDForReplay exceeded MAX_GUID_MEMORY. Max=%l Count=%l"), MAX_GUID_MEMORY, GUIDMemory.Num());
+		ensureMsgf(GUIDMemory.Num() <= MaxReservedSize, TEXT("ExportNetGUIDForReplay exceeded CVarReservedNetGuidSize. Max=%l Count=%l"), MaxReservedSize, GUIDMemory.Num());
+
+		GUIDMemory.Shrink();
 
 		// It's possible InternalWriteObject has modified the NetGUIDAckStatus, so
 		// do a quick sanity check to make sure the ID wasn't removed before updating the status.
@@ -1577,22 +1608,31 @@ void UPackageMapClient::ReceiveNetFieldExports(FArchive& Archive)
 		}
 		else
 		{
-			NetFieldExportGroup = GuidCache->NetFieldExportGroupIndexToGroup.FindChecked(PathNameIndex);
+			FNetFieldExportGroup** FoundNetFieldExport = GuidCache->NetFieldExportGroupIndexToGroup.Find(PathNameIndex);
+			NetFieldExportGroup = FoundNetFieldExport ? *FoundNetFieldExport : nullptr;
 		}
 
-		TArray<FNetFieldExport>& Exports = NetFieldExportGroup->NetFieldExports;
 		FNetFieldExport Export;
 		Archive << Export;
 
-		if (Exports.IsValidIndex(Export.Handle))
+		if (NetFieldExportGroup)
 		{
-			// preserve compatibility flag
-			Export.bIncompatible = Exports[Export.Handle].bIncompatible;
-			Exports[Export.Handle] = Export;
+			TArray<FNetFieldExport>& Exports = NetFieldExportGroup->NetFieldExports;
+			if (Exports.IsValidIndex(Export.Handle))
+			{
+				// preserve compatibility flag
+				Export.bIncompatible = Exports[Export.Handle].bIncompatible;
+				Exports[Export.Handle] = Export;
+			}
+			else
+			{
+				UE_LOG(LogNetPackageMap, Error, TEXT("ReceiveNetFieldExports: Invalid NetFieldExportHandle '%i', Max '%i'"), Export.Handle, Exports.Num());
+			}
 		}
 		else
 		{
-			UE_LOG(LogNetPackageMap, Error, TEXT("ReceiveNetFieldExports: Invalid NetFieldExportHandle '%i', Max '%i'"), Export.Handle, Exports.Num());
+			UE_LOG(LogNetPackageMap, Error, TEXT("ReceiveNetFieldExports: Unable to find NetFieldExportGroup for export. Export.Handle=%i, Export.Name=%s, PathNameIndex=%lu, WasExported=%d, Archive.IsError()=%d"),
+				Export.Handle, *Export.ExportName.ToString(), PathNameIndex, !!WasExported, !!Archive.IsError());
 		}
 	}
 }
@@ -2093,11 +2133,43 @@ void UPackageMapClient::SetHasQueuedBunches(const FNetworkGUID& NetGUID, bool bH
 {
 	if (bHasQueuedBunches)
 	{
-		CurrentQueuedBunchNetGUIDs.Add(NetGUID);
+		if (GPackageMapTrackQueuedActorTreshold > 0.f)
+		{
+			if (UNetDriver const * const NetDriver = ((Connection) ? Connection->GetDriver() : nullptr))
+			{
+				CurrentQueuedBunchNetGUIDs.Emplace(NetGUID, NetDriver->Time);
+			}
+		}
+
+		DelinquentQueuedActors.MaxConcurrentQueuedActors = FMath::Max<uint32>(DelinquentQueuedActors.MaxConcurrentQueuedActors, CurrentQueuedBunchNetGUIDs.Num());
 	}
 	else
 	{
-		CurrentQueuedBunchNetGUIDs.Remove(NetGUID);
+		float StartTime = 0.f;
+
+		// We try to remove the value regardless of whether or not the CVar is on.
+		// That way if it's toggled on and off, we don't end up wasting resources.
+		// If it is disabled with entries in DelinquentQueuedActors, it will be up
+		// to clients to clear out the map by calling ConsumeDelinquencyAnalytics.
+		if (CurrentQueuedBunchNetGUIDs.RemoveAndCopyValue(NetGUID, StartTime) &&
+			GPackageMapTrackQueuedActorTreshold &&
+			GuidCache)
+		{
+			if (UNetDriver const * const NetDriver = ((Connection) ? Connection->GetDriver() : nullptr))
+			{
+				const float QueuedTime = NetDriver->Time - StartTime;
+				if (QueuedTime > GPackageMapTrackQueuedActorTreshold)
+				{
+					if (FNetGuidCacheObject const * const CacheObject = GuidCache->ObjectLookup.Find(NetGUID))
+					{
+						if (UObject const * const Object = CacheObject->Object.Get())
+						{
+							DelinquentQueuedActors.DelinquentQueuedActors.Emplace(Object->GetClass()->GetFName(), QueuedTime);
+						}
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -2143,6 +2215,8 @@ void UPackageMapClient::Serialize(FArchive& Ar)
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("MustBeMappedGuidsInLastBunch", MustBeMappedGuidsInLastBunch.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("NetFieldExports", NetFieldExports.CountBytes(Ar));
 
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DelinquentQueuedActors", DelinquentQueuedActors.CountBytes(Ar));
+
 		// Don't count the GUID Cache here. Instead, we'll let the UNetDriver count it as
 		// that's the class that constructs it.
 	}
@@ -2157,6 +2231,7 @@ FNetGUIDCache::FNetGUIDCache(UNetDriver* InDriver)
 	, NetworkChecksumMode(ENetworkChecksumMode::SaveAndUse)
 	, AsyncLoadMode(EAsyncLoadMode::UseCVar)
 	, IsExportingNetGUIDBunch(false)
+	, DelinquentAsyncLoads(GDelinquencyNumberOfTopOffendersToTrack > 0 ? GDelinquencyNumberOfTopOffendersToTrack : 0)
 {
 	UniqueNetIDs[0] = UniqueNetIDs[1] = 0;
 	UniqueNetFieldExportGroupPathIndex = 0;
@@ -2637,48 +2712,106 @@ void FNetGUIDCache::RegisterNetGUIDFromPath_Server( const FNetworkGUID& NetGUID,
 	RegisterNetGUID_Internal( NetGUID, CacheObject );
 }
 
+void FNetGUIDCache::ValidateAsyncLoadingPackage(FNetGuidCacheObject& CacheObject, const FNetworkGUID NetGUID)
+{
+	// With level streaming support we may end up trying to load the same package with a different
+	// NetGUID during replay fast-forwarding. This is because if a package was unloaded, and later
+	// re-loaded, it will likely be assigned a new NetGUID (since the TWeakObjectPtr to the old package
+	// in the cache object would have gone stale). During replay fast-forward, it's possible
+	// to see the new NetGUID before the previous one has finished loading, so here we fix up
+	// PendingAsyncPackages to refer to the new NewGUID.
+	FPendingAsyncLoadRequest& PendingLoadRequest = PendingAsyncLoadRequests[CacheObject.PathName];
+	if (PendingLoadRequest.NetGUID != NetGUID)
+	{
+		UE_LOG(LogNetPackageMap, Log, TEXT("ValidateAsyncLoadingPackage: Already async loading package with a different NetGUID. Path: %s, original NetGUID: %s, new NetGUID: %s"),
+			*CacheObject.PathName.ToString(), *PendingLoadRequest.NetGUID.ToString(), *NetGUID.ToString());
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		PendingAsyncPackages[CacheObject.PathName] = NetGUID;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+		PendingLoadRequest.NetGUID = NetGUID;
+	}
+	else
+	{
+		UE_LOG(LogNetPackageMap, Log, TEXT("ValidateAsyncLoadingPackage: Already async loading package. Path: %s, NetGUID: %s"), *CacheObject.PathName.ToString(), *NetGUID.ToString());
+	}
+}
+
+void FNetGUIDCache::StartAsyncLoadingPackage(FNetGuidCacheObject& CacheObject, const FNetworkGUID NetGUID, const bool bWasAlreadyAsyncLoading)
+{
+	// Something else is already async loading this package, calling load again will add our callback to the existing load request
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	PendingAsyncPackages.Add(CacheObject.PathName, NetGUID);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	PendingAsyncLoadRequests.Emplace(CacheObject.PathName, FPendingAsyncLoadRequest(NetGUID, Driver->Time));
+
+	DelinquentAsyncLoads.MaxConcurrentAsyncLoads = FMath::Max<uint32>(DelinquentAsyncLoads.MaxConcurrentAsyncLoads, PendingAsyncLoadRequests.Num());
+
+	CacheObject.bIsPending = true;
+	LoadPackageAsync(CacheObject.PathName.ToString(), FLoadPackageAsyncDelegate::CreateRaw(this, &FNetGUIDCache::AsyncPackageCallback));
+}
+
 void FNetGUIDCache::AsyncPackageCallback(const FName& PackageName, UPackage * Package, EAsyncLoadingResult::Type Result)
 {
-	check( Package == NULL || Package->IsFullyLoaded() );
+	check(Package == nullptr || Package->IsFullyLoaded());
 
-	FNetworkGUID NetGUID = PendingAsyncPackages.FindRef(PackageName);
-	
-	PendingAsyncPackages.Remove(PackageName);
-
-	if ( !NetGUID.IsValid() )
+	if (FPendingAsyncLoadRequest const * const PendingLoadRequest = PendingAsyncLoadRequests.Find(PackageName))
 	{
-		UE_LOG( LogNetPackageMap, Error, TEXT( "AsyncPackageCallback: Could not find package. Path: %s" ), *PackageName.ToString() );
-		return;
-	}
+		const bool bIsBroken = (Package == nullptr);
 
-	FNetGuidCacheObject * CacheObject = ObjectLookup.Find( NetGUID );
-
-	if ( CacheObject == NULL )
-	{
-		UE_LOG( LogNetPackageMap, Error, TEXT( "AsyncPackageCallback: Could not find net guid. Path: %s, NetGUID: %s" ), *PackageName.ToString(), *NetGUID.ToString() );
-		return;
-	}
-
-	if ( !CacheObject->bIsPending )
-	{
-		UE_LOG( LogNetPackageMap, Error, TEXT( "AsyncPackageCallback: Package wasn't pending. Path: %s, NetGUID: %s" ), *PackageName.ToString(), *NetGUID.ToString() );
-	}
-
-	CacheObject->bIsPending = false;
-	
-	if ( Package == NULL )
-	{
-		CacheObject->bIsBroken = true;
-		UE_LOG( LogNetPackageMap, Error, TEXT( "AsyncPackageCallback: Package FAILED to load. Path: %s, NetGUID: %s" ), *PackageName.ToString(), *NetGUID.ToString() );
-	}
-
-	if (CacheObject->Object.IsValid() && CacheObject->Object->GetWorld())
-	{
-		AGameStateBase* GS = CacheObject->Object->GetWorld()->GetGameState();
-		if (GS)
+		if (FNetGuidCacheObject* CacheObject = ObjectLookup.Find(PendingLoadRequest->NetGUID))
 		{
-			GS->AsyncPackageLoaded(CacheObject->Object.Get());
+			if (!CacheObject->bIsPending)
+			{
+				UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Package wasn't pending. Path: %s, NetGUID: %s"), *PackageName.ToString(), *PendingLoadRequest->NetGUID.ToString());
+			}
+
+			CacheObject->bIsPending = false;
+
+			if (bIsBroken)
+			{
+				CacheObject->bIsBroken = true;
+				UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Package FAILED to load. Path: %s, NetGUID: %s"), *PackageName.ToString(), *PendingLoadRequest->NetGUID.ToString());
+			}
+
+			if (UObject* Object = CacheObject->Object.Get())
+			{
+				UpdateQueuedBunchObjectReference(PendingLoadRequest->NetGUID, Object);
+
+				if (UWorld* World = Object->GetWorld())
+				{
+					if (AGameStateBase* GS = World->GetGameState())
+					{
+						GS->AsyncPackageLoaded(Object);
+					}
+				}
+			}
 		}
+		else
+		{
+			UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Could not find net guid. Path: %s, NetGUID: %s"), *PackageName.ToString(), *PendingLoadRequest->NetGUID.ToString());
+		}
+
+		// This won't be the exact amount of time that we spent loading the package, but should
+		// give us a close enough estimate (within a frame time).
+		const float LoadTime = (Driver->Time - PendingLoadRequest->RequestStartTime);
+		if (GGuidCacheTrackAsyncLoadingGUIDTreshold > 0.f &&
+			LoadTime >= GGuidCacheTrackAsyncLoadingGUIDTreshold)
+		{
+			DelinquentAsyncLoads.DelinquentAsyncLoads.Emplace(PackageName, LoadTime);
+		}
+
+		PendingAsyncLoadRequests.Remove(PackageName);
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		PendingAsyncPackages.Remove(PackageName);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+	else
+	{
+		UE_LOG(LogNetPackageMap, Error, TEXT( "AsyncPackageCallback: Could not find package. Path: %s" ), *PackageName.ToString());
 	}
 }
 
@@ -2826,32 +2959,14 @@ UObject* FNetGUIDCache::GetObjectFromNetGUID( const FNetworkGUID& NetGUID, const
 
 			if ( ShouldAsyncLoad() )
 			{
-				if (!PendingAsyncPackages.Contains(CacheObjectPtr->PathName))
+				if (!PendingAsyncLoadRequests.Contains(CacheObjectPtr->PathName))
 				{
-					PendingAsyncPackages.Add(CacheObjectPtr->PathName, NetGUID);
-					CacheObjectPtr->bIsPending = true;
-					LoadPackageAsync(CacheObjectPtr->PathName.ToString(), FLoadPackageAsyncDelegate::CreateRaw(this, &FNetGUIDCache::AsyncPackageCallback));
-
+					StartAsyncLoadingPackage(*CacheObjectPtr, NetGUID, false);
 					UE_LOG(LogNetPackageMap, Log, TEXT("GetObjectFromNetGUID: Async loading package. Path: %s, NetGUID: %s"), *CacheObjectPtr->PathName.ToString(), *NetGUID.ToString());
 				}
 				else
 				{
-					// With level streaming support we may end up trying to load the same package with a different
-					// NetGUID during replay fast-forwarding. This is because if a package was unloaded, and later
-					// re-loaded, it will likely be assigned a new NetGUID (since the TWeakObjectPtr to the old package
-					// in the cache object would have gone stale). During replay fast-forward, it's possible
-					// to see the new NetGUID before the previous one has finished loading, so here we fix up
-					// PendingAsyncPackages to refer to the new NewGUID.
-					const FNetworkGUID ExistingNetGUID = PendingAsyncPackages[CacheObjectPtr->PathName];
-					if (ExistingNetGUID != NetGUID)
-					{
-						UE_LOG(LogNetPackageMap, Log, TEXT("GetObjectFromNetGUID: Already async loading package with a different NetGUID. Path: %s, original NetGUID: %s, new NetGUID: %s"), *CacheObjectPtr->PathName.ToString(), *ExistingNetGUID.ToString(), *NetGUID.ToString());
-						PendingAsyncPackages[CacheObjectPtr->PathName] = NetGUID;
-					}
-					else
-					{
-						UE_LOG(LogNetPackageMap, Log, TEXT("GetObjectFromNetGUID: Already async loading package. Path: %s, NetGUID: %s"), *CacheObjectPtr->PathName.ToString(), *NetGUID.ToString());
-					}
+					ValidateAsyncLoadingPackage(*CacheObjectPtr, NetGUID);
 				}
 
 				// There is nothing else to do except wait on the delegate to tell us this package is done loading
@@ -2907,10 +3022,7 @@ UObject* FNetGUIDCache::GetObjectFromNetGUID( const FNetworkGUID& NetGUID, const
 			if (ShouldAsyncLoad() && Package->HasAnyInternalFlags(EInternalObjectFlags::AsyncLoading))
 			{
 				// Something else is already async loading this package, calling load again will add our callback to the existing load request
-				PendingAsyncPackages.Add(CacheObjectPtr->PathName, NetGUID);
-				CacheObjectPtr->bIsPending = true;
-				LoadPackageAsync(CacheObjectPtr->PathName.ToString(), FLoadPackageAsyncDelegate::CreateRaw(this, &FNetGUIDCache::AsyncPackageCallback));
-
+				StartAsyncLoadingPackage(*CacheObjectPtr, NetGUID, true);
 				UE_LOG(LogNetPackageMap, Log, TEXT("GetObjectFromNetGUID: Listening to existing async load. Path: %s, NetGUID: %s"), *CacheObjectPtr->PathName.ToString(), *NetGUID.ToString());
 			}
 			else
@@ -2967,6 +3079,9 @@ UObject* FNetGUIDCache::GetObjectFromNetGUID( const FNetworkGUID& NetGUID, const
 
 		NetGUIDLookup.Add( Object, NetGUID );
 	}
+
+	// Update our QueuedObjectReference if one exists.
+	UpdateQueuedBunchObjectReference(NetGUID, Object);
 
 	return Object;
 }
@@ -3031,106 +3146,56 @@ bool FNetGUIDCache::IsGUIDRegistered( const FNetworkGUID& NetGUID ) const
 	return ObjectLookup.Contains( NetGUID );
 }
 
-bool FNetGUIDCache::IsGUIDLoaded( const FNetworkGUID& NetGUID ) const
+FNetGuidCacheObject const * const FNetGUIDCache::GetCacheObject(const FNetworkGUID& NetGUID) const
 {
-	if ( !NetGUID.IsValid() )
-	{
-		return false;
-	}
-
-	if ( NetGUID.IsDefault() )
-	{
-		return false;
-	}
-
-	const FNetGuidCacheObject* CacheObjectPtr = ObjectLookup.Find( NetGUID );
-
-	if ( CacheObjectPtr == NULL )
-	{
-		return false;
-	}
-
-	return CacheObjectPtr->Object != NULL;
+	return (!NetGUID.IsValid() || NetGUID.IsDefault()) ? nullptr : ObjectLookup.Find(NetGUID);
 }
 
-bool FNetGUIDCache::IsGUIDBroken( const FNetworkGUID& NetGUID, const bool bMustBeRegistered ) const
+bool FNetGUIDCache::IsGUIDLoaded(const FNetworkGUID& NetGUID) const
 {
-	if ( !NetGUID.IsValid() )
-	{
-		return false;
-	}
-
-	if ( NetGUID.IsDefault() )
-	{
-		return false;
-	}
-
-	const FNetGuidCacheObject* CacheObjectPtr = ObjectLookup.Find( NetGUID );
-
-	if ( CacheObjectPtr == NULL )
-	{
-		return bMustBeRegistered;
-	}
-
-	return CacheObjectPtr->bIsBroken;
+	FNetGuidCacheObject const * const CacheObjectPtr = GetCacheObject(NetGUID);
+	return CacheObjectPtr && CacheObjectPtr->Object != nullptr;
 }
 
-bool FNetGUIDCache::IsGUIDNoLoad( const FNetworkGUID& NetGUID ) const
+bool FNetGUIDCache::IsGUIDBroken(const FNetworkGUID& NetGUID, const bool bMustBeRegistered) const
 {
-	if ( !NetGUID.IsValid() )
+	if (!NetGUID.IsValid())
 	{
 		return false;
 	}
 
-	if ( NetGUID.IsDefault() )
+	if (NetGUID.IsDefault())
 	{
 		return false;
 	}
 
-	const FNetGuidCacheObject* const CacheObjectPtr = ObjectLookup.Find( NetGUID );
-
-	if ( CacheObjectPtr == nullptr )
+	if (FNetGuidCacheObject const * const CacheObjectPtr = ObjectLookup.Find(NetGUID))
 	{
-		return false;
+		return CacheObjectPtr->bIsBroken;
 	}
 
-	return CacheObjectPtr->bNoLoad;
+	return bMustBeRegistered;
 }
 
-bool FNetGUIDCache::IsGUIDPending( const FNetworkGUID& NetGUID ) const
+bool FNetGUIDCache::IsGUIDNoLoad(const FNetworkGUID& NetGUID) const
 {
-	if ( !NetGUID.IsValid() )
-	{
-		return false;
-	}
+	FNetGuidCacheObject const * const CacheObjectPtr = GetCacheObject(NetGUID);
+	return CacheObjectPtr && CacheObjectPtr->bNoLoad;
+}
 
-	if ( NetGUID.IsDefault() )
-	{
-		return false;
-	}
-
-	const FNetGuidCacheObject* const CacheObjectPtr = ObjectLookup.Find( NetGUID );
-
-	if ( CacheObjectPtr == nullptr )
-	{
-		return false;
-	}
-
-	return CacheObjectPtr->bIsPending;
+bool FNetGUIDCache::IsGUIDPending(const FNetworkGUID& NetGUID) const
+{
+	FNetGuidCacheObject const * const CacheObjectPtr = GetCacheObject(NetGUID);
+	return CacheObjectPtr && CacheObjectPtr->bIsPending;
 }
 
 FNetworkGUID FNetGUIDCache::GetOuterNetGUID( const FNetworkGUID& NetGUID ) const
 {
 	FNetworkGUID OuterGUID;
 
-	if ( NetGUID.IsValid() && !NetGUID.IsDefault() )
+	if (FNetGuidCacheObject const * const CacheObjectPtr = GetCacheObject(NetGUID))
 	{
-		const FNetGuidCacheObject* const CacheObjectPtr = ObjectLookup.Find( NetGUID );
-
-		if ( CacheObjectPtr != nullptr)
-		{
-			OuterGUID = CacheObjectPtr->OuterGUID;
-		}
+		OuterGUID = CacheObjectPtr->OuterGUID;
 	}
 
 	return OuterGUID;
@@ -3274,7 +3339,10 @@ void FNetGUIDCache::CountBytes(FArchive& Ar) const
 		}
 	);
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("PendingAsyncPackages", PendingAsyncPackages.CountBytes(Ar));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("NetFieldExportGroupMap",
 		NetFieldExportGroupMap.CountBytes(Ar);
 
@@ -3310,6 +3378,20 @@ void FNetGUIDCache::CountBytes(FArchive& Ar) const
 		}
 	);
 #endif
+
+	GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DelinquentAsyncLoads", DelinquentAsyncLoads.CountBytes(Ar));
+
+	GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("QueuedBunchObjectReferences",
+
+		QueuedBunchObjectReferences.CountBytes(Ar);
+		for (const auto& QueuedBunchObjectReferencePair : QueuedBunchObjectReferences)
+		{
+			if (QueuedBunchObjectReferencePair.Value.IsValid())
+			{
+				Ar.CountBytes(sizeof(FQueuedBunchObjectReference), sizeof(FQueuedBunchObjectReference));
+			}
+		}
+	);
 }
 
 void FNetFieldExport::CountBytes(FArchive& Ar) const
@@ -3335,6 +3417,98 @@ void FPackageMapAckState::CountBytes(FArchive& Ar) const
 	NetGUIDAckStatus.CountBytes(Ar);
 	NetFieldExportGroupPathAcked.CountBytes(Ar);
 	NetFieldExportAcked.CountBytes(Ar);
+}
+
+void FNetGUIDCache::ConsumeAsyncLoadDelinquencyAnalytics(FNetAsyncLoadDelinquencyAnalytics& Out)
+{
+	Out = MoveTemp(DelinquentAsyncLoads);
+	DelinquentAsyncLoads.MaxConcurrentAsyncLoads = PendingAsyncLoadRequests.Num();
+}
+
+const FNetAsyncLoadDelinquencyAnalytics& FNetGUIDCache::GetAsyncLoadDelinquencyAnalytics() const
+{
+	return DelinquentAsyncLoads;
+}
+
+void FNetGUIDCache::ResetAsyncLoadDelinquencyAnalytics()
+{
+	DelinquentAsyncLoads.Reset();
+}
+
+void UPackageMapClient::ConsumeQueuedActorDelinquencyAnalytics(FNetQueuedActorDelinquencyAnalytics& Out)
+{
+	Out = MoveTemp(DelinquentQueuedActors);
+	DelinquentQueuedActors.MaxConcurrentQueuedActors = CurrentQueuedBunchNetGUIDs.Num();
+}
+
+const FNetQueuedActorDelinquencyAnalytics& UPackageMapClient::GetQueuedActorDelinquencyAnalytics() const
+{
+	return DelinquentQueuedActors;
+}
+
+void UPackageMapClient::ResetQueuedActorDelinquencyAnalytics()
+{
+	DelinquentQueuedActors.Reset();
+}
+
+void FNetGUIDCache::CollectReferences(class FReferenceCollector& ReferenceCollector)
+{
+	for (auto It = QueuedBunchObjectReferences.CreateIterator(); It; ++It)
+	{
+		TSharedPtr<FQueuedBunchObjectReference> SharedQueuedObjectReference = It.Value().Pin();
+		FQueuedBunchObjectReference* ObjectRefPtr = SharedQueuedObjectReference.Get();
+		if (ObjectRefPtr)
+		{
+			// Don't bother adding the reference if we don't have an object.
+			if (ObjectRefPtr->Object)
+			{
+				// AddReferencedObject will set our reference to nullptr if the object is pending kill.
+				ReferenceCollector.AddReferencedObject(ObjectRefPtr->Object, Driver);
+
+				if (!ObjectRefPtr->Object)
+				{
+					UE_LOG(LogNetPackageMap, Warning, TEXT("FNetGUIDCache::CollectReferences: QueuedBunchObjectReference was killed by GC. NetGUID=%s"), *It.Key().ToString());
+				}
+			}
+		}
+		else
+		{
+			// If our weak pointer doesn't resolve, we're clearly the last referencer.
+			// No need to keep it around.
+			It.RemoveCurrent();
+		}
+	}
+
+	QueuedBunchObjectReferences.Compact();
+}
+
+TSharedRef<FQueuedBunchObjectReference> FNetGUIDCache::TrackQueuedBunchObjectReference(const FNetworkGUID InNetGUID, UObject* InObject)
+{
+	if (TWeakPtr<FQueuedBunchObjectReference>* ExistingRef = QueuedBunchObjectReferences.Find(InNetGUID))
+	{
+		TSharedPtr<FQueuedBunchObjectReference> ExistingRefShared = ExistingRef->Pin();
+		if (ExistingRefShared.IsValid())
+		{
+			return ExistingRefShared.ToSharedRef();
+		}
+	}
+
+	// Using MakeShareable instead of MakeShared to allow private constructor.
+	TSharedRef<FQueuedBunchObjectReference> NewRef = MakeShareable<FQueuedBunchObjectReference>(new FQueuedBunchObjectReference(InNetGUID, InObject));
+	QueuedBunchObjectReferences.Add(InNetGUID, NewRef);
+	return NewRef;
+}
+
+void FNetGUIDCache::UpdateQueuedBunchObjectReference(const FNetworkGUID NetGUID, UObject* NewObject)
+{
+	if (TWeakPtr<FQueuedBunchObjectReference>* WeakObjectReference = QueuedBunchObjectReferences.Find(NetGUID))
+	{
+		TSharedPtr<FQueuedBunchObjectReference> SharedObjectReference = WeakObjectReference->Pin();
+		if (FQueuedBunchObjectReference* ObjectReference = SharedObjectReference.Get())
+		{
+			ObjectReference->Object = NewObject;
+		}
+	}
 }
 
 //------------------------------------------------------

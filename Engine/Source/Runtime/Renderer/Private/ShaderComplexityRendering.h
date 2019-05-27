@@ -12,12 +12,20 @@ ShaderComplexityRendering.h: Declarations used for the shader complexity viewmod
 #include "GlobalShader.h"
 #include "DebugViewModeRendering.h"
 #include "DebugViewModeInterface.h"
+#include "PostProcess/SceneRenderTargets.h"
 
 class FPrimitiveSceneProxy;
 struct FMeshBatchElement;
 struct FMeshDrawingRenderState;
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+extern int32 GShaderComplexityBaselineForwardVS;
+extern int32 GShaderComplexityBaselineForwardPS;
+extern int32 GShaderComplexityBaselineForwardUnlitPS;
+extern int32 GShaderComplexityBaselineDeferredVS;
+extern int32 GShaderComplexityBaselineDeferredPS;
+extern int32 GShaderComplexityBaselineDeferredUnlitPS;
 
 template <bool bQuadComplexity>
 class TComplexityAccumulatePS : public FDebugViewModePS
@@ -53,6 +61,9 @@ public:
 	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("OUTPUT_QUAD_OVERDRAW"), AllowDebugViewShaderMode(DVSM_QuadComplexity, Platform, GetMaxSupportedFeatureLevel(Platform)));
+		TCHAR BufferRegister[] = { 'u', '0', 0 };
+		BufferRegister[1] += FSceneRenderTargets::GetQuadOverdrawUAVIndex(Platform, Material->GetFeatureLevel());
+		OutEnvironment.SetDefine(TEXT("QUAD_BUFFER_REGISTER"), BufferRegister);
 	}
 
 	virtual void GetDebugViewModeShaderBindings(

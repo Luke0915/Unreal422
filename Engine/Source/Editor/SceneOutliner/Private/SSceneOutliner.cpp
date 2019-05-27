@@ -419,6 +419,9 @@ namespace SceneOutliner
 
 				// Called when an item is expanded or collapsed with the shift-key pressed down
 				.OnSetExpansionRecursive(this, &SSceneOutliner::SetItemExpansionRecursive)
+
+				// Make it easier to see hierarchies when there are a lot of items
+				.HighlightParentNodesForSelection(true)
 			]
 		];
 
@@ -2967,6 +2970,7 @@ namespace SceneOutliner
 		// Refresh our tree in case any changes have been made to the scene that might effect our actor list
 		if( !bIsReentrant )
 		{
+            bDisableIntermediateSorting = true;
 			FullRefresh();
 		}
 	}

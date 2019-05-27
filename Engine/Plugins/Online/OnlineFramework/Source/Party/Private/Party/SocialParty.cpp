@@ -95,14 +95,6 @@ const USocialParty* FPartyRepData::GetOwnerParty() const
 // USocialParty
 //////////////////////////////////////////////////////////////////////////
 
-static int32 EnableAutomaticPartyRejoin = 1;
-static FAutoConsoleVariableRef CVarEnableAutomaticPartyRejoin(
-	TEXT("Party.EnableAutomaticPartyRejoin"),
-	EnableAutomaticPartyRejoin,
-	TEXT("Enable automatic rejoining of parties\n")
-	TEXT("1 Enables. 0 disables."),
-	ECVF_Default);
-
 static int32 AllowPartyJoinsDuringLoad = 1;
 static FAutoConsoleVariableRef CVar_AllowPartyJoinsDuringLoad(
 	TEXT("Party.AllowJoinsDuringLoad"),
@@ -226,7 +218,7 @@ FPartyJoinApproval USocialParty::EvaluateJoinRequest(const FUniqueNetId& PlayerI
 
 bool USocialParty::ShouldCacheForRejoinOnDisconnect() const
 {
-	return EnableAutomaticPartyRejoin != 0 && GetNumPartyMembers() > 1;
+	return bEnableAutomaticPartyRejoin && GetNumPartyMembers() > 1;
 }
 
 bool USocialParty::IsCurrentlyLeaving() const
@@ -264,6 +256,11 @@ bool USocialParty::HasUserBeenInvited(const USocialUser& User) const
 
 bool USocialParty::CanInviteUser(const USocialUser& User) const
 {
+	return CanInviteUserInternal(User);
+}
+
+bool USocialParty::CanInviteUserInternal(const USocialUser& User) const
+{
 	// Only users that are online can be invited
 	if (!User.IsOnline())
 	{
@@ -295,11 +292,10 @@ bool USocialParty::CanInviteUser(const USocialUser& User) const
 bool USocialParty::TryInviteUser(const USocialUser& UserToInvite)
 {
 	bool bSentInvite = false;
-	ESocialSubsystem InvitationSubsystemType = ESocialSubsystem::MAX;
-
 	if (CanInviteUser(UserToInvite))
 	{
-		static const bool bPreferPlatformInvite = USocialSettings::ShouldPreferPlatformInvites();
+		const bool bPreferPlatformInvite = USocialSettings::ShouldPreferPlatformInvites();
+		const bool bMustSendPrimaryInvite = USocialSettings::MustSendPrimaryInvites();
 
 		const FUniqueNetIdRepl UserPrimaryId = UserToInvite.GetUserId(ESocialSubsystem::Primary);
 		const FUniqueNetIdRepl UserPlatformId = UserToInvite.GetUserId(ESocialSubsystem::Platform);
@@ -311,34 +307,41 @@ bool USocialParty::TryInviteUser(const USocialUser& UserToInvite)
 
 		if ((UserPlatformId.IsValid() && bIsOnlineOnPlatform) && (!UserPrimaryId.IsValid() || bPreferPlatformInvite))
 		{
-			InvitationSubsystemType = ESocialSubsystem::Platform;
-
 			// Platform invites are sent as session invites on platform OSS' - this way we get the OS popups one would expect on XBox, PS4, etc.
+			bool bSentPlatformInvite = false;
 			const IOnlineSessionPtr PlatformSessionInterface = Online::GetSessionInterface(GetWorld(), USocialManager::GetSocialOssName(ESocialSubsystem::Platform));
 			if (PlatformSessionInterface.IsValid())
 			{
 				//@todo DanH Party: Any way to know if the session invite was a success? If we don't know we can't show it :/ #future
-				bSentInvite = PlatformSessionInterface->SendSessionInviteToFriend(*GetOwningLocalMember().GetRepData().GetPlatformUniqueId(), NAME_PartySession, *UserPlatformId);
+				bSentPlatformInvite = PlatformSessionInterface->SendSessionInviteToFriend(*GetOwningLocalMember().GetRepData().GetPlatformUniqueId(), NAME_PartySession, *UserPlatformId);
 			}
+			OnInviteSentInternal(ESocialSubsystem::Platform, UserToInvite, bSentPlatformInvite);
+			bSentInvite |= bSentPlatformInvite;
 		}
-		else if (UserPrimaryId.IsValid())
+		if ((!bSentInvite || bMustSendPrimaryInvite) && UserPrimaryId.IsValid())
 		{
-			InvitationSubsystemType = ESocialSubsystem::Primary;
-
 			// Primary subsystem invites can be sent directly to the user via the party interface
 			const IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
-			bSentInvite = PartyInterface->SendInvitation(*OwningLocalUserId, GetPartyId(), *UserPrimaryId);
+			const bool bSentPrimaryInvite = PartyInterface->SendInvitation(*OwningLocalUserId, GetPartyId(), *UserPrimaryId);
+			OnInviteSentInternal(ESocialSubsystem::Primary, UserToInvite, bSentPrimaryInvite);
+			bSentInvite |= bSentPrimaryInvite;
 		}
 	}
-
-	OnInviteSentInternal(InvitationSubsystemType, UserToInvite, bSentInvite);
-
+	else
+	{
+		OnInviteSentInternal(ESocialSubsystem::MAX, UserToInvite, false);
+	}
 	return bSentInvite;
 }
 
 bool USocialParty::CanPromoteMember(const UPartyMember& PartyMember) const
 {
 	check(PartyMembersById.Contains(PartyMember.GetPrimaryNetId()));
+	return CanPromoteMemberInternal(PartyMember);
+}
+
+bool USocialParty::CanPromoteMemberInternal(const UPartyMember& PartyMember) const
+{
 	return IsLocalPlayerPartyLeader() && bIsMemberPromotionPossible && !PartyMember.IsPartyLeader();
 }
 
@@ -357,6 +360,11 @@ bool USocialParty::TryPromoteMember(const UPartyMember& PartyMember)
 bool USocialParty::CanKickMember(const UPartyMember& PartyMember) const
 {
 	check(PartyMembersById.Contains(PartyMember.GetPrimaryNetId()));
+	return CanKickMemberInternal(PartyMember);
+}
+
+bool USocialParty::CanKickMemberInternal(const UPartyMember& PartyMember) const
+{
 	return IsLocalPlayerPartyLeader() && !PartyMember.IsLocalPlayer();
 }
 
@@ -403,8 +411,8 @@ void USocialParty::InitializeParty(const TSharedRef<const FOnlineParty>& InOssPa
 void USocialParty::InitializePartyInternal()
 {
 	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
-	PartyInterface->AddOnPartyConfigChangedDelegate_Handle(FOnPartyConfigChangedDelegate::CreateUObject(this, &USocialParty::HandlePartyConfigChanged));
-	PartyInterface->AddOnPartyDataReceivedDelegate_Handle(FOnPartyDataReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyDataReceived));
+	PartyInterface->AddOnPartyConfigChangedDelegate_Handle(FOnPartyConfigChangedConstDelegate::CreateUObject(this, &USocialParty::HandlePartyConfigChanged));
+	PartyInterface->AddOnPartyDataReceivedDelegate_Handle(FOnPartyDataReceivedConstDelegate::CreateUObject(this, &USocialParty::HandlePartyDataReceived));
 	PartyInterface->AddOnPartyJoinRequestReceivedDelegate_Handle(FOnPartyJoinRequestReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyJoinRequestReceived));
 	PartyInterface->AddOnPartyJIPRequestReceivedDelegate_Handle(FOnPartyJIPRequestReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyJIPRequestReceived));
 	PartyInterface->AddOnQueryPartyJoinabilityReceivedDelegate_Handle(FOnQueryPartyJoinabilityReceivedDelegate::CreateUObject(this, &USocialParty::HandleJoinabilityQueryReceived));
@@ -413,19 +421,19 @@ void USocialParty::InitializePartyInternal()
 
 	PartyInterface->AddOnPartyMemberJoinedDelegate_Handle(FOnPartyMemberJoinedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberJoined));
 	PartyInterface->AddOnPartyJIPDelegate_Handle(FOnPartyJIPDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberJIP));
-	PartyInterface->AddOnPartyMemberDataReceivedDelegate_Handle(FOnPartyMemberDataReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberDataReceived));
+	PartyInterface->AddOnPartyMemberDataReceivedDelegate_Handle(FOnPartyMemberDataReceivedConstDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberDataReceived));
 	PartyInterface->AddOnPartyMemberPromotedDelegate_Handle(FOnPartyMemberPromotedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberPromoted));
 	PartyInterface->AddOnPartyMemberExitedDelegate_Handle(FOnPartyMemberExitedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberExited));
-	
+	PartyInterface->AddOnPartySystemStateChangeDelegate_Handle(FOnPartySystemStateChangeDelegate::CreateUObject(this, &USocialParty::HandlePartySystemStateChange));
 	// Create a UPartyMember for every existing member on the OSS party
-	TArray<TSharedRef<FOnlinePartyMember>> OssPartyMembers;
+	TArray<FOnlinePartyMemberConstRef> OssPartyMembers;
 	PartyInterface->GetPartyMembers(*OwningLocalUserId, GetPartyId(), OssPartyMembers);
 	// Always initialize the local member first
-	if (ensure(OssPartyMembers.RemoveAll([this](const TSharedRef<FOnlinePartyMember>& Member) { return *Member->GetUserId() == *OwningLocalUserId; } ) > 0))
+	if (ensure(OssPartyMembers.RemoveAll([this](const FOnlinePartyMemberConstRef& Member) { return *Member->GetUserId() == *OwningLocalUserId; } ) > 0))
 	{
 		GetOrCreatePartyMember(*OwningLocalUserId);
 	}
-	for (TSharedRef<FOnlinePartyMember>& OssMember : OssPartyMembers)
+	for (FOnlinePartyMemberConstRef& OssMember : OssPartyMembers)
 	{
 		GetOrCreatePartyMember(*OssMember->GetUserId());
 	}
@@ -448,7 +456,7 @@ void USocialParty::TryFinishInitialization()
 		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld()); 
 		uint32 OSSMemberCount = PartyInterface->GetPartyMemberCount(*OwningLocalUserId, GetPartyId());
 
-		if (OSSMemberCount == PartyMembersById.Num())
+		if (OSSMemberCount == PartyMembersById.Num() && bHasReceivedRepData)
 		{
 			bIsInitialized = true;
 			GetSocialManager().NotifyPartyInitialized(*this);
@@ -482,6 +490,7 @@ void USocialParty::RefreshPublicJoinability()
 void USocialParty::InitializePartyRepData()
 {
 	UE_LOG(LogParty, Verbose, TEXT("Initializing rep data for party [%s]"), *ToDebugString());
+	bHasReceivedRepData = true;
 }
 
 FPartyPrivacySettings USocialParty::GetDesiredPrivacySettings() const
@@ -497,6 +506,23 @@ void USocialParty::OnLocalPlayerIsLeaderChanged(bool bIsLeader)
 
 		// Establish the privacy of the party to match the local player's preference
 		GetMutableRepData().SetPrivacySettings(GetDesiredPrivacySettings());
+
+		// It's possible that membership changes resulting in this promotion also require updates to the session info
+		//	If we found out about the changes in membership before learning we're the leader, we were unable to update the rep data accordingly
+		//	So, upon becoming leader, we must do a sweep to account for any such changes we missed out on
+		TArray<FName> AllMemberPlatformSubsystems;
+		for (UPartyMember* Member : GetPartyMembers())
+		{
+			FName PlatformOssName = Member->GetPlatformOssName();
+			if (!PlatformOssName.IsNone())
+			{
+				AllMemberPlatformSubsystems.AddUnique(PlatformOssName);
+			}
+		}
+		for (FName PlatformOssName : AllMemberPlatformSubsystems)
+		{
+			UpdatePlatformSessionLeader(PlatformOssName);
+		}
 	}
 	else
 	{
@@ -533,7 +559,7 @@ UPartyMember* USocialParty::GetOrCreatePartyMember(const FUniqueNetId& MemberId)
 			{
 				const FOnlinePartyId& PartyId = GetPartyId();
 				const IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
-				const TSharedPtr<FOnlinePartyMember> OssPartyMember = PartyInterface->GetPartyMember(*OwningLocalUserId, PartyId, MemberId);
+				const FOnlinePartyMemberConstPtr OssPartyMember = PartyInterface->GetPartyMember(*OwningLocalUserId, PartyId, MemberId);
 				if (OssPartyMember.IsValid())
 				{
 					PartyMember = NewObject<UPartyMember>(this, PartyMemberClass);
@@ -662,16 +688,21 @@ void USocialParty::HandleJoinabilityQueryReceived(const FUniqueNetId& LocalUserI
 	}
 }
 
-void USocialParty::HandlePartyDataReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const TSharedRef<FOnlinePartyData>& PartyData)
+void USocialParty::HandlePartyDataReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FOnlinePartyData& PartyData)
 {
 	if (PartyId == GetPartyId())
 	{
 		check(PartyDataReplicator.IsValid());
-		PartyDataReplicator.ProcessReceivedData(*PartyData);
+		PartyDataReplicator.ProcessReceivedData(PartyData);
+		if (!bHasReceivedRepData)
+		{
+			bHasReceivedRepData = true;
+			TryFinishInitialization();
+		}
 	}
 }
 
-void USocialParty::HandlePartyMemberDataReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId, const TSharedRef<FOnlinePartyData>& PartyMemberData)
+void USocialParty::HandlePartyMemberDataReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId, const FOnlinePartyData& PartyMemberData)
 {
 	if (PartyId == GetPartyId())
 	{
@@ -683,7 +714,7 @@ void USocialParty::HandlePartyMemberDataReceived(const FUniqueNetId& LocalUserId
 	}
 }
 
-void USocialParty::HandlePartyConfigChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const TSharedRef<FPartyConfiguration>& PartyConfig)
+void USocialParty::HandlePartyConfigChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FPartyConfiguration& PartyConfig)
 {
 	if (PartyId == GetPartyId())
 	{
@@ -735,19 +766,18 @@ void USocialParty::HandlePartyMemberPromoted(const FUniqueNetId& LocalUserId, co
 	{
 		UE_LOG(LogParty, VeryVerbose, TEXT("Party member [%s] in party [%s] promoted"), *NewLeaderId.ToDebugString(), *PartyId.ToDebugString());
 
-		if (CurrentLeaderId.IsValid() && NewLeaderId != *CurrentLeaderId)
-		{
-			if (UPartyMember* PreviousLeader = GetPartyMember(CurrentLeaderId))
-			{
-				PreviousLeader->NotifyMemberDemoted();
-				if (PreviousLeader->IsLocalPlayer())
-				{
-					OnLocalPlayerIsLeaderChanged(false);
-				}
-			}
-		}
+		UPartyMember* PreviousLeader = GetPartyMember(CurrentLeaderId);
 
 		CurrentLeaderId = NewLeaderId.AsShared();
+
+		if (PreviousLeader)
+		{
+			PreviousLeader->NotifyMemberDemoted();
+			if (PreviousLeader->IsLocalPlayer())
+			{
+				OnLocalPlayerIsLeaderChanged(false);
+			}
+		}
 
 		UPartyMember* NewLeader = GetPartyMember(CurrentLeaderId);
 		if (ensure(NewLeader))
@@ -920,6 +950,22 @@ void USocialParty::HandlePartyMemberExited(const FUniqueNetId& LocalUserId, cons
 	}
 }
 
+void USocialParty::HandlePartySystemStateChange(EPartySystemState NewState)
+{
+	UE_LOG(LogParty, VeryVerbose, TEXT("Party [%s] received notification of a party system state change to [%d]"), *ToDebugString(), (int32)NewState);
+	if (NewState == EPartySystemState::RequestingShutdown)
+	{
+		// Need to display message
+		SetIsRequestingShutdown(true);
+
+		//set timer to turn this off in a minute?
+		FTimerHandle DummyHandle;
+		GetWorld()->GetTimerManager().SetTimer(DummyHandle, FTimerDelegate::CreateWeakLambda(this, [this]() {
+			SetIsRequestingShutdown(false);
+		}), 60.0f, false);
+	}
+}
+
 FChatRoomId USocialParty::GetChatRoomId() const
 {
 	return ensure(OssParty.IsValid()) ? OssParty->RoomId : FChatRoomId();
@@ -987,7 +1033,7 @@ bool USocialParty::ShouldStayWithPartyOnExit() const
 
 bool USocialParty::IsPartyFunctionalityDegraded() const
 {
-	return bIsMissingXmppConnection.Get(false) || bIsMissingPlatformSession;
+	return bIsMissingXmppConnection.Get(false) || bIsMissingPlatformSession || bIsRequestingShutdown.Get(false);
 }
 
 int32 USocialParty::GetNumPartyMembers() const
@@ -1095,6 +1141,19 @@ void USocialParty::LeaveParty(const FOnLeavePartyAttemptComplete& OnLeaveAttempt
 		FOnLeavePartyComplete OnLeaveComplete = FOnLeavePartyComplete::CreateUObject(this, &USocialParty::HandleLeavePartyComplete, OnLeaveAttemptComplete);
 		PartyInterface->LeaveParty(*OwningLocalUserId, GetPartyId(), OnLeaveComplete);
 	}
+}
+
+bool USocialParty::ContainsUser(const USocialUser& User) const
+{
+	for(const UPartyMember* PartyMember : GetPartyMembers())
+	{
+		if (&PartyMember->GetSocialUser() == &User)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 ULocalPlayer& USocialParty::GetOwningLocalPlayer() const
@@ -1428,6 +1487,23 @@ void USocialParty::SetIsMissingXmppConnection(bool bInMissingXmppConnection)
 	}
 }
 
+void USocialParty::SetIsRequestingShutdown(bool bInRequestingShutdown)
+{
+	if (!bIsRequestingShutdown.IsSet() ||
+		bIsRequestingShutdown != bInRequestingShutdown)
+	{
+		UE_CLOG(bIsRequestingShutdown.IsSet(), LogParty, VeryVerbose, TEXT("Party [%s] is %s in a version transition"), *ToDebugString(), bInRequestingShutdown ? TEXT("now") : TEXT("no longer"));
+
+		const bool bWasPartyFunctionalityDegraded = IsPartyFunctionalityDegraded();
+		bIsRequestingShutdown = bInRequestingShutdown;
+		const bool bIsPartyFunctionalityDegraded = IsPartyFunctionalityDegraded();
+		if (bWasPartyFunctionalityDegraded != bIsPartyFunctionalityDegraded)
+		{
+			OnPartyFunctionalityDegradedChanged().Broadcast(bIsPartyFunctionalityDegraded);
+		}
+	}
+}
+
 void USocialParty::BeginLeavingParty(EMemberExitedReason Reason)
 {
 	if (!bIsLeavingParty)
@@ -1462,6 +1538,11 @@ void USocialParty::FinalizePartyLeave(EMemberExitedReason Reason)
 
 void USocialParty::UpdatePlatformSessionLeader(FName PlatformOssName)
 {
+	if (!IsLocalPlayerPartyLeader())
+	{
+		return;
+	}
+
 	if (const FPartyPlatformSessionInfo* PlatformSessionInfo = GetRepData().FindSessionInfo(PlatformOssName))
 	{
 		UPartyMember* NewSessionOwner = nullptr;

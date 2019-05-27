@@ -39,6 +39,13 @@
 #include "Misc/Paths.h"
 // END EPIC MOD
 
+// BEGIN EPIC MOD - Allow mapping from object files to their unity object file
+#include "Misc/FileHelper.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Dom/JsonObject.h"
+// END EPIC MOD
+
 namespace
 {
 	// common linker options:
@@ -167,20 +174,20 @@ namespace
 	{
 		// MSVC's link.exe is much more common, so treat this as our default
 		const std::wstring linkerPath = GetLinkerPath(linkerDb);
-		const std::wstring lowerCaseFilename = string::ToLower(file::GetFilename(linkerPath));
-		if (string::Contains(linkerPath.c_str(), L"lld"))
+		const std::wstring lowerCaseLinkerPath = string::ToLower(file::GetFilename(linkerPath));
+		if (string::Contains(lowerCaseLinkerPath.c_str(), L"lld"))
 		{
 			return coff::SymbolRemovalStrategy::LLD_COMPATIBLE;
 		}
-		else if (string::Contains(linkerPath.c_str(), L"lld-link"))
+		else if (string::Contains(lowerCaseLinkerPath.c_str(), L"lld-link"))
 		{
 			return coff::SymbolRemovalStrategy::LLD_COMPATIBLE;
 		}
-		else if (string::Contains(linkerPath.c_str(), L"ld.lld"))
+		else if (string::Contains(lowerCaseLinkerPath.c_str(), L"ld.lld"))
 		{
 			return coff::SymbolRemovalStrategy::LLD_COMPATIBLE;
 		}
-		else if (string::Contains(linkerPath.c_str(), L"ld64.lld"))
+		else if (string::Contains(lowerCaseLinkerPath.c_str(), L"ld64.lld"))
 		{
 			return coff::SymbolRemovalStrategy::LLD_COMPATIBLE;
 		}
@@ -188,7 +195,22 @@ namespace
 		return coff::SymbolRemovalStrategy::MSVC_COMPATIBLE;
 	}
 
-	static LiveModule::CompileResult Compile(const symbols::ObjPath& normalizedObjPath, symbols::Compiland* compiland, const LiveModule::PerProcessData* processData, size_t processCount, unsigned int flags, LiveModule::UpdateType::Enum updateType)
+
+	// helper function for creating a CallHooks command
+	static commands::CallHooks MakeCallHooksCommand(hook::Type::Enum type, const void* moduleBase, uint32_t firstRva, uint32_t lastRva)
+	{
+		return commands::CallHooks { type, pointer::Offset<const void*>(moduleBase, firstRva), pointer::Offset<const void*>(moduleBase, lastRva) };
+	}
+
+
+	// helper function for creating a CallHooks command
+	static commands::CallHooks MakeCallHooksCommand(hook::Type::Enum type, const void* moduleBase, const ModuleCache::FindHookData& hookData)
+	{
+		return MakeCallHooksCommand(type, moduleBase, hookData.firstRva, hookData.lastRva);
+	}
+
+
+	static LiveModule::CompileResult Compile(ModuleCache* moduleCache, const symbols::ObjPath& normalizedObjPath, symbols::Compiland* compiland, const LiveModule::PerProcessData* processData, size_t processCount, unsigned int flags, LiveModule::UpdateType::Enum updateType)
 	{
 		const std::wstring compilerPath = GetCompilerPath(compiland);
 
@@ -325,33 +347,42 @@ namespace
 			logging::LogNoFormat<logging::Channel::DEV>("\n");
 		}
 
-		// send compiler output to main executable
 		{
 			CriticalSection::ScopedLock lock(&g_compileOutputCS);
 
+			// log to local UI
 			logging::LogNoFormat<logging::Channel::USER>(compilerOutput);
 
-			if (updateType != LiveModule::UpdateType::NO_CLIENT_COMMUNICATION)
+			const size_t outputLength = processContext->stdoutData.length();
+			if (outputLength != 0u)
 			{
-				for (size_t p = 0u; p < processCount; ++p)
+				if (updateType != LiveModule::UpdateType::NO_CLIENT_COMMUNICATION)
 				{
-					const DuplexPipe* pipe = processData[p].liveProcess->GetPipe();
-
-					size_t sentAlready = 0u;
-					for (;;)
+					// send log to host DLL
+					for (size_t p = 0u; p < processCount; ++p)
 					{
-						const size_t remainingOutput = processContext->stdoutData.length() - sentAlready;
-						const size_t toSend = remainingOutput > (commands::LogOutput::BUFFER_SIZE - 1u) ? (commands::LogOutput::BUFFER_SIZE - 1u) : remainingOutput;
+						const DuplexPipe* pipe = processData[p].liveProcess->GetPipe();
 
-						commands::LogOutput cmd { toSend };
-						memcpy(cmd.buffer, compilerOutput + sentAlready, toSend * sizeof(wchar_t));
-						cmd.buffer[toSend] = L'\0';
-						pipe->SendCommandAndWaitForAck(cmd);
+						commands::LogOutput cmd {};
+						pipe->SendCommandAndWaitForAck(cmd, compilerOutput, (outputLength + 1u) * sizeof(wchar_t));
+					}
 
-						sentAlready += toSend;
-						if (sentAlready >= processContext->stdoutData.length())
+					// send log to all registered hooks in case compilation was not successful
+					if (exitCode != 0u)
+					{
+						const ModuleCache::FindHookData& hookData = moduleCache->FindHooksInSectionBackwards(ModuleCache::SEARCH_ALL_MODULES, ImmutableString(LPP_COMPILE_ERROR_MESSAGE_SECTION));
+						if ((hookData.firstRva != 0u) && (hookData.lastRva != 0u))
 						{
-							break;
+							const size_t count = hookData.data->processes.size();
+							for (size_t p = 0u; p < count; ++p)
+							{
+								const ModuleCache::ProcessData& hookProcessData = hookData.data->processes[p];
+
+								void* moduleBase = hookProcessData.moduleBase;
+								const DuplexPipe* pipe = hookProcessData.pipe;
+
+								pipe->SendCommandAndWaitForAck(MakeCallHooksCommand(hook::Type::COMPILE_ERROR_MESSAGE, moduleBase, hookData), compilerOutput, (outputLength + 1u) * sizeof(wchar_t));
+							}
 						}
 					}
 				}
@@ -365,13 +396,138 @@ namespace
 		return LiveModule::CompileResult { exitCode, true };
 	}
 
-
-	// helper function that returns or generates the unique ID of an optional compiland
-	static inline uint32_t GetCompilandId(const symbols::Compiland* compiland, const wchar_t* const objPath)
+	// BEGIN EPIC MOD - Allow mapping from object files to their unity object file
+	static bool ReadLiveCodingInfo(const wchar_t* manifestFile, types::StringMap<uint32_t>& objFileToCompilandId)
 	{
-		return compiland
-			? compiland->uniqueId									// compiland exists
-			: uniqueId::Generate(file::NormalizePath(objPath));		// new compiland, generate new unique ID
+		// Read the file to a string
+		FString FileContents;
+		if (!FFileHelper::LoadFileToString(FileContents, manifestFile))
+		{
+			return false;
+		}
+
+		// Deserialize a JSON object from the string
+		TSharedPtr< FJsonObject > Object;
+		TSharedRef< TJsonReader<> > Reader = TJsonReaderFactory<>::Create(FileContents);
+		if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid())
+		{
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject>* FilesObject;
+		if (!Object->TryGetObjectField(TEXT("RemapUnityFiles"), FilesObject))
+		{
+			return false;
+		}
+
+		std::wstring BaseDir = file::GetDirectory(manifestFile);
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : FilesObject->Get()->Values)
+		{
+			std::wstring UnityObjectFile = file::NormalizePath((BaseDir + L"\\" + *Pair.Key).c_str());
+			uint32_t UnityCompilandId = uniqueId::Generate(UnityObjectFile);
+			objFileToCompilandId.insert(std::make_pair(string::ToUtf8String(UnityObjectFile), UnityCompilandId));
+
+			const FJsonValue* Value = Pair.Value.Get();
+			if (Value->Type != EJson::Array)
+			{
+				return false;
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>& SourceFileValues = Value->AsArray();
+			for (const TSharedPtr<FJsonValue>& SourceFileValue : SourceFileValues)
+			{
+				if (SourceFileValue->Type != EJson::String)
+				{
+					return false;
+				}
+
+				std::wstring WideObjectFile = file::NormalizePath((BaseDir + L"\\" + *SourceFileValue->AsString()).c_str());
+				ImmutableString ObjectFile = string::ToUtf8String(WideObjectFile);
+				if (objFileToCompilandId.find(ObjectFile) == objFileToCompilandId.end())
+				{
+					objFileToCompilandId.insert(std::make_pair(ObjectFile, UnityCompilandId));
+				}
+			}
+		}
+
+		return true;
+	}
+
+	static void UpdateCompilandCache(types::StringMap<symbols::Compiland*>& compilands, types::StringMap<uint32_t>& objFileToCompilandId)
+	{
+		types::unordered_set<std::wstring> Directories;
+		for (std::pair<const ImmutableString, symbols::Compiland*>& Pair : compilands)
+		{
+			symbols::Compiland* Compiland = Pair.second;
+			if (Compiland != nullptr && Compiland->amalgamatedUniqueId == ~(uint32_t)0)
+			{
+				const std::wstring& wideObjPath = string::ToWideString(Pair.first);
+				Directories.insert(file::GetDirectory(wideObjPath));
+			}
+		}
+		for (const std::wstring& Directory : Directories)
+		{
+			std::wstring ManifestFile = Directory + L"\\LiveCodingInfo.json";
+			if (file::DoesExist(file::GetAttributes(ManifestFile.c_str())))
+			{
+				ReadLiveCodingInfo(ManifestFile.c_str(), objFileToCompilandId);
+			}
+		}
+		for (std::pair<const ImmutableString, symbols::Compiland*>& Pair : compilands)
+		{
+			symbols::Compiland* Compiland = Pair.second;
+			if (Compiland != nullptr && Compiland->amalgamatedUniqueId == ~(uint32_t)0)
+			{
+				types::StringMap<uint32_t>::const_iterator Iter = objFileToCompilandId.find(Pair.first);
+				if (Iter == objFileToCompilandId.end())
+				{
+					LC_WARNING_DEV("Unable to get amalgamated id for %s", Pair.first.c_str());
+				}
+				else
+				{
+					Compiland->amalgamatedUniqueId = Iter->second;
+				}
+			}
+		}
+	}
+	// END EPIC MOD
+
+	// helper function that returns or generates the unique ID of an optional compiland.
+	// for files split off from amalgamated files, we need to use the original object path of the amalgamated file here,
+	// otherwise names of symbols would differ, leading to constructors of global instances being called again.
+	static inline uint32_t GetCompilandId(const symbols::Compiland* compiland, const wchar_t* const objPath, const types::vector<LiveModule::ModifiedObjFile>& modifiedObjFiles)
+	{
+		// BEGIN EPIC MOD - Allow mapping from object files to their unity object file
+		if (compiland && compiland->amalgamatedUniqueId != ~(uint32_t)0)
+		{
+			return compiland->amalgamatedUniqueId;
+		}
+		// END EPIC MOD
+
+		// try to find the given .obj path in the array of modified object files to check if there's an original amalgamated object path for it
+		for (size_t i = 0u; i < modifiedObjFiles.size(); ++i)
+		{
+			const LiveModule::ModifiedObjFile& objFile = modifiedObjFiles[i];
+
+			// don't bother checking strings if the amalgamated object path is empty anyway
+			if (!objFile.amalgamatedObjPath.empty())
+			{
+				if (string::Matches(objPath, objFile.objPath.c_str()))
+				{
+					return uniqueId::Generate(file::NormalizePath(objFile.amalgamatedObjPath.c_str()));
+				}
+			}
+		}
+
+		if (compiland)
+		{
+			// the compiland already exists
+			return compiland->uniqueId;
+		}
+		else
+		{
+			return uniqueId::Generate(file::NormalizePath(objPath));
+		}
 	}
 
 
@@ -419,8 +575,22 @@ namespace
 			// this is a relocation to the symbol in question
 			if (!relocations::WouldPatchRelocation(relocation, coffDb, srcSymbolName, findData))
 			{
-				// this relocation to the symbol would not be patched by us, hence we
-				// absolutely need this symbol
+				// this relocation to the symbol would not be patched by us, hence we probably need this symbol.
+				// however, there are special cases where we want to strip symbols even though we might not patch
+				// all relocations to it.
+
+				// special case #1: a relocation from an exception-related unwind symbol (?dtor$) to a
+				// dynamic initializer (??__E), e.g. a relocation from ?dtor$0@?0???__ESomeGlobalVariable@@YAXXZ@4HA
+				// ("int `void __cdecl `dynamic initializer for 'SomeGlobalVariable''(void)'::`1'::dtor$0")
+				// in this case, the relocation is not patched, but the dynamic initializer refers to an already
+				// existing symbol. that dynamic initializer will be removed by us later on anyway, hence
+				// those relocations do not really need patching.
+				if (symbols::IsExceptionUnwindSymbolForDynamicInitializer(srcSymbolName))
+				{
+					LC_LOG_DEV("Ignoring unpatched relocation from symbol %s", srcSymbolName.c_str());
+					continue;
+				}
+
 				return nullptr;
 			}
 		}
@@ -441,7 +611,7 @@ namespace
 
 
 	template <typename T>
-	static types::vector<symbols::ObjPath> UpdateCoffCache(const T& compilands, CoffCache<coff::CoffDB>* coffCache, CacheUpdate::Enum updateType, coff::ReadFlags::Enum coffReadFlags)
+	static types::vector<symbols::ObjPath> UpdateCoffCache(const T& compilands, CoffCache<coff::CoffDB>* coffCache, CacheUpdate::Enum updateType, coff::ReadFlags::Enum coffReadFlags, const types::vector<LiveModule::ModifiedObjFile>& modifiedOrNewObjFiles)
 	{
 		LC_LOG_INDENT_DEV;
 
@@ -458,7 +628,7 @@ namespace
 			symbols::ObjPath objPath = it->first;
 			const std::wstring& wideObjPath = string::ToWideString(objPath);
 			const symbols::Compiland* compiland = it->second;
-			const uint32_t compilandUniqueId = GetCompilandId(compiland, wideObjPath.c_str());
+			const uint32_t compilandUniqueId = GetCompilandId(compiland, wideObjPath.c_str(), modifiedOrNewObjFiles);
 
 			const bool shouldUpdate = (updateType == CacheUpdate::NON_EXISTANT)
 				? (coffCache->Lookup(objPath) == nullptr)				// NON-EXISTANT: update cache only for files which don't have an entry yet
@@ -521,7 +691,10 @@ namespace
 		const size_t MODULE_ALIGNMENT = 64u * 1024u;
 		void* preferredBase = process::ScanMemoryRange(processHandle, lowerBound, upperBound, patchSize, MODULE_ALIGNMENT);
 
-		return pointer::AsInteger<executable::PreferredBase>(preferredBase);
+		const executable::PreferredBase preferredImageBase = pointer::AsInteger<executable::PreferredBase>(preferredBase);
+		LC_LOG_DEV("Preferred base address for image: 0x%" PRIX64 " (PID: %d)", preferredImageBase, processId);
+
+		return preferredImageBase;
 	}
 #endif
 
@@ -680,12 +853,14 @@ namespace
 			const size_t count = hookData.data->processes.size();
 			for (size_t p = 0u; p < count; ++p)
 			{
-				const unsigned int pid = hookData.data->processes[p].processId;
-				void* moduleBase = hookData.data->processes[p].moduleBase;
-				const DuplexPipe* pipe = hookData.data->processes[p].pipe;
+				const ModuleCache::ProcessData& processData = hookData.data->processes[p];
+
+				const unsigned int pid = processData.processId;
+				void* moduleBase = processData.moduleBase;
+				const DuplexPipe* pipe = processData.pipe;
 
 				LC_LOG_USER("Calling compile start hooks (PID: %d)", pid);
-				pipe->SendCommandAndWaitForAck(commands::CallHooks { hook::MakeFunction(moduleBase, hookData.firstRva), hook::MakeFunction(moduleBase, hookData.lastRva) });
+				pipe->SendCommandAndWaitForAck(MakeCallHooksCommand(hook::Type::COMPILE_START, moduleBase, hookData), nullptr, 0u);
 			}
 		}
 	}
@@ -705,12 +880,14 @@ namespace
 			const size_t count = hookData.data->processes.size();
 			for (size_t p = 0u; p < count; ++p)
 			{
-				const unsigned int pid = hookData.data->processes[p].processId;
-				void* moduleBase = hookData.data->processes[p].moduleBase;
-				const DuplexPipe* pipe = hookData.data->processes[p].pipe;
+				const ModuleCache::ProcessData& processData = hookData.data->processes[p];
 
-				LC_LOG_USER("Calling compile success hooks (PID: %d)", pid);				
-				pipe->SendCommandAndWaitForAck(commands::CallHooks { hook::MakeFunction(moduleBase, hookData.firstRva), hook::MakeFunction(moduleBase, hookData.lastRva) });
+				const unsigned int pid = processData.processId;
+				void* moduleBase = processData.moduleBase;
+				const DuplexPipe* pipe = processData.pipe;
+
+				LC_LOG_USER("Calling compile success hooks (PID: %d)", pid);
+				pipe->SendCommandAndWaitForAck(MakeCallHooksCommand(hook::Type::COMPILE_SUCCESS, moduleBase, hookData), nullptr, 0u);
 			}
 		}
 	}
@@ -730,12 +907,14 @@ namespace
 			const size_t count = hookData.data->processes.size();
 			for (size_t p = 0u; p < count; ++p)
 			{
-				const unsigned int pid = hookData.data->processes[p].processId;
-				void* moduleBase = hookData.data->processes[p].moduleBase;
-				const DuplexPipe* pipe = hookData.data->processes[p].pipe;
+				const ModuleCache::ProcessData& processData = hookData.data->processes[p];
+
+				const unsigned int pid = processData.processId;
+				void* moduleBase = processData.moduleBase;
+				const DuplexPipe* pipe = processData.pipe;
 
 				LC_LOG_USER("Calling compile error hooks (PID: %d)", pid);
-				pipe->SendCommandAndWaitForAck(commands::CallHooks { hook::MakeFunction(moduleBase, hookData.firstRva), hook::MakeFunction(moduleBase, hookData.lastRva) });
+				pipe->SendCommandAndWaitForAck(MakeCallHooksCommand(hook::Type::COMPILE_ERROR, moduleBase, hookData), nullptr, 0u);
 			}
 		}
 	}
@@ -996,6 +1175,10 @@ void LiveModule::Load(symbols::Provider* provider, symbols::DiaCompilandDB* diaC
 	{
 		LC_LOG_DEV("Caching all .objs on Load() due to external build system being used");
 
+		// BEGIN EPIC MOD - Allow mapping from object files to their unity object file
+		UpdateCompilandCache(m_compilandDB->compilands, m_objFileToCompilandId);
+		// END EPIC MOD
+
 		// the user wants to use an external build system. in this case, we only track .objs for changes and never
 		// compile anything ourselves. we cannot load .objs lazily in this case, so we have to do that right now.
 		struct GatherResult
@@ -1025,10 +1208,21 @@ void LiveModule::Load(symbols::Provider* provider, symbols::DiaCompilandDB* diaC
 
 			// do the loading and gathering concurrently
 			auto task = scheduler::CreateTask(gatherTaskRoot, [objPath, compiland]()
-			{
+				{
 				const std::wstring& wideObjPath = string::ToWideString(objPath);
 				coff::ObjFile* objFile = coff::OpenObj(wideObjPath.c_str());
-				coff::CoffDB* database = coff::GatherDatabase(objFile, compiland->uniqueId, coff::ReadFlags::NONE);
+				// BEGIN EPIC MOD - Allow mapping from object files to their unity object file
+				uint32_t uniqueId;
+			    if (compiland->amalgamatedUniqueId != ~(uint32_t)0)
+			    {
+				    uniqueId = compiland->amalgamatedUniqueId;
+			    }
+			    else
+			    {
+				    uniqueId = compiland->uniqueId;
+			    }
+				coff::CoffDB* database = coff::GatherDatabase(objFile, uniqueId, coff::ReadFlags::NONE);
+				// END EPIC MOD
 				coff::CloseObj(objFile);
 
 				return GatherResult { database, objPath };
@@ -1092,7 +1286,7 @@ void LiveModule::Unload(void)
 			}
 
 			const DuplexPipe* clientPipe = process.pipe;
-			clientPipe->SendCommandAndWaitForAck(commands::UnloadPatch { static_cast<HMODULE>(process.moduleBase) });
+			clientPipe->SendCommandAndWaitForAck(commands::UnloadPatch { static_cast<HMODULE>(process.moduleBase) }, nullptr, 0u);
 		}
 	}
 }
@@ -1191,11 +1385,11 @@ void LiveModule::UpdateDirectoryCache(DirectoryCache* cache)
 }
 
 
-LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, DirectoryCache* directoryCache, UpdateType::Enum updateType, const std::vector<std::wstring>& modifiedOrNewObjFiles)
+LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, DirectoryCache* directoryCache, UpdateType::Enum updateType, const types::vector<ModifiedObjFile>& modifiedOrNewObjFiles)
 {
 	telemetry::Scope updateScope("Update live module");
 
-	LC_LOG_DEV("\nLiveModule::Update -------------------------------------------\n");
+	LC_LOG_DEV("LiveModule Update: %S", m_moduleName.c_str());
 
 	GLiveCodingServer->GetStatusChangeDelegate().ExecuteIfBound(L"Checking modified files...");
 
@@ -1204,134 +1398,134 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 	// only check for modifications if no files have been handed to us
 	if (modifiedOrNewObjFiles.size() == 0u)
 	{
-	// check all files whether they changed
-	for (auto compilandIt = m_compilandDB->dependencies.begin(); compilandIt != m_compilandDB->dependencies.end(); ++compilandIt)
-	{
-		symbols::Dependency* dependency = compilandIt->second;
-		if (!dependency->parentDirectory->hadChange)
+		// check all files whether they changed
+		for (auto compilandIt = m_compilandDB->dependencies.begin(); compilandIt != m_compilandDB->dependencies.end(); ++compilandIt)
 		{
-			// no need to check this compiland, the parent directory didn't notice a change
-			continue;
-		}
-
-		const std::wstring filePath = string::ToWideString(compilandIt->first);
-		const types::vector<symbols::ObjPath>& objPaths = dependency->objPaths;
-
-		const FileAttributeCache::Data& cacheData = fileCache->UpdateCacheData(filePath);
-		const uint64_t currentTime = cacheData.lastModificationTime;
-		if (currentTime != dependency->lastModification)
-		{
-			dependency->lastModification = currentTime;
+			symbols::Dependency* dependency = compilandIt->second;
+			if (!dependency->parentDirectory->hadChange)
 			{
-				const std::wstring prettyPath = file::NormalizePathWithoutLinks(filePath.c_str());
-				LC_LOG_USER("File %S was modified", prettyPath.c_str());
+				// no need to check this compiland, the parent directory didn't notice a change
+				continue;
 			}
 
-			// AMALGAMATION
-			if (appSettings::g_amalgamationSplitIntoSingleParts->GetValue())
+			const std::wstring filePath = string::ToWideString(compilandIt->first);
+			const types::vector<symbols::ObjPath>& objPaths = dependency->objPaths;
+
+			const FileAttributeCache::Data& cacheData = fileCache->UpdateCacheData(filePath);
+			const uint64_t currentTime = cacheData.lastModificationTime;
+			if (currentTime != dependency->lastModification)
 			{
-				// look at each file individually and determine what to do
-				for (auto it : objPaths)
+				dependency->lastModification = currentTime;
 				{
-					symbols::Compiland* compiland = symbols::FindCompiland(m_compilandDB, it);
-					if (compiland)
+					const std::wstring prettyPath = file::NormalizePathWithoutLinks(filePath.c_str());
+					LC_LOG_USER("File %S was modified", prettyPath.c_str());
+				}
+
+				// AMALGAMATION
+				if (appSettings::g_amalgamationSplitIntoSingleParts->GetValue())
+				{
+					// look at each file individually and determine what to do
+					for (auto it : objPaths)
 					{
-						if (symbols::IsAmalgamation(compiland))
+						symbols::Compiland* compiland = symbols::FindCompiland(m_compilandDB, it);
+						if (compiland)
 						{
-							// split amalgamated file
-							symbols::AmalgamatedCompiland* amalgamatedCompiland = symbols::FindAmalgamatedCompiland(m_compilandDB, it);
-							if (amalgamatedCompiland)
+							if (symbols::IsAmalgamation(compiland))
 							{
-								// the amalgamated compiland needs to be split into its single parts.
-								// add all compilands that are part of the amalgamation for compilation.
-								// we always split in this case to trigger recompiles when included headers change.
-								LC_LOG_USER("Splitting amalgamated/unity file %s", it.c_str());
-
-								if (!amalgamatedCompiland->isSplit)
+								// split amalgamated file
+								symbols::AmalgamatedCompiland* amalgamatedCompiland = symbols::FindAmalgamatedCompiland(m_compilandDB, it);
+								if (amalgamatedCompiland)
 								{
-									// this is the first time the amalgamation is split into single files
-									forceAmalgamationPartsLinkage = true;
-								}
-
-								m_modifiedFiles.insert(amalgamatedCompiland->singleParts.begin(), amalgamatedCompiland->singleParts.end());
-								amalgamatedCompiland->isSplit = true;
-							}
-						}
-						else if (symbols::IsPartOfAmalgamation(compiland))
-						{
-							// this file is part of an amalgamation.
-							// if the amalgamation needs to be split, do that now.
-							// in any case, this file needs to be recompiled.
-							m_modifiedFiles.insert(it);
-
-							// find the amalgamated compiland this file belongs to
-							const ImmutableString& amalgamatedObjPath = compiland->amalgamationPath;
-							symbols::AmalgamatedCompiland* amalgamatedCompiland = symbols::FindAmalgamatedCompiland(m_compilandDB, amalgamatedObjPath);
-							if (amalgamatedCompiland)
-							{
-								if (!amalgamatedCompiland->isSplit)
-								{
-									// this is the first time the amalgamation is split into single files
-									forceAmalgamationPartsLinkage = true;
-
 									// the amalgamated compiland needs to be split into its single parts.
-									// add all compilands that are part of the amalgamation for compilation, and mark the
-									// amalgamated compiland as being split.
-									LC_LOG_USER("Splitting amalgamated/unity file %s", amalgamatedObjPath.c_str());
+									// add all compilands that are part of the amalgamation for compilation.
+									// we always split in this case to trigger recompiles when included headers change.
+									LC_LOG_USER("Splitting amalgamated/unity file %s", it.c_str());
+
+									if (!amalgamatedCompiland->isSplit)
+									{
+										// this is the first time the amalgamation is split into single files
+										forceAmalgamationPartsLinkage = true;
+									}
 
 									m_modifiedFiles.insert(amalgamatedCompiland->singleParts.begin(), amalgamatedCompiland->singleParts.end());
 									amalgamatedCompiland->isSplit = true;
 								}
 							}
-						}
-						else
-						{
-							m_modifiedFiles.insert(it);
+							else if (symbols::IsPartOfAmalgamation(compiland))
+							{
+								// this file is part of an amalgamation.
+								// if the amalgamation needs to be split, do that now.
+								// in any case, this file needs to be recompiled.
+								m_modifiedFiles.insert(it);
+
+								// find the amalgamated compiland this file belongs to
+								const ImmutableString& amalgamatedObjPath = compiland->amalgamationPath;
+								symbols::AmalgamatedCompiland* amalgamatedCompiland = symbols::FindAmalgamatedCompiland(m_compilandDB, amalgamatedObjPath);
+								if (amalgamatedCompiland)
+								{
+									if (!amalgamatedCompiland->isSplit)
+									{
+										// this is the first time the amalgamation is split into single files
+										forceAmalgamationPartsLinkage = true;
+
+										// the amalgamated compiland needs to be split into its single parts.
+										// add all compilands that are part of the amalgamation for compilation, and mark the
+										// amalgamated compiland as being split.
+										LC_LOG_USER("Splitting amalgamated/unity file %s", amalgamatedObjPath.c_str());
+
+										m_modifiedFiles.insert(amalgamatedCompiland->singleParts.begin(), amalgamatedCompiland->singleParts.end());
+										amalgamatedCompiland->isSplit = true;
+									}
+								}
+							}
+							else
+							{
+								m_modifiedFiles.insert(it);
+							}
 						}
 					}
+				}
+				else
+				{
+					// don't need to do anything fancy, just add all affected .objs
+					m_modifiedFiles.insert(objPaths.begin(), objPaths.end());
+				}
+			}
+		}
+
+		if (m_runMode == RunMode::DEFAULT)
+		{
+			if (m_modifiedFiles.size() == 0u)
+			{
+				if (m_compiledCompilands.size() == 0u)
+				{
+					// no change detected in this module
+					return ErrorType::NO_CHANGE;
+				}
+				else
+				{
+					// there are still compiled files that haven't been linked
 				}
 			}
 			else
 			{
-				// don't need to do anything fancy, just add all affected .objs
-				m_modifiedFiles.insert(objPaths.begin(), objPaths.end());
+				LC_LOG_USER("Detected %zu file(s) to be compiled for Live++ module %S", m_modifiedFiles.size(), m_moduleName.c_str());
 			}
 		}
-	}
-
-	if (m_runMode == RunMode::DEFAULT)
-	{
-		if (m_modifiedFiles.size() == 0u)
+		else if (m_runMode == RunMode::EXTERNAL_BUILD_SYSTEM)
 		{
-			if (m_compiledCompilands.size() == 0u)
+			if (m_modifiedFiles.size() == 0u)
 			{
-				// no change detected in this module
+				// no changed .obj detected in this module
 				return ErrorType::NO_CHANGE;
 			}
-			else
-			{
-				// there are still compiled files that haven't been linked
-			}
 		}
-		else
-		{
-			LC_LOG_USER("Detected %zu file(s) to be compiled for Live++ module %S", m_modifiedFiles.size(), m_moduleName.c_str());
-		}
-	}
-	else if (m_runMode == RunMode::EXTERNAL_BUILD_SYSTEM)
-	{
-		if (m_modifiedFiles.size() == 0u)
-		{
-			// no changed .obj detected in this module
-			return ErrorType::NO_CHANGE;
-		}
-	}
 	}
 	else
 	{
 		for (size_t i = 0u; i < modifiedOrNewObjFiles.size(); ++i)
 		{
-			LC_LOG_USER("File %S was modified or is new", modifiedOrNewObjFiles[i].c_str());
+			LC_LOG_USER("File %S was modified or is new", modifiedOrNewObjFiles[i].objPath.c_str());
 		}
 
 		LC_LOG_USER("Building patch from %zu file(s) for Live Coding module %S", modifiedOrNewObjFiles.size(), m_moduleName.c_str());
@@ -1482,6 +1676,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 			CompileResult compileResult;
 		};
 
+		ModuleCache* moduleCache = m_moduleCache;
 		double wholeCompileTime = 0.0;
 
 		// now figure out which files can be compiled in parallel.
@@ -1504,10 +1699,10 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 
 				if (compilerOptions::CreatesPrecompiledHeader(compiland->commandLine.c_str()))
 				{
-					auto task = scheduler::CreateTask(taskRoot, [i, objPath, compiland, processData, processCount, updateType]()
+					auto task = scheduler::CreateTask(taskRoot, [i, moduleCache, objPath, compiland, processData, processCount, updateType]()
 					{
 						telemetry::Scope compileScope("Compile");
-						const CompileResult& result = Compile(objPath, compiland, processData, processCount, 0u, updateType);
+						const CompileResult& result = Compile(moduleCache, objPath, compiland, processData, processCount, 0u, updateType);
 						return LocalCompileResult{ i, compileScope.ReadSeconds(), result };
 					});
 					scheduler::RunTask(task);
@@ -1584,11 +1779,11 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 
 				if (compilerOptions::UsesC7DebugFormat(compiland->commandLine.c_str()))
 				{
-					auto task = scheduler::CreateTask(taskRoot, [i, objPath, compiland, processData, processCount, updateType]()
+					auto task = scheduler::CreateTask(taskRoot, [i, moduleCache, objPath, compiland, processData, processCount, updateType]()
 					{
 						telemetry::Scope compileScope("Compile");
 
-						const CompileResult& result = Compile(objPath, compiland, processData, processCount, 0u, updateType);
+						const CompileResult& result = Compile(moduleCache, objPath, compiland, processData, processCount, 0u, updateType);
 						return LocalCompileResult{ i, compileScope.ReadSeconds(), result };
 					});
 					scheduler::RunTask(task);
@@ -1675,7 +1870,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 
 					telemetry::Scope compileScope("Compile");
 
-					const CompileResult& result = Compile(objPath, compiland, processData, processCount, 0u, updateType);
+					const CompileResult& result = Compile(moduleCache, objPath, compiland, processData, processCount, 0u, updateType);
 					OnCompiledFile(objPath, compiland, result, compileScope.ReadSeconds(), forceAmalgamationPartsLinkage);
 
 					if (result.exitCode != 0u)
@@ -1703,11 +1898,11 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 					symbols::Compiland* compiland = availableModifiedFiles[fileIndex].compiland;
 
 					// this PDB file is being written to by one compiland only, we can compile that without any extra options
-					auto task = scheduler::CreateTask(taskRoot, [fileIndex, objPath, compiland, processData, processCount, updateType]()
+					auto task = scheduler::CreateTask(taskRoot, [fileIndex, moduleCache, objPath, compiland, processData, processCount, updateType]()
 					{
 						telemetry::Scope compileScope("Compile");
 
-						const CompileResult& result = Compile(objPath, compiland, processData, processCount, 0u, updateType);
+						const CompileResult& result = Compile(moduleCache, objPath, compiland, processData, processCount, 0u, updateType);
 						return LocalCompileResult{ fileIndex, compileScope.ReadSeconds(), result };
 					});
 					scheduler::RunTask(task);
@@ -1723,11 +1918,11 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 						const symbols::ObjPath& objPath = availableModifiedFiles[fileIndex].objPath;
 						symbols::Compiland* compiland = availableModifiedFiles[fileIndex].compiland;
 
-						auto task = scheduler::CreateTask(taskRoot, [fileIndex, objPath, compiland, processData, processCount, updateType]()
+						auto task = scheduler::CreateTask(taskRoot, [fileIndex, moduleCache, objPath, compiland, processData, processCount, updateType]()
 						{
 							telemetry::Scope compileScope("Compile");
 
-							const CompileResult& result = Compile(objPath, compiland, processData, processCount, CompileFlags::SERIALIZE_PDB_ACCESS, updateType);
+							const CompileResult& result = Compile(moduleCache, objPath, compiland, processData, processCount, CompileFlags::SERIALIZE_PDB_ACCESS, updateType);
 							return LocalCompileResult{ fileIndex, compileScope.ReadSeconds(), result };
 						});
 						scheduler::RunTask(task);
@@ -1784,16 +1979,16 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 	{
 		if (modifiedOrNewObjFiles.size() == 0u)
 		{
-		// files were compiled by an external build system, we just have to mark them appropriately
-		const size_t count = availableModifiedFiles.size();
-		for (size_t i = 0u; i < count; ++i)
-		{
-			const symbols::ObjPath& objPath = availableModifiedFiles[i].objPath;
-			symbols::Compiland* compiland = availableModifiedFiles[i].compiland;
+			// files were compiled by an external build system, we just have to mark them appropriately
+			const size_t count = availableModifiedFiles.size();
+			for (size_t i = 0u; i < count; ++i)
+			{
+				const symbols::ObjPath& objPath = availableModifiedFiles[i].objPath;
+				symbols::Compiland* compiland = availableModifiedFiles[i].compiland;
 
-			m_compiledCompilands.emplace(objPath, compiland);
-			symbols::MarkCompilandAsRecompiled(compiland);
-		}
+				m_compiledCompilands.emplace(objPath, compiland);
+				symbols::MarkCompilandAsRecompiled(compiland);
+			}
 		}
 		else
 		{
@@ -1802,7 +1997,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 			const size_t count = modifiedOrNewObjFiles.size();
 			for (size_t i = 0u; i < count; ++i)
 			{
-				const std::wstring& wideObjPath = modifiedOrNewObjFiles[i];
+				const std::wstring& wideObjPath = modifiedOrNewObjFiles[i].objPath;
 				const symbols::ObjPath& objPath = string::ToUtf8String(wideObjPath);
 				symbols::Compiland* compiland = symbols::FindCompiland(m_compilandDB, objPath);
 
@@ -1921,35 +2116,35 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 
 					Helper::UpdateExternalSymbolsAndNeededFiles(objPath, compiland, compiland->uniqueId, coffReadFlags, m_pchSymbolToCompilandName, externalSymbols, neededCompilands);
 				}
-			else
-			{
-				// this file has not changed, so consult the cache for external symbols
-				auto cacheIt = m_externalSymbolsPerCompilandCache.find(objPath);
-				if (cacheIt != m_externalSymbolsPerCompilandCache.end())
-				{
-					const size_t symbolCount = cacheIt->second.size();
-					for (size_t i = 0u; i < symbolCount; ++i)
-					{
-						const ImmutableString& symbolName = cacheIt->second[i]->name;
-						externalSymbols.emplace(symbolName, CompilandInfo { objPath, compiland });
-					}
-				}
 				else
 				{
-					// this compiland does not store any external symbol
+					// this file has not changed, so consult the cache for external symbols
+					auto cacheIt = m_externalSymbolsPerCompilandCache.find(objPath);
+					if (cacheIt != m_externalSymbolsPerCompilandCache.end())
+					{
+						const size_t symbolCount = cacheIt->second.size();
+						for (size_t i = 0u; i < symbolCount; ++i)
+						{
+							const ImmutableString& symbolName = cacheIt->second[i]->name;
+							externalSymbols.emplace(symbolName, CompilandInfo { objPath, compiland });
+						}
+					}
+					else
+					{
+						// this compiland does not store any external symbol
+					}
 				}
 			}
 		}
-	}
 		else
 		{
 			for (auto it = modifiedOrNewObjFiles.begin(); it != modifiedOrNewObjFiles.end(); ++it)
 			{
-				const symbols::ObjPath objPath(string::ToUtf8String(*it));
+				const symbols::ObjPath objPath(string::ToUtf8String(it->objPath));
 				const symbols::Compiland* compiland = symbols::FindCompiland(m_compilandDB, objPath);
 
 				// new compilands won't be found in the database, so there's no unique ID yet that we can use
-				const uint32_t compilandUniqueId = GetCompilandId(compiland, it->c_str());
+				const uint32_t compilandUniqueId = GetCompilandId(compiland, it->objPath.c_str(), modifiedOrNewObjFiles);
 
 				// this file was either modified or is new. in any case, the new .OBJ needs to be linked in, even
 				// though the file might be contained in a library.
@@ -2009,7 +2204,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		if (count > 0u)
 		{
 			executable::Image* image = executable::OpenImage(m_moduleName.c_str(), file::OpenMode::READ_ONLY);
-			executable::ImageSectionDB* imageSections = executable::GatherSections(image);
+			executable::ImageSectionDB* imageSections = executable::GatherImageSectionDB(image);
 
 			// load and cache all .obj not in the cache yet concurrently
 			{
@@ -2026,11 +2221,11 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 						// there is no entry yet for this COFF in the cache.
 						// this means that this .obj was not recompiled (otherwise it would have an entry already),
 						// but has been pulled in for the first time due to unresolved symbols.
-						auto task = scheduler::CreateTask(taskRoot, [this, objPath, coffReadFlags]()
+						auto task = scheduler::CreateTask(taskRoot, [this, objPath, coffReadFlags, &modifiedOrNewObjFiles]()
 						{
 							const symbols::Compiland* compiland = symbols::FindCompiland(m_compilandDB, objPath);
 							const std::wstring& wideObjPath = string::ToWideString(objPath);
-							const uint32_t compilandUniqueId = GetCompilandId(compiland, wideObjPath.c_str());
+							const uint32_t compilandUniqueId = GetCompilandId(compiland, wideObjPath.c_str(), modifiedOrNewObjFiles);
 
 								LC_LOG_DEV("Need %s for the first time, updating COFF cache", objPath.c_str());
 
@@ -2093,8 +2288,12 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		}
 	}
 
+	// BEGIN EPIC MOD - Allow mapping from object files to their unity object file
+	UpdateCompilandCache(m_compiledCompilands, m_objFileToCompilandId);
+	// END EPIC MOD
+
 	// update the COFF cache for all compiled files
-	UpdateCoffCache(m_compiledCompilands, m_coffCache, CacheUpdate::ALL, coffReadFlags);
+	UpdateCoffCache(m_compiledCompilands, m_coffCache, CacheUpdate::ALL, coffReadFlags, modifiedOrNewObjFiles);
 
 	GLiveCodingServer->GetStatusChangeDelegate().ExecuteIfBound(L"Stripping COFFs...");
 
@@ -2123,7 +2322,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 			symbols::Compiland* compiland = symbols::FindCompiland(m_compilandDB, objPath);
 			const std::wstring wideObjPath = string::ToWideString(objPath);
 
-			const uint32_t compilandUniqueId = GetCompilandId(compiland, wideObjPath.c_str());
+			const uint32_t compilandUniqueId = GetCompilandId(compiland, wideObjPath.c_str(), modifiedOrNewObjFiles);
 
 			coff::ObjFile* objFile = coff::OpenObj(wideObjPath.c_str());
 			if (objFile && objFile->memoryFile)
@@ -2651,7 +2850,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		const symbols::ObjPath& objPath = compilandIt->first;
 		const std::wstring& wideObjPath = string::ToWideString(objPath);
 		const symbols::Compiland* compiland = compilandIt->second;
-		const uint32_t compilandUniqueId = GetCompilandId(compiland, wideObjPath.c_str());
+		const uint32_t compilandUniqueId = GetCompilandId(compiland, wideObjPath.c_str(), modifiedOrNewObjFiles);
 
 		coff::ObjFile* coffFile = coff::OpenObj(wideObjPath.c_str());
 		if (coffFile && coffFile->memoryFile)
@@ -2871,28 +3070,17 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 	{
 		logging::LogNoFormat<logging::Channel::USER>(linkerOutput);
 
-		if (updateType != LiveModule::UpdateType::NO_CLIENT_COMMUNICATION)
+		const size_t outputLength = linkerProcessContext->stdoutData.length();
+		if (outputLength != 0u)
 		{
-			for (size_t p = 0u; p < processCount; ++p)
+			if (updateType != LiveModule::UpdateType::NO_CLIENT_COMMUNICATION)
 			{
-				const DuplexPipe* pipe = processData[p].liveProcess->GetPipe();
-
-				size_t sentAlready = 0u;
-				for (;;)
+				for (size_t p = 0u; p < processCount; ++p)
 				{
-					const size_t remainingOutput = linkerProcessContext->stdoutData.length() - sentAlready;
-					const size_t toSend = remainingOutput > (commands::LogOutput::BUFFER_SIZE - 1u) ? (commands::LogOutput::BUFFER_SIZE - 1u) : remainingOutput;
+					const DuplexPipe* pipe = processData[p].liveProcess->GetPipe();
 
-					commands::LogOutput cmd { toSend };
-					memcpy(cmd.buffer, linkerOutput + sentAlready, toSend * sizeof(wchar_t));
-					cmd.buffer[toSend] = L'\0';
-					pipe->SendCommandAndWaitForAck(cmd);
-
-					sentAlready += toSend;
-					if (sentAlready >= linkerProcessContext->stdoutData.length())
-					{
-						break;
-					}
+					commands::LogOutput cmd {};
+					pipe->SendCommandAndWaitForAck(cmd, linkerOutput, (outputLength + 1u) * sizeof(wchar_t));
 				}
 			}
 		}
@@ -2943,7 +3131,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		return ErrorType::LOAD_PATCH_ERROR;
 	}
 
-	executable::ImageSectionDB* imageSections = executable::GatherSections(image);
+	executable::ImageSectionDB* imageSections = executable::GatherImageSectionDB(image);
 
 	// before loading the DLL, disable its entry point so we can load it without initializing anything.
 	// we first want to reconstruct symbol information and patch dynamic initializers, only then do
@@ -3019,11 +3207,11 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 			process::Resume(data.liveProcess->GetProcessHandle());
 #endif
 
-			data.liveProcess->GetPipe()->SendCommandAndWaitForAck(cmd);
+			data.liveProcess->GetPipe()->SendCommandAndWaitForAck(cmd, nullptr, 0u);
 
 			// receive command with patch info
 			CommandMap commandMap;
-			commandMap.RegisterAction<LoadPatchInfoAction>();
+			commandMap.RegisterAction<actions::LoadPatchInfo>();
 			commandMap.HandleCommands(data.liveProcess->GetPipe(), &loadedPatches);
 		}
 	}
@@ -3064,7 +3252,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		for (size_t i = 0u; i < processCount; ++i)
 		{
 			const DuplexPipe* clientPipe = processData[i].liveProcess->GetPipe();
-			clientPipe->SendCommandAndWaitForAck(commands::UnloadPatch { static_cast<HMODULE>(loadedPatches[i]) });
+			clientPipe->SendCommandAndWaitForAck(commands::UnloadPatch { static_cast<HMODULE>(loadedPatches[i]) }, nullptr, 0u);
 		}
 
 		// clear the set for the next update
@@ -3084,7 +3272,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		for (size_t p = 0u; p < processCount; ++p)
 		{
 			const PerProcessData& data = processData[p];
-			data.liveProcess->GetPipe()->SendCommandAndWaitForAck(commands::EnterSyncPoint{});
+			data.liveProcess->GetPipe()->SendCommandAndWaitForAck(commands::EnterSyncPoint {}, nullptr, 0u);
 		}
 	}
 
@@ -3238,7 +3426,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		// update the COFF cache for new patch compilands.
 		// there may be files for which we don't have a database yet, even though we updated the database for all compiled files.
 		// this can happen when a new .obj that is part of a library is linked in for the first time.
-		types::vector<symbols::ObjPath> updatedCoffs = UpdateCoffCache(patch_compilandDB->compilands, m_coffCache, CacheUpdate::NON_EXISTANT, coffReadFlags);
+		types::vector<symbols::ObjPath> updatedCoffs = UpdateCoffCache(patch_compilandDB->compilands, m_coffCache, CacheUpdate::NON_EXISTANT, coffReadFlags, modifiedOrNewObjFiles);
 
 
 		// similarly, reconstruct symbols and dynamic initializers for new .obj that have been pulled in for the first time.
@@ -3249,7 +3437,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 			LC_LOG_INDENT_DEV;
 
 			executable::Image* originalImage = executable::OpenImage(m_moduleName.c_str(), file::OpenMode::READ_ONLY);
-			executable::ImageSectionDB* originalImageSections = executable::GatherSections(originalImage);
+			executable::ImageSectionDB* originalImageSections = executable::GatherImageSectionDB(originalImage);
 
 			types::StringSet noSymbolsToIgnore;
 
@@ -3295,7 +3483,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 
 	// reconstruct symbols for all compilands that are part of the new patch executable
 	executable::Image* patchImage = executable::OpenImage(exePath.c_str(), file::OpenMode::READ_ONLY);
-	executable::ImageSectionDB* patchImageSections = executable::GatherSections(patchImage);
+	executable::ImageSectionDB* patchImageSections = executable::GatherImageSectionDB(patchImage);
 
 	// gather the dynamic initializers and remaining symbols by walking the module
 	const symbols::DynamicInitializerDB initializerDb = symbols::GatherDynamicInitializers(patchSymbolProvider, patchImage, patchImageSections, patch_imageSectionDB, patch_contributionDB, patch_compilandDB, m_coffCache, patch_symbolDB);
@@ -3390,12 +3578,14 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 				const size_t count = hookData.data->processes.size();
 				for (size_t p = 0u; p < count; ++p)
 				{
-					const unsigned int pid = hookData.data->processes[p].processId;
-					void* moduleBase = hookData.data->processes[p].moduleBase;
-					const DuplexPipe* pipe = hookData.data->processes[p].pipe;
+					const ModuleCache::ProcessData& hookProcessData = hookData.data->processes[p];
+
+					const unsigned int pid = hookProcessData.processId;
+					void* moduleBase = hookProcessData.moduleBase;
+					const DuplexPipe* pipe = hookProcessData.pipe;
 
 					LC_LOG_USER("Calling pre-patch hooks (PID: %d)", pid);
-					pipe->SendCommandAndWaitForAck(commands::CallHooks { hook::MakeFunction(moduleBase, hookData.firstRva), hook::MakeFunction(moduleBase, hookData.lastRva) });
+					pipe->SendCommandAndWaitForAck(MakeCallHooksCommand(hook::Type::PREPATCH, moduleBase, hookData), nullptr, 0u);
 				}
 
 				compiledModulePatch->RegisterPrePatchHooks(hookData.data->index, hookData.firstRva, hookData.lastRva);
@@ -3609,7 +3799,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		for (size_t p = 0u; p < processCount; ++p)
 		{
 			const PerProcessData& data = processData[p];
-			data.liveProcess->GetPipe()->SendCommandAndWaitForAck(commands::CallEntryPoint { loadedPatches[p], entryPointRva });
+			data.liveProcess->GetPipe()->SendCommandAndWaitForAck(commands::CallEntryPoint { loadedPatches[p], entryPointRva }, nullptr, 0u);
 		}
 
 		// disable entry point in all processes again.
@@ -3822,9 +4012,11 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 				{
 					++functionsPatchedCount;
 
-					const unsigned int pid = originalData.data->processes[p].processId;
-					void* moduleBase = originalData.data->processes[p].moduleBase;
-					process::Handle processHandle = originalData.data->processes[p].processHandle;
+					const ModuleCache::ProcessData& hookProcessData = originalData.data->processes[p];
+
+					const unsigned int pid = hookProcessData.processId;
+					void* moduleBase = hookProcessData.moduleBase;
+					process::Handle processHandle = hookProcessData.processHandle;
 
 					char* originalAddress = pointer::Offset<char*>(moduleBase, originalData.symbol->rva);
 					char* patchAddress = pointer::Offset<char*>(loadedPatches[p], patchSymbol->rva);
@@ -3956,7 +4148,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 					const DuplexPipe* pipe = hookData.data->processes[p].pipe;
 
 					LC_LOG_USER("Calling post-patch hooks (PID: %d)", pid);
-					pipe->SendCommandAndWaitForAck(commands::CallHooks { hook::MakeFunction(moduleBase, hookData.firstRva), hook::MakeFunction(moduleBase, hookData.lastRva) });
+					pipe->SendCommandAndWaitForAck(MakeCallHooksCommand(hook::Type::POSTPATCH, moduleBase, hookData), nullptr, 0u);
 				}
 
 				compiledModulePatch->RegisterPostPatchHooks(hookData.data->index, hookData.firstRva, hookData.lastRva);
@@ -3970,7 +4162,7 @@ LiveModule::ErrorType::Enum LiveModule::Update(FileAttributeCache* fileCache, Di
 		for (size_t p = 0u; p < processCount; ++p)
 		{
 			const PerProcessData& data = processData[p];
-			data.liveProcess->GetPipe()->SendCommandAndWaitForAck(commands::LeaveSyncPoint {});
+			data.liveProcess->GetPipe()->SendCommandAndWaitForAck(commands::LeaveSyncPoint {}, nullptr, 0u);
 		}
 	}
 
@@ -4004,7 +4196,13 @@ bool LiveModule::InstallCompiledPatches(LiveProcess* liveProcess, void* original
 		return true;
 	}
 
-	LC_LOG_DEV("\nLiveModule::InstallCompiledPatches ---------------------------\n");
+	if (m_compiledModulePatches.size() == 0u)
+	{
+		// nothing to install
+		return true;
+	}
+
+	LC_LOG_DEV("LiveModule InstallCompiledPatches: %S", m_moduleName.c_str());
 
 	telemetry::Scope wholeScope("Installing patches");
 
@@ -4076,11 +4274,11 @@ bool LiveModule::InstallCompiledPatches(LiveProcess* liveProcess, void* original
 			process::Resume(processHandle);
 #endif
 
-			pipe->SendCommandAndWaitForAck(cmd);
+			pipe->SendCommandAndWaitForAck(cmd, nullptr, 0u);
 
 			// receive command with patch info
 			CommandMap commandMap;
-			commandMap.RegisterAction<LoadPatchInfoAction>();
+			commandMap.RegisterAction<actions::LoadPatchInfo>();
 			commandMap.HandleCommands(pipe, &loadedPatches);
 		}
 
@@ -4090,13 +4288,13 @@ bool LiveModule::InstallCompiledPatches(LiveProcess* liveProcess, void* original
 		{
 			LC_ERROR_USER("Patch could not be activated.");
 
-			pipe->SendCommandAndWaitForAck(commands::UnloadPatch { static_cast<HMODULE>(moduleBase) });
+			pipe->SendCommandAndWaitForAck(commands::UnloadPatch { static_cast<HMODULE>(moduleBase) }, nullptr, 0u);
 			return false;
 		}
 
 
 		// enter sync point
-		pipe->SendCommandAndWaitForAck(commands::EnterSyncPoint {});
+		pipe->SendCommandAndWaitForAck(commands::EnterSyncPoint {}, nullptr, 0u);
 
 
 		// store the new databases into the module cache
@@ -4108,7 +4306,7 @@ bool LiveModule::InstallCompiledPatches(LiveProcess* liveProcess, void* original
 		LC_LOG_DEV("Calling pre-patch hooks");
 		{
 			void* hookModule = processModuleBases[patchData.prePatchHookModuleIndex];
-			pipe->SendCommandAndWaitForAck(commands::CallHooks { hook::MakeFunction(hookModule, patchData.firstPrePatchHook), hook::MakeFunction(hookModule, patchData.lastPrePatchHook) });
+			pipe->SendCommandAndWaitForAck(MakeCallHooksCommand(hook::Type::PREPATCH, hookModule, patchData.firstPrePatchHook, patchData.lastPrePatchHook), nullptr, 0u);
 		}
 
 
@@ -4152,7 +4350,7 @@ bool LiveModule::InstallCompiledPatches(LiveProcess* liveProcess, void* original
 
 			LC_LOG_DEV("Calling original entry point");
 
-			pipe->SendCommandAndWaitForAck(commands::CallEntryPoint { moduleBase, entryPointRva });
+			pipe->SendCommandAndWaitForAck(commands::CallEntryPoint { moduleBase, entryPointRva }, nullptr, 0u);
 
 			executablePatcher.DisableEntryPoint(processHandle, moduleBase, entryPointRva);
 		}
@@ -4193,15 +4391,15 @@ bool LiveModule::InstallCompiledPatches(LiveProcess* liveProcess, void* original
 		LC_LOG_DEV("Calling post-patch hooks");
 		{
 			void* hookModule = processModuleBases[patchData.postPatchHookModuleIndex];
-			pipe->SendCommandAndWaitForAck(commands::CallHooks { hook::MakeFunction(hookModule, patchData.firstPostPatchHook), hook::MakeFunction(hookModule, patchData.lastPostPatchHook) });
+			pipe->SendCommandAndWaitForAck(MakeCallHooksCommand(hook::Type::POSTPATCH, hookModule, patchData.firstPostPatchHook, patchData.lastPostPatchHook), nullptr, 0u);
 		}
 
 
 		// leave sync point
-		pipe->SendCommandAndWaitForAck(commands::LeaveSyncPoint {});
+		pipe->SendCommandAndWaitForAck(commands::LeaveSyncPoint {}, nullptr, 0u);
 	}
 
-	LC_SUCCESS_USER("Successfully installed patches (%.3fs)", wholeScope.ReadSeconds());
+	LC_SUCCESS_USER("Successfully installed %zu patches (%.3fs)", m_compiledModulePatches.size(), wholeScope.ReadSeconds());
 
 	return true;
 }
@@ -4237,7 +4435,7 @@ bool LiveModule::HasInstalledPatches(void) const
 }
 
 
-bool LiveModule::LoadPatchInfoAction::Execute(CommandType* command, const DuplexPipe* pipe, void* context)
+bool LiveModule::actions::LoadPatchInfo::Execute(const CommandType* command, const DuplexPipe* pipe, void* context, const void*, size_t)
 {
 	types::vector<void*>* loadedPatches = static_cast<types::vector<void*>*>(context);
 	loadedPatches->emplace_back(command->module);
@@ -4251,7 +4449,7 @@ bool LiveModule::LoadPatchInfoAction::Execute(CommandType* command, const Duplex
 void LiveModule::UpdateDirectoryCache(const ImmutableString& path, symbols::Dependency* dependency, DirectoryCache* cache)
 {
 	const std::wstring& directoryOnly = file::GetDirectory(string::ToWideString(path));
-	dependency->parentDirectory = cache->AddDirectory(directoryOnly.c_str());
+	dependency->parentDirectory = cache->AddDirectory(directoryOnly);
 }
 
 

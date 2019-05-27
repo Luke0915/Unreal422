@@ -66,6 +66,11 @@ FAutoConsoleVariableRef CVarNetPartialBunchReliableThreshold(
 	GCVarNetPartialBunchReliableThreshold,
 	TEXT("If a bunch is broken up into this many partial bunches are more, we will send it reliable even if the original bunch was not reliable. Partial bunches are atonmic and must all make it over to be used"));
 
+int32 GSkipReplicatorForDestructionInfos = 1;
+FAutoConsoleVariableRef CVarNetSkipReplicatorForDestructionInfos(
+	TEXT("net.SkipReplicatorForDestructionInfos"),
+	GSkipReplicatorForDestructionInfos,
+	TEXT("If enabled, skip creation of object replicator in SetChannelActor when we know there is no content payload and we're going to immediately destroy the actor."));
 
 extern TAutoConsoleVariable<int32> CVarFilterGuidRemapping;
 
@@ -819,6 +824,27 @@ void UChannel::AppendMustBeMappedGuids( FOutBunch* Bunch )
 	}
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+
+UActorChannel::UActorChannel(const FObjectInitializer& ObjectInitializer)
+	: UChannel(ObjectInitializer)
+#if !UE_BUILD_SHIPPING
+	, bBlockChannelFailure(false)
+#endif
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	ChType = CHTYPE_Actor;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	ChName = NAME_Actor;
+	bClearRecentActorRefs = true;
+	bHoldQueuedExportBunchesAndGUIDs = false;
+	QueuedCloseReason = EChannelCloseReason::Destroyed;
+}
+
+UActorChannel::~UActorChannel()
+{
+
+}
 
 void UActorChannel::AppendExportBunches( TArray<FOutBunch *>& OutExportBunches )
 {
@@ -1871,12 +1897,14 @@ void UActorChannel::DestroyActorAndComponents()
 	}
 }
 
-bool UActorChannel::CleanUp( const bool bForDestroy, EChannelCloseReason CloseReason )
+bool UActorChannel::CleanUp(const bool bForDestroy, EChannelCloseReason CloseReason)
 {
 	SCOPE_CYCLE_COUNTER(Stat_ActorChanCleanUp);
 
 	checkf(Connection != nullptr, TEXT("UActorChannel::CleanUp: Connection is null!"));
 	checkf(Connection->Driver != nullptr, TEXT("UActorChannel::CleanUp: Connection->Driver is null!"));
+
+	Connection->Driver->NotifyActorChannelCleanedUp(this, CloseReason);
 
 	UReplicationConnectionDriver* const ConnectionDriver = Connection->GetReplicationConnectionDriver();
 	if (ConnectionDriver)
@@ -1972,6 +2000,7 @@ bool UActorChannel::CleanUp( const bool bForDestroy, EChannelCloseReason CloseRe
 
 	// We don't care about any leftover pending guids at this point
 	PendingGuidResolves.Empty();
+	QueuedBunchObjectReferences.Empty();
 
 	// Free export bunches list
 	for ( int32 i = 0; i < QueuedExportBunches.Num(); i++ )
@@ -2040,10 +2069,10 @@ void UActorChannel::ReceivedNak( int32 NakPacketId )
 	}
 }
 
-void UActorChannel::SetChannelActor( AActor* InActor )
+void UActorChannel::SetChannelActor(AActor* InActor, ESetChannelActorFlags Flags)
 {
 	check(!Closing);
-	check(Actor==NULL);
+	check(Actor == nullptr);
 
 	// Sanity check that the actor is in the same level collection as the channel's driver.
 	const UWorld* const World = Connection->Driver ? Connection->Driver->GetWorld() : nullptr;
@@ -2068,22 +2097,22 @@ void UActorChannel::SetChannelActor( AActor* InActor )
 
 	UE_LOG(LogNetTraffic, VeryVerbose, TEXT("SetChannelActor: ChIndex: %i, Actor: %s, NetGUID: %s"), ChIndex, Actor ? *Actor->GetFullName() : TEXT("NULL"), *ActorNetGUID.ToString() );
 
-	if ( ChIndex >= 0 && Connection->PendingOutRec[ChIndex] > 0 )
+	if (ChIndex >= 0 && Connection->PendingOutRec[ChIndex] > 0)
 	{
 		// send empty reliable bunches to synchronize both sides
 		// UE_LOG(LogNetTraffic, Log, TEXT("%i Actor %s WILL BE sending %i vs first %i"), ChIndex, *Actor->GetName(), Connection->PendingOutRec[ChIndex],Connection->OutReliable[ChIndex]);
 		int32 RealOutReliable = Connection->OutReliable[ChIndex];
 		Connection->OutReliable[ChIndex] = Connection->PendingOutRec[ChIndex] - 1;
-		while ( Connection->PendingOutRec[ChIndex] <= RealOutReliable )
+		while (Connection->PendingOutRec[ChIndex] <= RealOutReliable)
 		{
 			// UE_LOG(LogNetTraffic, Log, TEXT("%i SYNCHRONIZING by sending %i"), ChIndex, Connection->PendingOutRec[ChIndex]);
 
-			FOutBunch Bunch( this, 0 );
+			FOutBunch Bunch(this, 0);
 
 			if (!Bunch.IsError())
 			{
 				Bunch.bReliable = true;
-				SendBunch( &Bunch, 0 );
+				SendBunch(&Bunch, 0);
 				Connection->PendingOutRec[ChIndex]++;
 			}
 			else
@@ -2101,12 +2130,15 @@ void UActorChannel::SetChannelActor( AActor* InActor )
 	if (Actor)
 	{
 		// Add to map.
-		Connection->AddActorChannel( Actor, this );
+		Connection->AddActorChannel(Actor, this);
 
-		check( !ReplicationMap.Contains( Actor ) );
+		check(!ReplicationMap.Contains(Actor));
 
 		// Create the actor replicator, and store a quick access pointer to it
-		ActorReplicator = FindOrCreateReplicator( Actor );
+		if (!EnumHasAnyFlags(Flags, ESetChannelActorFlags::SkipReplicatorCreation))
+		{
+			ActorReplicator = FindOrCreateReplicator(Actor);
+		}
 
 		// Remove from connection's dormancy lists
 		Connection->Driver->GetNetworkObjectList().MarkActive(Actor, Connection, Connection->Driver);
@@ -2299,6 +2331,8 @@ bool UActorChannel::ProcessQueuedBunches()
 		{
 			PackageMapClient->SetHasQueuedBunches(ActorNetGUID, false);
 		}
+
+		QueuedBunchObjectReferences.Empty();
 	}
 
 	// Update the driver with our time spent
@@ -2314,75 +2348,97 @@ bool UActorChannel::ProcessQueuedBunches()
 
 void UActorChannel::ReceivedBunch( FInBunch & Bunch )
 {
-	check( !Closing );
+	check(!Closing);
 
-	if ( Broken || bTornOff )
+	if (Broken || bTornOff)
 	{
 		return;
 	}
 
-	if ( Connection->Driver->IsServer() )
+	TArray<TPair<FNetworkGUID, UObject*>> QueuedObjectsToTrack;
+
+	if (Connection->Driver->IsServer())
 	{
-		if ( Bunch.bHasMustBeMappedGUIDs )
+		if (Bunch.bHasMustBeMappedGUIDs)
 		{
-			UE_LOG( LogNetTraffic, Error, TEXT( "UActorChannel::ReceivedBunch: Client attempted to set bHasMustBeMappedGUIDs. Actor: %s" ), Actor != NULL ? *Actor->GetName() : TEXT( "NULL" ) );
+			UE_LOG(LogNetTraffic, Error, TEXT("UActorChannel::ReceivedBunch: Client attempted to set bHasMustBeMappedGUIDs. Actor: %s"), *GetNameSafe(Actor));
 			Bunch.SetError();
 			return;
 		}
 	}
 	else
 	{
-		if ( Bunch.bHasMustBeMappedGUIDs )
+		if (Bunch.bHasMustBeMappedGUIDs)
 		{
 			// If this bunch has any guids that must be mapped, we need to wait until they resolve before we can 
 			// process the rest of the stream on this channel
 			uint16 NumMustBeMappedGUIDs = 0;
 			Bunch << NumMustBeMappedGUIDs;
 
+			QueuedObjectsToTrack.SetNum(NumMustBeMappedGUIDs);
 			//UE_LOG( LogNetTraffic, Warning, TEXT( "Read must be mapped GUID's. NumMustBeMappedGUIDs: %i" ), NumMustBeMappedGUIDs );
 
-			UPackageMapClient * PackageMapClient = CastChecked< UPackageMapClient >( Connection->PackageMap );
+			UPackageMapClient* PackageMapClient = CastChecked<UPackageMapClient>(Connection->PackageMap);
+			FNetGUIDCache* GuidCache = Connection->Driver->GuidCache.Get();
 
-			for ( int32 i = 0; i < NumMustBeMappedGUIDs; i++ )
+			for (int32 i = 0; i < NumMustBeMappedGUIDs; i++)
 			{
 				FNetworkGUID NetGUID;
 				Bunch << NetGUID;
 
 				// If we have async package map loading disabled, we have to ignore NumMustBeMappedGUIDs
 				//	(this is due to the fact that async loading could have been enabled on the server side)
-				if ( !Connection->Driver->GuidCache->ShouldAsyncLoad() )
+				if (!Connection->Driver->GuidCache->ShouldAsyncLoad())
 				{
 					continue;
 				}
 
-				// This GUID better have been exported before we get here, which means it must be registered by now
-				if (!Connection->Driver->GuidCache->IsGUIDRegistered(NetGUID))
+				if (FNetGuidCacheObject const * const GuidCacheObject = GuidCache->GetCacheObject(NetGUID))
 				{
-					UE_LOG(LogNet, Warning, TEXT("UActorChannel::ReceivedBunch: Received a MustBeMappedGUID that is not registered. ChIndex: %i NetGUID: %s Channel: %s Bunch: %s" ), ChIndex, *NetGUID.ToString(), *Describe(), *Bunch.ToString());
+					if (UObject* const Object = GuidCacheObject->Object.Get())
+					{
+						// Note this must be mapped guid / object pair.
+						// If we are already queuing bunches, then we'll track it below.
+						QueuedObjectsToTrack.Emplace(NetGUID, Object);
+					}
+					else
+					{
+						PendingGuidResolves.Add(NetGUID);
+
+						// Start ticking this channel so that we try to resolve the pending GUID
+						Connection->StartTickingChannel(this);
+
+						// We know we're going to be queuing bunches and will need to track this object,
+						// so don't bother throwing it in the array, and just track it immediately.
+						QueuedBunchObjectReferences.Add(GuidCache->TrackQueuedBunchObjectReference(NetGUID, nullptr));
+					}
+				}
+				else
+				{
+					// This GUID better have been exported before we get here, which means it must be registered by now
+					UE_LOG(LogNet, Warning, TEXT("UActorChannel::ReceivedBunch: Received a MustBeMappedGUID that is not registered. ChIndex: %i NetGUID: %s Channel: %s Bunch: %s"), ChIndex, *NetGUID.ToString(), *Describe(), *Bunch.ToString());
 					Bunch.SetError();
 					return;
-				}
-
-				if ( !Connection->Driver->GuidCache->IsGUIDLoaded( NetGUID ) )
-				{
-					PendingGuidResolves.Add( NetGUID );
-					
-					// Start ticking this channel so that we try to resolve the pending GUID
-					Connection->StartTickingChannel(this);
 				}
 			}
 		}
 
-		if ( Actor == NULL && Bunch.bOpen )
+		if (Actor == NULL && Bunch.bOpen)
 		{
 			// Take a sneak peak at the actor guid so we have a copy of it now
-			FBitReaderMark Mark( Bunch );
+			FBitReaderMark Mark(Bunch);
 
-			NET_CHECKSUM( Bunch );
+			NET_CHECKSUM(Bunch);
 
 			Bunch << ActorNetGUID;
 
-			Mark.Pop( Bunch );
+			Mark.Pop(Bunch);
+
+			// we can now map guid to channel, even if all the bunches get queued
+			if (Connection->InternalAck)
+			{
+				Connection->NotifyActorNetGUID(this);
+			}
 		}
 
 		// We need to queue this bunch if any of these are true:
@@ -2390,31 +2446,39 @@ void UActorChannel::ReceivedBunch( FInBunch & Bunch )
 		//	2. We already have queued up bunches
 		//	3. If this actor was previously on a channel that is now still processing bunches after a close
 		//	4. The driver is requesting queuing for this GUID
-		if ( PendingGuidResolves.Num() > 0 || QueuedBunches.Num() > 0 || Connection->KeepProcessingActorChannelBunchesMap.Contains( ActorNetGUID ) ||
-			 ( Connection->Driver->ShouldQueueBunchesForActorGUID( ActorNetGUID ) ) )
+		if (PendingGuidResolves.Num() > 0 || QueuedBunches.Num() > 0 || Connection->KeepProcessingActorChannelBunchesMap.Contains(ActorNetGUID) ||
+			 (Connection->Driver->ShouldQueueBunchesForActorGUID(ActorNetGUID)))
 		{
-			if ( Connection->KeepProcessingActorChannelBunchesMap.Contains( ActorNetGUID ) )
+			if (Connection->KeepProcessingActorChannelBunchesMap.Contains(ActorNetGUID))
 			{
-				UE_LOG( LogNet, Log, TEXT( "UActorChannel::ReceivedBunch: Queuing bunch because another channel (that closed) is processing bunches for this guid still. ActorNetGUID: %s" ), *ActorNetGUID.ToString() );
+				UE_LOG(LogNet, Log, TEXT("UActorChannel::ReceivedBunch: Queuing bunch because another channel (that closed) is processing bunches for this guid still. ActorNetGUID: %s"), *ActorNetGUID.ToString());
 			}
 
-			if ( QueuedBunches.Num() == 0 )
+			if (QueuedBunches.Num() == 0)
 			{
 				// Remember when we first started queuing
 				QueuedBunchStartTime = FPlatformTime::Seconds();
 			}
 
-			QueuedBunches.Add( new FInBunch( Bunch ) );
+			QueuedBunches.Add(new FInBunch(Bunch));
 			
 			// Start ticking this channel so we can process the queued bunches when possible
 			Connection->StartTickingChannel(this);
 
 			// Register this as being queued
-			UPackageMapClient * PackageMapClient = Cast< UPackageMapClient >(Connection->PackageMap);
+			UPackageMapClient* PackageMapClient = Cast<UPackageMapClient>(Connection->PackageMap);
 
 			if (PackageMapClient)
 			{
 				PackageMapClient->SetHasQueuedBunches(ActorNetGUID, true);
+			}
+
+			if (FNetGUIDCache* LocalGuidCache = Connection->Driver->GuidCache.Get())
+			{
+				for (TPair<FNetworkGUID, UObject*>& NetGUIDObjectPair : QueuedObjectsToTrack)
+				{
+					QueuedBunchObjectReferences.Add(LocalGuidCache->TrackQueuedBunchObjectReference(NetGUIDObjectPair.Key, NetGUIDObjectPair.Value));
+				}
 			}
 
 			return;
@@ -2422,7 +2486,7 @@ void UActorChannel::ReceivedBunch( FInBunch & Bunch )
 	}
 
 	// We can process this bunch now
-	ProcessBunch( Bunch );
+	ProcessBunch(Bunch);
 }
 
 void UActorChannel::ProcessBunch( FInBunch & Bunch )
@@ -2463,7 +2527,7 @@ void UActorChannel::ProcessBunch( FInBunch & Bunch )
 					UE_LOG(LogNet, Verbose, TEXT("UActorChannel::ProcessBunch: SerializeNewActor received close bunch for destroyed actor. Actor: %s, Channel: %i"), *GetFullNameSafe(NewChannelActor), ChIndex);
 				}
 
-				SetChannelActor(nullptr);
+				SetChannelActor(nullptr, ESetChannelActorFlags::None);
 				return;
 			}
 
@@ -2482,8 +2546,14 @@ void UActorChannel::ProcessBunch( FInBunch & Bunch )
 			return;
 		}
 
-		UE_LOG(LogNetTraffic, Log, TEXT("      Channel Actor %s:"), *NewChannelActor->GetFullName() );
-		SetChannelActor( NewChannelActor );
+		ESetChannelActorFlags Flags = ESetChannelActorFlags::None;
+		if (GSkipReplicatorForDestructionInfos != 0 && Bunch.bClose && Bunch.AtEnd())
+		{
+			Flags |= ESetChannelActorFlags::SkipReplicatorCreation;
+		}
+
+		UE_LOG(LogNetTraffic, Log, TEXT("      Channel Actor %s:"), *NewChannelActor->GetFullName());
+		SetChannelActor(NewChannelActor, Flags);
 
 		NotifyActorChannelOpen(Actor, Bunch);
 
@@ -3054,6 +3124,16 @@ void UActorChannel::Serialize(FArchive& Ar)
 		);
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("PendingObjKeys", PendingObjKeys.CountBytes(Ar));
+	}
+}
+
+void UActorChannel::PrepareForRemoteFunction(UObject* TargetObj)
+{
+	// Make sure we create a replicator in case we destroy a sub object before we ever try to replicate its properties,
+	// otherwise it will not be in the ReplicationMap and we'll never send the deletion to clients
+	if (Connection && Connection->Driver && Connection->Driver->IsServer())
+	{
+		FindOrCreateReplicator(TargetObj);
 	}
 }
 
@@ -3768,6 +3848,7 @@ void UActorChannel::AddedToChannelPool()
 	check(ReplicationMap.Num() == 0);
 	check(QueuedBunches.Num() == 0);
 	check(PendingGuidResolves.Num() == 0);
+	check(QueuedBunchObjectReferences.Num() == 0);
 	check(QueuedMustBeMappedGuidsInLastBunch.Num() == 0);
 	check(QueuedExportBunches.Num() == 0);
 
@@ -3795,6 +3876,11 @@ void UActorChannel::AddedToChannelPool()
 bool UActorChannel::ReplicateSubobject(UObject *Obj, FOutBunch &Bunch, const FReplicationFlags &RepFlags)
 {
 	SCOPE_CYCLE_UOBJECT(ActorChannelRepSubObj, Obj);
+
+	if (!Obj || Obj->IsPendingKill())
+	{
+		return false;
+	}
 
 	TWeakObjectPtr<UObject> WeakObj(Obj);
 

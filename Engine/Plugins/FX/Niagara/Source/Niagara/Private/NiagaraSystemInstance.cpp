@@ -462,7 +462,7 @@ void FNiagaraSystemInstance::Reset(FNiagaraSystemInstance::EResetMode Mode, bool
 	
 	if (Component)
 	{
-		Component->LastRenderTime = Component->GetWorld()->GetTimeSeconds();
+		Component->SetLastRenderTime(Component->GetWorld()->GetTimeSeconds());
 	}
 
 	SetPaused(false);
@@ -1238,7 +1238,7 @@ void FNiagaraSystemInstance::TickInstanceParameters(float DeltaSeconds)
 	check(World);
 	float WorldTime = World->GetTimeSeconds();
 	//Bias the LastRenderTime slightly to account for any delay as it's written by the RT.
-	float SafeTimeSinceRendererd = FMath::Max(0.0f, WorldTime - Component->LastRenderTime - GLastRenderTimeSafetyBias);
+	float SafeTimeSinceRendererd = FMath::Max(0.0f, WorldTime - Component->GetLastRenderTime() - GLastRenderTimeSafetyBias);
 	SystemTimeSinceRenderedParam.SetValue(SafeTimeSinceRendererd);
 	
 	OwnerExecutionStateParam.SetValue((int32)RequestedExecutionState);

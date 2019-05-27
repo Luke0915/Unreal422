@@ -5,6 +5,11 @@
 #include "IControlRigEditor.h"
 #include "ControlRigEditorEditMode.h"
 #include "AssetEditorModeManager.h"
+#include "DragAndDrop//GraphNodeDragDropOp.h"
+#include "ControlRigDefines.h"
+#include "ControlRigLog.h"
+#include "Drawing/ControlRigDrawInterface.h"
+#include "ControlRigModel.h"
 
 class UControlRigBlueprint;
 class IPersonaToolkit;
@@ -12,9 +17,6 @@ class SWidget;
 class SBorder;
 class USkeletalMesh;
 class FStructOnScope;
-
-/** Delegate fired when node selection has changed */
-DECLARE_MULTICAST_DELEGATE_OneParam(FOnGraphNodeSelectionChanged, const TSet<UObject*>& /*Selection*/);
 
 struct FControlRigEditorModes
 {
@@ -68,7 +70,12 @@ public:
 	{
 		return FString(TEXT("Engine/Animation/ControlRig"));
 	}
-	
+
+	// BlueprintEditor interface
+	virtual bool CanAddNewLocalVariable() const override { return false; }
+	virtual void DeleteSelectedNodes();
+	virtual void PasteNodesHere(class UEdGraph* DestinationGraph, const FVector2D& GraphLocation) override;
+
 	// IToolkitHost Interface
 	virtual void OnToolkitHostingStarted(const TSharedRef<class IToolkit>& Toolkit) override;
 	virtual void OnToolkitHostingFinished(const TSharedRef<class IToolkit>& Toolkit) override;
@@ -88,8 +95,6 @@ public:
 
 	void ClearDetailObject();
 
-	FOnGraphNodeSelectionChanged& OnGraphNodeSelectionChanged() { return OnGraphNodeSelectionChangedDelegate; }
-
 	/** Get the persona toolkit */
 	TSharedRef<IPersonaToolkit> GetPersonaToolkit() const { return PersonaToolkit.ToSharedRef(); }
 
@@ -99,13 +104,15 @@ public:
 	/** Get the edit mode */
 	FControlRigEditorEditMode& GetEditMode() { return *static_cast<FControlRigEditorEditMode*>(GetAssetEditorModeManager()->GetActiveMode(FControlRigEditorEditMode::ModeName)); }
 
-	/** Try to set the selected nodes form some external source */
-	void SetSelectedNodes(const TArray<FString>& InSelectedPropertyPaths);
-	void SelectJoint(const FName& InJoint);
+	void SelectBone(const FName& InBone);
 	// this changes everytime you compile, so don't cache it expecting it will last. 
 	UControlRig* GetInstanceRig() const { return ControlRig;  }
 	// restart animation 
 	void OnHierarchyChanged();
+	void OnBoneRenamed(const FName& OldName, const FName& NewName);
+
+	void OnGraphNodeDropToPerform(TSharedPtr<FGraphNodeDragDropOp> DragDropOp, UEdGraph* Graph, const FVector2D& NodePosition, const FVector2D& ScreenPosition);
+
 protected:
 	// FBlueprintEditor Interface
 	virtual void CreateDefaultCommands() override;
@@ -113,6 +120,7 @@ protected:
 	virtual void Compile() override;
 	virtual bool IsInAScriptingMode() const override { return true; }
 	virtual void CreateDefaultTabContents(const TArray<UBlueprint*>& InBlueprints) override;
+	virtual bool IsSectionVisible(NodeSectionID::Type InSectionID) const override;
 	virtual FGraphAppearanceInfo GetGraphAppearance(class UEdGraph* InGraph) const override;
 	virtual bool IsEditable(UEdGraph* InGraph) const override;
 	virtual FText GetGraphDecorationString(UEdGraph* InGraph) const override;
@@ -127,6 +135,8 @@ protected:
 
 	// FNotifyHook Interface
 	virtual void NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged) override;
+
+	void HandleModelModified(const UControlRigModel* InModel, EControlRigModelNotifType InType, const void* InPayload);
 
 	// FGCObject Interface
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
@@ -161,6 +171,9 @@ private:
 	/** Push a newly compiled/opened control rig to the edit mode */
 	void UpdateControlRig();
 
+	/** Update the bone name list for use in bone name combo boxes */
+	void CacheBoneNameList();
+
 	/** Rebind our anim instance to the preview's skeletal mesh component */
 	void RebindToSkeletalMeshComponent();
 
@@ -169,6 +182,19 @@ private:
 
 	void ToggleExecuteGraph();
 	bool IsExecuteGraphOn() const;
+
+	enum EBoneGetterSetterType
+	{
+		EBoneGetterSetterType_Transform,
+		EBoneGetterSetterType_Rotation,
+		EBoneGetterSetterType_Translation,
+		EBoneGetterSetterType_Initial,
+		EBoneGetterSetterType_Relative,
+		EBoneGetterSetterType_Offset,
+		EBoneGetterSetterType_Name
+	};
+
+	 void HandleMakeBoneGetterSetter(EBoneGetterSetterType Type, bool bIsGetter, TArray<FName> BoneNames, UEdGraph* Graph, FVector2D NodePosition);
 
 protected:
 
@@ -187,26 +213,37 @@ protected:
 	/** Preview instance inspector widget */
 	TSharedPtr<SWidget> PreviewEditor;
 
-	FOnGraphNodeSelectionChanged OnGraphNodeSelectionChangedDelegate;
-
 	/** Our currently running control rig instance */
 	UControlRig* ControlRig;
 
 	/** preview scene */
 	TSharedPtr<IPersonaPreviewScene> PreviewScene;
 
-	/** Recursion guard for selection */
-	bool bSelecting;
-
-	/** Joint Selection related */
-	FTransform GetJointTransform(const FName& InJoint, bool bLocal) const;
-	void SetJointTransform(const FName& InJoint, const FTransform& InTransform);
+	/** Bone Selection related */
+	FTransform GetBoneTransform(const FName& InBone, bool bLocal) const;
+	void SetBoneTransform(const FName& InBone, const FTransform& InTransform);
 
 	/** delegate for changing property */
 	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
 
-	/** Selected Joint from hierarchy tree */
-	FName SelectedJoint;
+	/** Selected Bone from hierarchy tree */
+	FName SelectedBone;
+
+	bool bControlRigEditorInitialized;
+	bool bIsSelecting;
+
+	/** The log to use for errors resulting from the init phase of the units */
+	FControlRigLog ControlRigLog;
+	/** Once the log is collected update the graph */
+	void UpdateGraphCompilerErrors();
+
+	/** The draw interface to use for the control rig */
+	FControlRigDrawInterface DrawInterface;
+
+	/** This can be used to enable dumping of a unit test */
+	void DumpUnitTestCode();
 
 	friend class FControlRigEditorMode;
+	friend class SControlRigStackView;
+	friend class SRigHierarchy;
 };

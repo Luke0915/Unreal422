@@ -173,9 +173,9 @@ namespace Gauntlet
 		}
 	}
 
-	public class WindowsDeviceFactory : IDeviceFactory
+	public class Win64DeviceFactory : IDeviceFactory
 	{
-		public bool CanSupportPlatform(UnrealTargetPlatform Platform)
+		public bool CanSupportPlatform(UnrealTargetPlatform? Platform)
 		{
 			return Platform == UnrealTargetPlatform.Win64;
 		}
@@ -183,6 +183,19 @@ namespace Gauntlet
 		public ITargetDevice CreateDevice(string InRef, string InParam)
 		{
 			return new TargetDeviceWindows(InRef, InParam);
+		}
+	}
+
+	public class Wind32DeviceFactory : IDeviceFactory
+	{
+		public bool CanSupportPlatform(UnrealTargetPlatform? Platform)
+		{
+			return Platform == UnrealTargetPlatform.Win32;
+		}
+
+		public ITargetDevice CreateDevice(string InRef, string InParam)
+		{
+			return new TargetDeviceWindows(InRef, InParam, false);
 		}
 	}
 
@@ -195,12 +208,14 @@ namespace Gauntlet
 
 		protected string UserDir { get; set; }
 
+		protected bool IsWin64 { get; set; }
+
 		/// <summary>
 		/// Our mappings of Intended directories to where they actually represent on this platform.
 		/// </summary>
 		protected Dictionary<EIntendedBaseCopyDirectory, string> LocalDirectoryMappings { get; set; }
 
-		public TargetDeviceWindows(string InName, string InTempDir)
+		public TargetDeviceWindows(string InName, string InTempDir, bool InIsWin64=true)
 		{
 			Name = InName;
 			TempDir = InTempDir;
@@ -208,6 +223,8 @@ namespace Gauntlet
 
 			UserDir = Path.Combine(TempDir, string.Format("{0}_UserDir", Name));
             LocalDirectoryMappings = new Dictionary<EIntendedBaseCopyDirectory, string>();
+
+			IsWin64 = InIsWin64;
 		}
 
 		#region IDisposable Support
@@ -495,7 +512,7 @@ namespace Gauntlet
 			return string.Compare(Path.GetPathRoot(InPath), Path.GetPathRoot(this.TempDir), StringComparison.OrdinalIgnoreCase) == 0;
 		}
 
-		public UnrealTargetPlatform Platform { get { return UnrealTargetPlatform.Win64; } }
+		public UnrealTargetPlatform? Platform { get { return IsWin64 ? UnrealTargetPlatform.Win64 : UnrealTargetPlatform.Win32; } }
 
 		public string TempDir { get; private set; }
 		public bool IsAvailable { get { return true; } }

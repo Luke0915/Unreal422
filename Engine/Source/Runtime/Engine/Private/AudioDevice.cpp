@@ -1,6 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 #include "AudioDevice.h"
+
 #include "PhysicsEngine/BodyInstance.h"
 #include "Sound/SoundEffectPreset.h"
 #include "Sound/SoundEffectSubmix.h"
@@ -119,14 +120,6 @@ FAutoConsoleVariableRef CVarNumPrecacheFrames(
 	TEXT("0: Use default value for precache frames, >0: Number of frames to precache."),
 	ECVF_Default);
 
-static int32 AllowAudioSpatializationCVar = 1;
-FAutoConsoleVariableRef CVarAllowAudioSpatializationCVar(
-	TEXT("au.AllowAudioSpatialization"),
-	AllowAudioSpatializationCVar,
-	TEXT("Controls if we allow spatialization of audio, normally this is enabled.  If disabled all audio won't be spatialized, but will have attenuation.\n")
-	TEXT("0: Disable, >0: Enable"),
-	ECVF_Default);
-
 static int32 DisableLegacyReverb = 0;
 FAutoConsoleVariableRef CVarDisableLegacyReverb(
 	TEXT("au.DisableLegacyReverb"),
@@ -135,61 +128,22 @@ FAutoConsoleVariableRef CVarDisableLegacyReverb(
 	TEXT("0: Enabled, 1: Disabled"),
 	ECVF_Default);
 
+static float SoundDistanceOptimizationLengthCVar = 1.0f;
+FAutoConsoleVariableRef CVarSoundDistanceOptimizationLength(
+	TEXT("au.SoundDistanceOptimizationLength"),
+	SoundDistanceOptimizationLengthCVar,
+	TEXT("The maximum duration a sound must be in order to be a candidate to be culled due to one-shot distance optimization.\n"),
+	ECVF_Default);
 
-/*-----------------------------------------------------------------------------
-FDynamicParameter implementation.
------------------------------------------------------------------------------*/
+static int32 EnableBinauralAudioForAllSpatialSoundsCVar = 0;
+FAutoConsoleVariableRef CVarEnableBinauralAudioForAllSpatialSounds(
+	TEXT("au.EnableBinauralAudioForAllSpatialSounds"),
+	EnableBinauralAudioForAllSpatialSoundsCVar,
+	TEXT("Toggles binaural audio rendering for all spatial sounds if binaural rendering is available.\n"),
+	ECVF_Default);
 
-FDynamicParameter::FDynamicParameter(float Value)
-	: CurrValue(Value)
-	, StartValue(Value)
-	, DeltaValue(0.0f)
-	, CurrTimeSec(0.0f)
-	, DurationSec(0.0f)
-	, LastTime(0.0f)
-	, TargetValue(Value)
-{}
 
-void FDynamicParameter::Set(float Value, float InDuration)
-{
-	if (TargetValue != Value || DurationSec != InDuration)
-	{
-		TargetValue = Value;
-		if (InDuration > 0.0f)
-		{
-			DeltaValue = Value - CurrValue;
-			StartValue = CurrValue;
-			DurationSec = InDuration;
-			CurrTimeSec = 0.0f;
-		}
-		else
-		{
-			StartValue = Value;
-			DeltaValue = 0.0f;
-			DurationSec = 0.0f;
-			CurrValue = Value;
-		}
-	}
-}
-
-void FDynamicParameter::Update(float DeltaTime)
-{
-	if (DurationSec > 0.0f)
-	{
-		float TimeFraction = CurrTimeSec / DurationSec;
-		if (TimeFraction < 1.0f)
-		{
-			CurrValue = DeltaValue * TimeFraction + StartValue;
-		}
-		else
-		{
-			CurrValue = StartValue + DeltaValue;
-			DurationSec = 0.0f;
-		}
-		CurrTimeSec += DeltaTime;
-	}
-}
-
+using FVirtualLoopPair = TPair<FActiveSound*, FAudioVirtualLoop>;
 
 /*-----------------------------------------------------------------------------
 	FAudioDevice implementation.
@@ -201,7 +155,6 @@ FAudioDevice::FAudioDevice()
 	, MaxChannelsScale(1.0f)
 	, MaxChannelsScale_GameThread(1.0f)
 	, NumStoppingVoices(32)
-	, MaxWaveInstances(0)
 	, SampleRate(0)
 	, NumPrecacheFrames(MONO_PCM_BUFFER_SAMPLES)
 	, CommonAudioPoolSize(0)
@@ -257,7 +210,6 @@ FAudioDevice::FAudioDevice()
 #endif
 	, ConcurrencyManager(this)
 	, OneShotCount(0)
-	, OneShotPriorityCullThreshold(-1.0f)
 	, GlobalMinPitch(0.4f)
 	, GlobalMaxPitch(2.0f)
 {
@@ -289,18 +241,21 @@ bool FAudioDevice::Init(int32 InMaxChannels)
 
 	PluginListeners.Reset();
 
-	// initialize max channels taking into account platform configurations
-	// Get a copy of the platform-specific settings (overriden by platforms)
+	// Initialize MaxChannels taking into account platform configurations
+	// Get a copy of the platform-specific settings (overridden by platforms)
 	PlatformSettings = GetPlatformSettings();
 
-	// MaxChannels is the min of the platform-specific value and the max value in the quality settings (InMaxChannels)
-	MaxChannels = PlatformSettings.MaxChannels > 0 ? FMath::Min(PlatformSettings.MaxChannels, InMaxChannels) : InMaxChannels;
+	// Max channels is the max value supplied to Init call (quality settings), unless overwritten by the platform settings.
+	// This does not have to be the minimum value in this case (nor is it desired, so platforms can potentially scale up)
+	// as the Sources array has yet to be initialized.
+	MaxChannels = PlatformSettings.MaxChannels > 0 ? PlatformSettings.MaxChannels : InMaxChannels;
 	MaxChannels_GameThread = MaxChannels;
+
+	// Ensure and not assert so if in editor, user can change quality setting and re-serialize if so desired.
+	ensureMsgf(MaxChannels > 0, TEXT("Neither passed nor platform MaxChannel setting was positive value"));
 
 	// Mixed sample rate is set by the platform
 	SampleRate = PlatformSettings.SampleRate;
-
-	check(MaxChannels != 0);
 
 	verify(GConfig->GetInt(TEXT("Audio"), TEXT("CommonAudioPoolSize"), CommonAudioPoolSize, GEngineIni));
 
@@ -315,7 +270,7 @@ bool FAudioDevice::Init(int32 InMaxChannels)
 		PlatformAudioHeadroom = FMath::Pow(10.0f, Headroom / 20.0f);
 	}
 
-	int32 NumPrecacheFramesSettings = 0; 
+	int32 NumPrecacheFramesSettings = 0;
 	if (GConfig->GetInt(TEXT("Audio"), TEXT("NumPrecacheFrames"), NumPrecacheFramesSettings, GEngineIni))
 	{
 		NumPrecacheFrames = FMath::Min(128, NumPrecacheFramesSettings);
@@ -332,7 +287,6 @@ bool FAudioDevice::Init(int32 InMaxChannels)
 	bAllowCenterChannel3DPanning = AudioSettings->bAllowCenterChannel3DPanning;
 	bAllowVirtualizedSounds = AudioSettings->bAllowVirtualizedSounds;
 	DefaultReverbSendLevel = AudioSettings->DefaultReverbSendLevel;
-	MaxWaveInstances = AudioSettings->MaxWaveInstances;
 
 	const FSoftObjectPath DefaultBaseSoundMixName = GetDefault<UAudioSettings>()->DefaultBaseSoundMix;
 	if (DefaultBaseSoundMixName.IsValid())
@@ -430,7 +384,7 @@ bool FAudioDevice::Init(int32 InMaxChannels)
 
 	// create a platform specific effects manager
 	// if this is the audio mixer, we initialized the effects manager before the hardware
- 	if (!IsAudioMixerEnabled())
+	if (!IsAudioMixerEnabled())
 	{
 		Effects = CreateEffectsManager();
 	}
@@ -477,6 +431,12 @@ void FAudioDevice::PrecacheStartupSounds()
 
 void FAudioDevice::SetMaxChannels(int32 InMaxChannels)
 {
+	if (InMaxChannels <= 0)
+	{
+		UE_LOG(LogAudio, Warning, TEXT("MaxChannels must be set to a positive value."));
+		return;
+	}
+
 	if (!IsInAudioThread())
 	{
 		MaxChannels_GameThread = InMaxChannels;
@@ -492,9 +452,9 @@ void FAudioDevice::SetMaxChannels(int32 InMaxChannels)
 		return;
 	}
 
-	if (InMaxChannels > Sources.Num())
+	if (InMaxChannels > MaxChannels)
 	{
-		UE_LOG(LogAudio, Warning, TEXT("Can't increase channels past starting number!"));
+		UE_LOG(LogAudio, Warning, TEXT("Can't increase MaxChannels past existing setting!"));
 		return;
 	}
 
@@ -535,7 +495,7 @@ int32 FAudioDevice::GetMaxChannels() const
 {
 	if (IsInAudioThread())
 	{
-		if (AudioChannelCountCVar > 0 && AudioChannelCountCVar < Sources.Num())
+		if (AudioChannelCountCVar > 0 && AudioChannelCountCVar < MaxChannels)
 		{
 			return FMath::Max(int32(AudioChannelCountCVar * MaxChannelsScale * AudioChannelCountScaleCVar), 1);
 		}
@@ -544,7 +504,7 @@ int32 FAudioDevice::GetMaxChannels() const
 	}
 	else
 	{
-		if (AudioChannelCountCVar > 0 && AudioChannelCountCVar < Sources.Num())
+		if (AudioChannelCountCVar > 0 && AudioChannelCountCVar < MaxChannels)
 		{
 			return FMath::Max(int32(AudioChannelCountCVar * MaxChannelsScale_GameThread * AudioChannelCountScaleCVar), 1);
 		}
@@ -601,7 +561,7 @@ void FAudioDevice::Teardown()
 		SpatializationPluginInterface.Reset();
 		bSpatializationInterfaceEnabled = false;
 	}
-	
+
 	if (ReverbPluginInterface.IsValid())
 	{
 		ReverbPluginInterface->Shutdown();
@@ -680,6 +640,16 @@ void FAudioDevice::AddReferencedObjects(FReferenceCollector& Collector)
 	for (FActiveSound* ActiveSound : ActiveSounds)
 	{
 		ActiveSound->AddReferencedObjects(Collector);
+	}
+
+	for (FActiveSound* ActiveSound : PendingSoundsToDelete)
+	{
+		ActiveSound->AddReferencedObjects(Collector);
+	}	
+
+	for (FVirtualLoopPair& Pair : VirtualLoops)
+	{
+		Pair.Key->AddReferencedObjects(Collector);
 	}
 
 	// Make sure we don't try to delete any sound waves which may have in-flight decodes
@@ -1688,11 +1658,11 @@ bool FAudioDevice::IsHRTFEnabledForAll() const
 {
 	if (IsInAudioThread())
 	{
-		return bHRTFEnabledForAll && IsSpatializationPluginEnabled();
+		return (bHRTFEnabledForAll || EnableBinauralAudioForAllSpatialSoundsCVar == 1) && IsSpatializationPluginEnabled();
 	}
 
 	check(IsInGameThread());
-	return bHRTFEnabledForAll_OnGameThread && IsSpatializationPluginEnabled();
+	return (bHRTFEnabledForAll_OnGameThread || EnableBinauralAudioForAllSpatialSoundsCVar == 1) && IsSpatializationPluginEnabled();
 }
 
 void FAudioDevice::SetMixDebugState(EDebugState InDebugState)
@@ -2093,6 +2063,21 @@ void FAudioDevice::StopQuietSoundsDueToMaxConcurrency(TArray<FWaveInstance*>& Wa
 			if (ActiveSound->bShouldStopDueToMaxConcurrency)
 			{
 				AddSoundToStop(ActiveSound);
+				const bool bDoRangeCheck = false;
+				FAudioVirtualLoop VirtualLoop;
+				if (FAudioVirtualLoop::Virtualize(*ActiveSound, bDoRangeCheck, VirtualLoop))
+				{
+					// Clear must be called after AddSoundToStop to ensure AudioComponent is properly removed from AudioComponentIDToActiveSoundMap
+					ActiveSound->ClearAudioComponent();
+
+					const bool bIsAtMaxConcurrency = true;
+					VirtualLoop.CalculateUpdateInterval(bIsAtMaxConcurrency);
+					if (USoundBase* Sound = ActiveSound->GetSound())
+					{
+						UE_LOG(LogAudio, Verbose, TEXT("Playing ActiveSound %s Virtualizing: Invalidated by 'StopQuiestest' Concurrency Rule."), *Sound->GetName());
+					}
+					AddVirtualLoop(VirtualLoop);
+				}
 				ActiveSoundsCopy.RemoveAtSwap(i, 1, false);
 			}
 		}
@@ -2611,6 +2596,37 @@ void FAudioDevice::UpdateSoundClassProperties(float DeltaTime)
 		if (SoundMixState->CurrentState == ESoundMixState::AwaitingRemoval && SoundMixState->PassiveRefCount == 0)
 		{
 			ClearSoundMix(It.Key());
+		}
+	}
+}
+
+void FAudioDevice::VirtualizeInactiveLoops()
+{
+	// Check if virtual loop system is enabled and don't push to virtual if disabled.
+	if (!FAudioVirtualLoop::IsEnabled())
+	{
+		return;
+	}
+
+	const bool bDoRangeCheck = true;
+	for (FActiveSound* ActiveSound : ActiveSounds)
+	{
+		// If already pending stop, don't attempt to virtualize
+		if (!IsPendingStop(ActiveSound))
+		{
+			FAudioVirtualLoop VirtualLoop;
+			if (FAudioVirtualLoop::Virtualize(*ActiveSound, bDoRangeCheck, VirtualLoop))
+			{
+				AddSoundToStop(ActiveSound);
+
+				// Clear must be called after AddSoundToStop to ensure AudioComponent is properly removed from AudioComponentIDToActiveSoundMap
+				ActiveSound->ClearAudioComponent();
+				if (USoundBase* Sound = ActiveSound->GetSound())
+				{
+					UE_LOG(LogAudio, Verbose, TEXT("Playing ActiveSound %s Virtualizing: Out of audible range."), *Sound->GetName());
+				}
+				AddVirtualLoop(VirtualLoop);
+			}
 		}
 	}
 }
@@ -3339,7 +3355,7 @@ int32 FAudioDevice::GetSortedActiveWaveInstances(TArray<FWaveInstance*>& WaveIns
 	{
 		StopQuietSoundsDueToMaxConcurrency(WaveInstances, ActiveSoundsCopy);
 	}
-	
+
 	int32 FirstActiveIndex = 0;
 	// Only need to do the wave instance sort if we have any waves and if our wave instances are greater than our max channels.
 	if (WaveInstances.Num() >= 0)
@@ -3544,7 +3560,7 @@ void FAudioDevice::StopSources(TArray<FWaveInstance*>& WaveInstances, int32 Firs
 	for (int32 InstanceIndex = 0; InstanceIndex < FirstActiveIndex; InstanceIndex++)
 	{
 		FWaveInstance* WaveInstance = WaveInstances[InstanceIndex];
-		if (WaveInstance->GetVolumeWithDistanceAttenuation() > 0.1f)
+		if (WaveInstance->GetVolumeWithDistanceAttenuation() > KINDA_SMALL_NUMBER)
 		{
 			AudibleInactiveSounds++;
 		}
@@ -3749,6 +3765,13 @@ void FAudioDevice::Update(bool bGameTicking)
 		UpdateAudioClock();
 	}
 
+	{
+		SCOPED_NAMED_EVENT(FAudioDevice_UpdateVirtualLoops, FColor::Blue);
+		// Update which loops should re-trigger due to coming back into proximity
+		// or allowed by concurrency re-evaluating in context of other sounds stopping
+		UpdateVirtualLoops();
+	}
+
 	// update if baked analysis is enabled
 	bIsBakedAnalysisEnabled = (BakedAnalysisEnabledCVar == 1);
 
@@ -3813,6 +3836,9 @@ void FAudioDevice::Update(bool bGameTicking)
 	// Gets the current state of the sound classes accounting for sound mix
 	UpdateSoundClassProperties(GetDeviceDeltaTime());
 
+	// Set looping ActiveSounds that are out-of-range to virtual and add to stop
+	VirtualizeInactiveLoops();
+
 	ProcessingPendingActiveSoundStops();
 
 	// Update listener transform
@@ -3853,27 +3879,6 @@ void FAudioDevice::Update(bool bGameTicking)
 		// Check which sounds are active from these wave instances and update passive SoundMixes
 		UpdatePassiveSoundMixModifiers(ActiveWaveInstances, FirstActiveIndex);
 
-		// Update the min priority cull threshold. It will be based off the min priority of the lowest priority sound here.
-		if (ActiveWaveInstances.Num() > MaxWaveInstances)
-		{
-			// Helper function for "Sort" (higher priority sorts last).
-			struct FCompareFWaveInstanceByPriority
-			{
-				FORCEINLINE bool operator()(const FWaveInstance& A, const FWaveInstance& B) const
-				{
-					return A.Priority > B.Priority;
-				}
-			};
-
-			// Sort by priority (lowest priority first).
-			ActiveWaveInstances.Sort(FCompareFWaveInstanceByPriority());
-			OneShotPriorityCullThreshold = ActiveWaveInstances[MaxWaveInstances]->Priority;
-		}
-		else
-		{
-			OneShotPriorityCullThreshold = -1.0f;
-		}
-
 		// If not paused, update the playback time of the active sounds after we've processed passive mix modifiers
 		// Note that for sounds which play while paused, this will result in longer active sound playback times, which will be ok. If we update the
 		// active sound is updated while paused (for a long time), most sounds will be stopped when unpaused.
@@ -3882,10 +3887,13 @@ void FAudioDevice::Update(bool bGameTicking)
 
 
 		const int32 Channels = GetMaxChannels();
-		INC_DWORD_STAT_BY(STAT_WaveInstances, ActiveWaveInstances.Num());
-		INC_DWORD_STAT_BY(STAT_AudioSources, Channels - FreeSources.Num());
-		INC_DWORD_STAT_BY(STAT_WavesDroppedDueToPriority, FMath::Max(ActiveWaveInstances.Num() - Channels, 0));
-		INC_DWORD_STAT_BY(STAT_ActiveSounds, ActiveSounds.Num());
+		SET_DWORD_STAT(STAT_WaveInstances, ActiveWaveInstances.Num());
+		SET_DWORD_STAT(STAT_AudioSources, Sources.Num() - FreeSources.Num());
+		SET_DWORD_STAT(STAT_WavesDroppedDueToPriority, FMath::Max(ActiveWaveInstances.Num() - Sources.Num(), 0));
+		SET_DWORD_STAT(STAT_ActiveSounds, ActiveSounds.Num());
+		SET_DWORD_STAT(STAT_AudioVirtualLoops, VirtualLoops.Num());
+		SET_DWORD_STAT(STAT_AudioMaxChannels, Channels);
+		SET_DWORD_STAT(STAT_AudioMaxStoppingSources, NumStoppingVoices);
 	}
 
 	// now let the platform perform anything it needs to handle
@@ -3967,7 +3975,7 @@ void FAudioDevice::SendUpdateResultsToGameThread(const int32 FirstActiveIndex)
 				FAudioStats::FStatWaveInstanceInfo WaveInstanceInfo;
 				FSoundSource* Source = WaveInstanceSourceMap.FindRef(WaveInstance);
 				WaveInstanceInfo.Description = Source ? Source->Describe((RequestedAudioStats & ERequestedAudioStats::LongSoundNames) != 0) : FString(TEXT("No source"));
-				WaveInstanceInfo.ActualVolume = WaveInstance->GetVolumeWithDistanceAttenuation();
+				WaveInstanceInfo.ActualVolume = WaveInstance->GetVolumeWithDistanceAttenuation() * WaveInstance->GetDynamicVolume();
 				WaveInstanceInfo.InstanceIndex = InstanceIndex;
 				WaveInstanceInfo.WaveInstanceName = *WaveInstance->GetName();
 				StatSoundInfos[*SoundInfoIndex].WaveInstanceInfos.Add(MoveTemp(WaveInstanceInfo));
@@ -4067,6 +4075,11 @@ void FAudioDevice::StopAllSounds(bool bShouldStopUISounds)
 		}
 	}
 
+	for (FVirtualLoopPair& Pair : VirtualLoops)
+	{
+		AddSoundToStop(Pair.Key);
+	}
+
 	// Immediately process stopping sounds
 	ProcessingPendingActiveSoundStops();
 }
@@ -4084,6 +4097,11 @@ void FAudioDevice::InitializePluginListeners(UWorld* World)
 
 void FAudioDevice::AddNewActiveSound(const FActiveSound& NewActiveSound)
 {
+	AddNewActiveSoundInternal(NewActiveSound, nullptr);
+}
+
+void FAudioDevice::AddNewActiveSoundInternal(const FActiveSound& NewActiveSound, FAudioVirtualLoop* VirtualLoopToRetrigger)
+{
 	LLM_SCOPE(ELLMTag::AudioMisc);
 
 	if (NewActiveSound.Sound == nullptr)
@@ -4094,13 +4112,21 @@ void FAudioDevice::AddNewActiveSound(const FActiveSound& NewActiveSound)
 	// Don't allow buses to try to play if we're not using the audio mixer.
 	if (!IsAudioMixerEnabled())
 	{
-		if (NewActiveSound.Sound)
+		USoundSourceBus* Bus = Cast<USoundSourceBus>(NewActiveSound.Sound);
+		if (Bus)
 		{
-			USoundSourceBus* Bus = Cast<USoundSourceBus>(NewActiveSound.Sound);
-			if (Bus)
-			{
-				return;
-			}
+			return;
+		}
+	}
+
+	if (NewActiveSound.Sound->GetDuration() <= FMath::Max(0.0f, SoundDistanceOptimizationLengthCVar))
+	{
+		// TODO: Determine if this check has already been completed at AudioComponent level and skip if so. Also,
+		// unify code paths determining if sound is audible.
+		if (!SoundIsAudible(NewActiveSound))
+		{
+			UE_LOG(LogAudio, Log, TEXT("New ActiveSound not created for out of range Sound %s"), *NewActiveSound.Sound->GetName());
+			return;
 		}
 	}
 
@@ -4109,9 +4135,9 @@ void FAudioDevice::AddNewActiveSound(const FActiveSound& NewActiveSound)
 		DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.AddNewActiveSound"), STAT_AudioAddNewActiveSound, STATGROUP_AudioThreadCommands);
 
 		FAudioDevice* AudioDevice = this;
-		FAudioThread::RunCommandOnAudioThread([AudioDevice, NewActiveSound]()
+		FAudioThread::RunCommandOnAudioThread([AudioDevice, NewActiveSound, VirtualLoopToRetrigger]()
 		{
-			AudioDevice->AddNewActiveSound(NewActiveSound);
+			AudioDevice->AddNewActiveSoundInternal(NewActiveSound, VirtualLoopToRetrigger);
 		}, GET_STATID(STAT_AudioAddNewActiveSound));
 
 		return;
@@ -4134,21 +4160,29 @@ void FAudioDevice::AddNewActiveSound(const FActiveSound& NewActiveSound)
 	}
 #endif
 
-	// Cull one-shot active sounds if we've reached our max limit of one shot active sounds before we attempt to evaluate concurrency
-	USoundBase* Sound = NewActiveSound.GetSound();
+	const USoundBase* Sound = NewActiveSound.GetSound();
 	check(Sound);
-	if (!Sound->IsLooping() && Sound->Priority < OneShotPriorityCullThreshold)
-	{
-		return;
-	}
 
-	USoundWave* SoundWave = Cast<USoundWave>(Sound);
+	const USoundWave* SoundWave = Cast<USoundWave>(Sound);
 	if (SoundWave && SoundWave->bProcedural && SoundWave->IsGeneratingAudio())
 	{
 		FString SoundWaveName;
 		SoundWave->GetName(SoundWaveName);
 		UE_LOG(LogAudio, Warning, TEXT("Replaying a procedural sound '%s' without stopping the previous instance. Only one sound instance per procedural sound wave is supported."), *SoundWaveName)
 		return;
+	}
+
+	// Determine if sound is loop and eligible for virtualize prior to creating "live" active sound in next Concurrency check step
+	if (!VirtualLoopToRetrigger)
+	{
+		const bool bDoRangeCheck = true;
+		FAudioVirtualLoop VirtualLoop;
+		if (FAudioVirtualLoop::Virtualize(NewActiveSound, *this, bDoRangeCheck, VirtualLoop))
+		{
+			UE_LOG(LogAudio, Verbose, TEXT("New ActiveSound %s Virtualizing: Failed to pass initial audible range check"), *Sound->GetName());
+			AddVirtualLoop(VirtualLoop);
+			return;
+		}
 	}
 
 	// Evaluate concurrency. This will create an ActiveSound ptr which is a copy of NewActiveSound if the sound can play.
@@ -4158,13 +4192,27 @@ void FAudioDevice::AddNewActiveSound(const FActiveSound& NewActiveSound)
 		SCOPE_CYCLE_COUNTER(STAT_AudioEvaluateConcurrency);
 
 		// Try to create a new active sound. This returns nullptr if too many sounds are playing with this sound's concurrency setting
-		ActiveSound = ConcurrencyManager.CreateNewActiveSound(NewActiveSound);
+		ActiveSound = ConcurrencyManager.CreateNewActiveSound(NewActiveSound, VirtualLoopToRetrigger != nullptr);
 	}
 
 	if (!ActiveSound)
 	{
+		// Didn't pass concurrency, so attempt to add to re-trigger if applicable
+		if (!VirtualLoopToRetrigger)
+		{
+			const bool bDoRangeCheck = false;
+			FAudioVirtualLoop VirtualLoop;
+			if (FAudioVirtualLoop::Virtualize(NewActiveSound, *this, bDoRangeCheck, VirtualLoop))
+			{
+				UE_LOG(LogAudio, Verbose, TEXT("New ActiveSound %s Virtualizing: Failed to pass concurrency"), *Sound->GetName());
+				AddVirtualLoop(VirtualLoop);
+			}
+		}
 		return;
 	}
+
+	check(ActiveSound->Sound);
+	check(ActiveSound->Sound == Sound);
 
 	if (GIsEditor)
 	{
@@ -4175,52 +4223,119 @@ void FAudioDevice::AddNewActiveSound(const FActiveSound& NewActiveSound)
 		}
 	}
 
-	++NewActiveSound.Sound->CurrentPlayCount;
+	++ActiveSound->Sound->CurrentPlayCount;
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	UE_LOG(LogAudio, VeryVerbose, TEXT("New ActiveSound %s Comp: %s Loc: %s"), *NewActiveSound.Sound->GetName(), *NewActiveSound.GetAudioComponentName(), *NewActiveSound.Transform.GetTranslation().ToString());
+	UE_LOG(LogAudio, VeryVerbose, TEXT("New ActiveSound %s Comp: %s Loc: %s"), *Sound->GetName(), *NewActiveSound.GetAudioComponentName(), *NewActiveSound.Transform.GetTranslation().ToString());
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 	// Cull one-shot active sounds if we've reached our max limit of one shot active sounds before we attempt to evaluate concurrency
-
 	if (ActiveSound->IsOneShot())
 	{
 		OneShotCount++;
-	}
-
-	// If we've disabled audio spatialization, then we need to force this active sound to no longer spatialize.
-	if (AllowAudioSpatializationCVar == 0)
-	{
-		ActiveSound->bAllowSpatialization = false;
 	}
 
 	// Set the active sound to be playing audio so it gets parsed at least once.
 	ActiveSound->bIsPlayingAudio = true;
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	if (ActiveSound->Sound)
+	if (!ensureMsgf(ActiveSound->Sound->GetFName() != NAME_None, TEXT("AddNewActiveSound with DESTROYED sound %s. AudioComponent=%s. IsPendingKill=%d. BeginDestroy=%d"),
+		*ActiveSound->Sound->GetPathName(),
+		*ActiveSound->GetAudioComponentName(),
+		(int32)ActiveSound->Sound->IsPendingKill(),
+		(int32)ActiveSound->Sound->HasAnyFlags(RF_BeginDestroyed)))
 	{
-		if (!ensureMsgf(ActiveSound->Sound->GetFName() != NAME_None, TEXT("AddNewActiveSound with DESTROYED sound %s. AudioComponent=%s. IsPendingKill=%d. BeginDestroy=%d"),
-			*ActiveSound->Sound->GetPathName(),
-			*ActiveSound->GetAudioComponentName(),
-			(int32)ActiveSound->Sound->IsPendingKill(),
-			(int32)ActiveSound->Sound->HasAnyFlags(RF_BeginDestroyed)))
-		{
-			static FName InvalidSoundName(TEXT("DESTROYED_Sound"));
-			ActiveSound->DebugOriginalSoundName = InvalidSoundName;
-		}
-		else
-		{
-			ActiveSound->DebugOriginalSoundName = ActiveSound->Sound->GetFName();
-		}
+		static FName InvalidSoundName(TEXT("DESTROYED_Sound"));
+		ActiveSound->DebugOriginalSoundName = InvalidSoundName;
 	}
-#endif
+	else
+	{
+		ActiveSound->DebugOriginalSoundName = ActiveSound->Sound->GetFName();
+	}
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+	// Loop has been successfully created, so add to stop before adding 'live' ActiveSound.
+	// Mark to not report playback complete on destruction as responsibility therein has been
+	// passed to newly created ActiveSound added below.  Add as stopping sound prior to adding
+	// new sound to ensure AudioComponentIDToActiveSoundMap is registered with the correct ActiveSound.
+	if (VirtualLoopToRetrigger)
+	{
+		FActiveSound& VirtualActiveSound = VirtualLoopToRetrigger->GetActiveSound();
+		AddSoundToStop(&VirtualActiveSound);
+
+		// Clear must be called after AddSoundToStop to ensure AudioComponent is properly removed from AudioComponentIDToActiveSoundMap
+		VirtualActiveSound.ClearAudioComponent();
+	}
 
 	ActiveSounds.Add(ActiveSound);
 	if (ActiveSound->GetAudioComponentID() > 0)
 	{
 		AudioComponentIDToActiveSoundMap.Add(ActiveSound->GetAudioComponentID(), ActiveSound);
 	}
+}
+
+void FAudioDevice::RetriggerVirtualLoop(FAudioVirtualLoop& VirtualLoopToRetrigger)
+{
+	AddNewActiveSoundInternal(VirtualLoopToRetrigger.GetActiveSound(), &VirtualLoopToRetrigger);
+}
+
+void FAudioDevice::AddVirtualLoop(const FAudioVirtualLoop& InVirtualLoop)
+{
+	FAudioVirtualLoop VirtualLoop = InVirtualLoop;
+
+	FActiveSound& ActiveSound = VirtualLoop.GetActiveSound();
+	check(!VirtualLoops.Contains(&ActiveSound));
+
+	const int64 ComponentID = ActiveSound.GetAudioComponentID();
+	if (ComponentID > 0)
+	{
+		if (FActiveSound* ExistingSound = AudioComponentIDToActiveSoundMap.FindRef(ComponentID))
+		{
+			UE_LOG(LogAudio, Warning, TEXT("Adding ComponentID for Sound '%s' when map already contains ID for Sound '%s'."),
+				ActiveSound.Sound ? *ActiveSound.Sound->GetName() : TEXT("N/A"),
+				ExistingSound->Sound ? *ExistingSound->Sound->GetName() : TEXT("N/A")
+				);
+			AudioComponentIDToActiveSoundMap.Remove(ComponentID);
+		}
+		AudioComponentIDToActiveSoundMap.Add(ComponentID, &ActiveSound);
+	}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (ActiveSound.Sound)
+	{
+		const FVector Location = ActiveSound.Transform.GetLocation();
+		UE_LOG(LogAudio, Verbose, TEXT("Adding virtual looping sound '%s' at location %s."), *ActiveSound.Sound->GetName(), *Location.ToCompactString());
+	}
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+	VirtualLoops.Add(&ActiveSound, MoveTemp(VirtualLoop));
+}
+
+bool FAudioDevice::RemoveVirtualLoop(FActiveSound& InActiveSound)
+{
+	check(IsInAudioThread());
+
+	if (FAudioVirtualLoop* VirtualLoop = VirtualLoops.Find(&InActiveSound))
+	{
+		const uint64 ComponentID = InActiveSound.GetAudioComponentID();
+		if (ComponentID > 0)
+		{
+			UAudioComponent::PlaybackCompleted(ComponentID, false);
+		}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		if (InActiveSound.Sound)
+		{
+			const FVector Location = InActiveSound.Transform.GetLocation();
+			UE_LOG(LogAudio, Verbose, TEXT("Removing virtual looping sound '%s' at location %s."), *InActiveSound.Sound->GetName(), *Location.ToCompactString());
+		}
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+		VirtualLoops.Remove(&InActiveSound);
+		return true;
+	}
+
+	return false;
 }
 
 void FAudioDevice::ProcessingPendingActiveSoundStops(bool bForceDelete)
@@ -4279,53 +4394,72 @@ void FAudioDevice::ProcessingPendingActiveSoundStops(bool bForceDelete)
 	{
 		check(ActiveSound);
 
-		ActiveSound->Stop(bForceDelete);
-
-		USoundBase* Sound = ActiveSound->GetSound();
-
-		// If the active sound is a one shot, decrement the one shot counter
-		if (Sound && !Sound->IsLooping())
+		// If the request was to stop an ActiveSound that
+		// is set to re-trigger but is not playing, remove
+		// and continue
+		if (RemoveVirtualLoop(*ActiveSound))
 		{
-			OneShotCount--;
-		}
-
-		const bool bIsStopping = ActiveSound->IsStopping();
-
-		// If we can delete the active sound now, then delete it
-		if (bForceDelete || (ActiveSound->CanDelete() && !bIsStopping))
-		{
-			ActiveSound->bAsyncOcclusionPending = false;
-
 			delete ActiveSound;
 		}
 		else
 		{
-			// There was an async operation pending or we are stopping (not stopped) so we need to defer deleting this sound
-			PendingSoundsToDelete.AddUnique(ActiveSound);
+			ActiveSound->Stop(bForceDelete);
+
+			USoundBase* Sound = ActiveSound->GetSound();
+
+			// If the active sound is a one shot, decrement the one shot counter
+			if (Sound && !Sound->IsLooping())
+			{
+				OneShotCount--;
+			}
+
+			const bool bIsStopping = ActiveSound->IsStopping();
+
+			// If we can delete the active sound now, then delete it
+			if (bForceDelete || (ActiveSound->CanDelete() && !bIsStopping))
+			{
+				ActiveSound->bAsyncOcclusionPending = false;
+
+				delete ActiveSound;
+			}
+			else
+			{
+				// There was an async operation pending or we are stopping (not stopped) so we need to defer deleting this sound
+				PendingSoundsToDelete.AddUnique(ActiveSound);
+			}
 		}
 	}
 	PendingSoundsToStop.Reset();
 }
-
 
 void FAudioDevice::AddSoundToStop(FActiveSound* SoundToStop)
 {
 	check(IsInAudioThread());
 	check(SoundToStop);
 
-	const uint64 AudioComponentID = SoundToStop->GetAudioComponentID();
-	if (AudioComponentID > 0)
-	{
-		AudioComponentIDToActiveSoundMap.Remove(AudioComponentID);
-	}
-
 	bool bAlreadyPending = false;
 	PendingSoundsToStop.Add(SoundToStop, &bAlreadyPending);
-
 	if (!bAlreadyPending)
 	{
-		ConcurrencyManager.StopActiveSound(SoundToStop);
+		const uint64 AudioComponentID = SoundToStop->GetAudioComponentID();
+		if (AudioComponentID > 0)
+		{
+			AudioComponentIDToActiveSoundMap.Remove(AudioComponentID);
+		}
+
+		if (!VirtualLoops.Contains(SoundToStop))
+		{
+			ConcurrencyManager.RemoveActiveSound(*SoundToStop);
+		}
 	}
+}
+
+bool FAudioDevice::IsPendingStop(FActiveSound* ActiveSound)
+{
+	check(IsInAudioThread());
+	check(ActiveSound);
+
+	return PendingSoundsToStop.Contains(ActiveSound) || PendingSoundsToDelete.Contains(ActiveSound);
 }
 
 void FAudioDevice::StopActiveSound(const uint64 AudioComponentID)
@@ -4346,7 +4480,7 @@ void FAudioDevice::StopActiveSound(const uint64 AudioComponentID)
 	FActiveSound* ActiveSound = FindActiveSound(AudioComponentID);
 	if (ActiveSound)
 	{
-		StopActiveSound(ActiveSound);
+		AddSoundToStop(ActiveSound);
 	}
 }
 
@@ -4389,8 +4523,8 @@ void FAudioDevice::RemoveActiveSound(FActiveSound* ActiveSound)
 {
 	check(IsInAudioThread());
 
-	// Perform the notification
-	const int32 ComponentID = ActiveSound->GetAudioComponentID();
+	// Perform the notification if not sound not set to re-trigger
+	const uint64 ComponentID = ActiveSound->GetAudioComponentID();
 	if (ComponentID > 0)
 	{
 		UAudioComponent::PlaybackCompleted(ComponentID, false);
@@ -4555,7 +4689,7 @@ void FAudioDevice::GetMaxDistanceAndFocusFactor(USoundBase* Sound, const UWorld*
 	}
 }
 
-bool FAudioDevice::SoundIsAudible(USoundBase* Sound, const UWorld* World, const FVector& Location, const FSoundAttenuationSettings* AttenuationSettingsToApply, float MaxDistance, float FocusFactor)
+bool FAudioDevice::SoundIsAudible(USoundBase* Sound, const UWorld* World, const FVector& Location, const FSoundAttenuationSettings* AttenuationSettingsToApply, float MaxDistance, float FocusFactor) const
 {
 	check(IsInGameThread());
 
@@ -4574,6 +4708,54 @@ bool FAudioDevice::SoundIsAudible(USoundBase* Sound, const UWorld* World, const 
 
 	DistanceScale = FMath::Max(DistanceScale, 0.0001f);
 	return LocationIsAudible(Location, MaxDistance / DistanceScale);
+}
+
+bool FAudioDevice::SoundIsAudible(const FActiveSound& NewActiveSound)
+{
+	check(NewActiveSound.Sound);
+
+	// If we have an attenuation node, we can't know until we evaluate
+	// the sound cue if it's audio output going to be audible via a
+	// distance check. TODO: Check if this is still the case.
+	if (NewActiveSound.Sound->HasAttenuationNode())
+	{
+		return true;
+	}
+
+	if (VirtualSoundsEnabled() && (NewActiveSound.Sound->IsAllowedVirtual() || (NewActiveSound.bHandleSubtitles && NewActiveSound.bHasExternalSubtitles)))
+	{
+		return true;
+	}
+
+	if (NewActiveSound.Sound->IsVirtualizeWhenSilent())
+	{
+		return true;
+	}
+
+	// TODO: bAllowSpatialization is used in other audibility checks but not here.
+	const FSoundAttenuationSettings& Attenuation = NewActiveSound.AttenuationSettings;
+	const bool bHasFocusScaling = Attenuation.FocusDistanceScale != 1.0f || Attenuation.NonFocusDistanceScale != 1.0f;
+	if (!NewActiveSound.bHasAttenuationSettings ||
+		(NewActiveSound.bHasAttenuationSettings && (!Attenuation.bAttenuate || bHasFocusScaling)))
+	{
+		return true;
+	}
+
+	// TODO: Check if this is necessary. GetMaxDistanceAndFocusFactor should've solved this and would make this
+	// flavor of SoundIsAudible more accurate.
+	const FGlobalFocusSettings& FocusSettings = GetGlobalFocusSettings();
+	if (FocusSettings.FocusDistanceScale != 1.0f || FocusSettings.NonFocusDistanceScale != 1.0f)
+	{
+		return true;
+	}
+
+	const float ApparentMaxDistance = NewActiveSound.MaxDistance * NewActiveSound.FocusDistanceScale;
+	if (LocationIsAudible(NewActiveSound.Transform.GetLocation(), ApparentMaxDistance))
+	{
+		return true;
+	}
+
+	return false;
 }
 
 int32 FAudioDevice::FindClosestListenerIndex(const FTransform& SoundTransform, const TArray<FListener>& InListeners)
@@ -4656,6 +4838,9 @@ void FAudioDevice::GetAttenuationListenerData(FAttenuationListenerData& OutListe
 		const FVector ListenerLocation = OutListenerData.ListenerTransform.GetTranslation();
 		ListenerToSound = SoundTransform.GetTranslation() - ListenerLocation;
 		ListenerToSound.ToDirectionAndLength(OutListenerData.ListenerToSoundDir, OutListenerData.ListenerToSoundDistance);
+
+		// store the actual distance for surround-panning sources with spread (AudioMixer)
+		OutListenerData.ListenerToSoundDistanceForPanning = OutListenerData.ListenerToSoundDistance;
 
 		if (bUseListenerAttenuationOverride)
 		{
@@ -4818,7 +5003,7 @@ UAudioComponent* FAudioDevice::CreateComponent(USoundBase* Sound, UWorld* World,
 	Params->bPlay = bPlay;
 	Params->bStopWhenOwnerDestroyed = bStopWhenOwnerDestroyed;
 	Params->AttenuationSettings = AttenuationSettings;
-	
+
 	if (ConcurrencySettings)
 	{
 		Params->ConcurrencySet.Add(ConcurrencySettings);
@@ -4846,7 +5031,7 @@ UAudioComponent* FAudioDevice::CreateComponent(USoundBase* Sound, const FCreateC
 
 			bool bIsAudible = true;
 			// If a sound is a long duration, the position might change before sound finishes so assume it's audible
-			if (Params.bLocationSet && Sound->GetDuration() <= 1.0f)
+			if (Params.bLocationSet && Sound->GetDuration() <= FMath::Max(0.0f, SoundDistanceOptimizationLengthCVar))
 			{
 				float MaxDistance = 0.0f;
 				float FocusFactor = 0.0f;
@@ -5053,6 +5238,11 @@ void FAudioDevice::Flush(UWorld* WorldToFlush, bool bClearActivatedReverb)
 		}
 	}
 
+	for (FVirtualLoopPair& Pair : VirtualLoops)
+	{
+		AddSoundToStop(Pair.Key);
+	}
+
 	// Immediately stop all pending active sounds
 	ProcessingPendingActiveSoundStops(WorldToFlush == nullptr || WorldToFlush->bIsTearingDown);
 
@@ -5104,7 +5294,6 @@ void FAudioDevice::Flush(UWorld* WorldToFlush, bool bClearActivatedReverb)
 		// Make sure any in-flight audio rendering commands get executed.
 		FlushAudioRenderingCommands();
 	}
-
 }
 
 /**
@@ -5566,6 +5755,80 @@ float FAudioDevice::GetGameDeltaTime() const
 
 	// Clamp the delta time to a reasonable max delta time.
 	return FMath::Min(DeltaTime, 0.5f);
+}
+
+void FAudioDevice::UpdateVirtualLoops()
+{
+	if (FAudioVirtualLoop::IsEnabled())
+	{
+		TArray<FAudioVirtualLoop> VirtualLoopsToRetrigger;
+
+		for (FVirtualLoopPair& Pair : VirtualLoops)
+		{
+			FAudioVirtualLoop& VirtualLoop = Pair.Value;
+			FActiveSound& ActiveSound = VirtualLoop.GetActiveSound();
+
+			// Don't update if stopping.
+			if (ActiveSound.bIsStopping)
+			{
+				continue;
+			}
+
+			// If signaled to fade out and virtualized, add to pending stop list.
+			if (ActiveSound.bFadingOut)
+			{
+				AddSoundToStop(&ActiveSound);
+				continue;
+			}
+
+			const float DeltaTime = GetDeviceDeltaTime();
+
+			// Keep playback time up-to-date as it may be used to evaluate concurrency
+			ActiveSound.PlaybackTime += DeltaTime * ActiveSound.MinCurrentPitch;
+
+			// If the loop is ready to realize, add to array to be re-triggered outside of the loop
+			// to avoid map manipulation while iterating.
+			if (VirtualLoop.CanRealize(DeltaTime))
+			{
+				VirtualLoopsToRetrigger.Add(VirtualLoop);
+			}
+
+			// If signaled to fade out and virtualized, and to pending stop list.
+			if (ActiveSound.bFadingOut)
+			{
+				AddSoundToStop(&ActiveSound);
+			}
+		}
+
+		for (FAudioVirtualLoop& RetriggerLoop : VirtualLoopsToRetrigger)
+		{
+			RetriggerVirtualLoop(RetriggerLoop);
+		}
+
+		VirtualLoopsToRetrigger.Reset();
+	}
+
+	// if !FAudioVirtualLoop::IsEnabled(), attempt to realize/re-trigger
+	// sounds and remove virtual loops.
+	else
+	{
+		// Copies any straggling virtual loops to active sounds and mark them for stop
+		for (FVirtualLoopPair& Pair : VirtualLoops)
+		{
+			FActiveSound* ActiveSound = Pair.Key;
+
+			const uint64 ComponentID = ActiveSound->GetAudioComponentID();
+			if (ComponentID > 0)
+			{
+				AudioComponentIDToActiveSoundMap.Remove(ComponentID);
+			}
+
+			AddNewActiveSound(*ActiveSound);
+
+			ActiveSound->ClearAudioComponent();
+			AddSoundToStop(ActiveSound);
+		}
+	}
 }
 
 #if WITH_EDITOR

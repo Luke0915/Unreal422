@@ -49,6 +49,7 @@ UAudioComponent::UAudioComponent(const FObjectInitializer& ObjectInitializer)
 	bOverrideSubtitlePriority = false;
 	bIsPreviewSound = false;
 	bIsPaused = false;
+
 	Priority = 1.f;
 	SubtitlePriority = DEFAULT_SUBTITLE_PRIORITY;
 	PitchMultiplier = 1.f;
@@ -67,9 +68,11 @@ UAudioComponent::UAudioComponent(const FObjectInitializer& ObjectInitializer)
 	AudioDeviceHandle = INDEX_NONE;
 	AudioComponentID = FPlatformAtomics::InterlockedIncrement(reinterpret_cast<volatile int64*>(&AudioComponentIDCounter));
 
-	// TODO: Consider only putting played/active components in to the map
-	FScopeLock Lock(&AudioIDToComponentMapLock);
-	AudioIDToComponentMap.Add(AudioComponentID, this);
+	{
+		// TODO: Consider only putting played/active components in to the map
+		FScopeLock Lock(&AudioIDToComponentMapLock);
+		AudioIDToComponentMap.Add(AudioComponentID, this);
+	}
 }
 
 UAudioComponent* UAudioComponent::GetAudioComponentFromID(uint64 AudioComponentID)
@@ -87,7 +90,7 @@ void UAudioComponent::BeginDestroy()
 
 	if (bIsActive && Sound && Sound->IsLooping())
 	{
-		UE_LOG(LogAudio, Warning, TEXT("Audio Component is being destroyed without stopping looping sound '%s'"), *Sound->GetFullName());
+		UE_LOG(LogAudio, Verbose, TEXT("Audio Component is being destroyed prior to stopping looping sound '%s' directly."), *Sound->GetFullName());
 		Stop();
 	}
 
@@ -230,7 +233,7 @@ const UObject* UAudioComponent::AdditionalStatObject() const
 	return Sound;
 }
 
-void UAudioComponent::SetSound( USoundBase* NewSound )
+void UAudioComponent::SetSound(USoundBase* NewSound)
 {
 	const bool bPlay = IsPlaying();
 
@@ -257,9 +260,14 @@ void UAudioComponent::OnUpdateTransform(EUpdateTransformFlags UpdateTransformFla
 {
 	Super::OnUpdateTransform(UpdateTransformFlags, Teleport);
 
-	if (bIsActive && !bPreviewComponent)
+	if (bPreviewComponent)
 	{
-		if (FAudioDevice* AudioDevice = GetAudioDevice())
+		return;
+	}
+
+	if (FAudioDevice* AudioDevice = GetAudioDevice())
+	{
+		if (bIsActive)
 		{
 			DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.UpdateAudioComponentTransform"), STAT_AudioUpdateComponentTransform, STATGROUP_AudioThreadCommands);
 
@@ -299,6 +307,27 @@ void UAudioComponent::CancelAutoAttachment(bool bDetachFromParent)
 	}
 }
 
+bool UAudioComponent::IsInAudibleRange(float* OutMaxDistance) const
+{
+	FAudioDevice* AudioDevice = GetAudioDevice();
+	if (!AudioDevice)
+	{
+		return false;
+	}
+
+	float MaxDistance = 0.0f;
+	float FocusFactor = 0.0f;
+	const FVector Location = GetComponentTransform().GetLocation();
+	const FSoundAttenuationSettings* AttenuationSettingsToApply = bAllowSpatialization ? GetAttenuationSettingsToApply() : nullptr;
+	AudioDevice->GetMaxDistanceAndFocusFactor(Sound, GetWorld(), Location, AttenuationSettingsToApply, MaxDistance, FocusFactor);
+
+	if (OutMaxDistance)
+	{
+		*OutMaxDistance = MaxDistance;
+	}
+
+	return AudioDevice->SoundIsAudible(Sound, GetWorld(), Location, AttenuationSettingsToApply, MaxDistance, FocusFactor);
+}
 
 void UAudioComponent::Play(float StartTime)
 {
@@ -355,7 +384,7 @@ void UAudioComponent::PlayInternal(const float StartTime, const float FadeInDura
 			}
 
 			// Create / configure new ActiveSound
-			const FSoundAttenuationSettings* AttenuationSettingsToApply = (bAllowSpatialization ? GetAttenuationSettingsToApply() : nullptr);
+			const FSoundAttenuationSettings* AttenuationSettingsToApply = bAllowSpatialization ? GetAttenuationSettingsToApply() : nullptr;
 
 			float MaxDistance = 0.0f;
 			float FocusFactor = 0.0f;
@@ -457,11 +486,13 @@ void UAudioComponent::PlayInternal(const float StartTime, const float FadeInDura
 				NewActiveSound.CurrentAdjustVolumeMultiplier = FadeVolumeLevel;
 			}
 
-			// Bump ActiveCount... this is used to determine if an audio component is still active after "finishing"
+			// Bump ActiveCount... this is used to determine if an audio component is still active after a sound reports back as completed
 			++ActiveCount;
-
 			AudioDevice->AddNewActiveSound(NewActiveSound);
-			bIsActive = true;
+
+			// In editor, the audio thread is not run separate from the game thread, and can result in calling PlaybackComplete prior
+			// to bIsActive being set. Therefore, we assign to the current state of ActiveCount as opposed to just setting to true.
+			bIsActive = ActiveCount > 0;
 		}
 	}
 }
@@ -558,6 +589,11 @@ void UAudioComponent::AdjustVolume( float AdjustVolumeDuration, float AdjustVolu
 
 void UAudioComponent::Stop()
 {
+	StopInternal();
+}
+
+void UAudioComponent::StopInternal()
+{
 	if (bIsActive)
 	{
 		// Set this to immediately be inactive
@@ -616,30 +652,32 @@ void UAudioComponent::PlaybackCompleted(bool bFailedToStart)
 	check(ActiveCount > 0);
 	--ActiveCount;
 
-	// Mark inactive before calling destroy to avoid recursion
-	bIsActive = (ActiveCount > 0);
-
-	if (!bIsActive)
+	if (ActiveCount > 0)
 	{
-		if (!bFailedToStart && GetWorld() != nullptr && (OnAudioFinished.IsBound() || OnAudioFinishedNative.IsBound()))
-		{
-			INC_DWORD_STAT(STAT_AudioFinishedDelegatesCalled);
-			SCOPE_CYCLE_COUNTER(STAT_AudioFinishedDelegates);
+		return;
+	}
 
-			OnAudioFinished.Broadcast();
-			OnAudioFinishedNative.Broadcast(this);
-		}
+	// Mark inactive before calling destroy to avoid recursion
+	bIsActive = false;
 
-		// Auto destruction is handled via marking object for deletion.
-		if (bAutoDestroy)
-		{
-			DestroyComponent();
-		}
-		// Otherwise see if we should detach ourself and wait until we're needed again
-		else if (bAutoManageAttachment)
-		{
-			CancelAutoAttachment(true);
-		}
+	if (!bFailedToStart && GetWorld() != nullptr && (OnAudioFinished.IsBound() || OnAudioFinishedNative.IsBound()))
+	{
+		INC_DWORD_STAT(STAT_AudioFinishedDelegatesCalled);
+		SCOPE_CYCLE_COUNTER(STAT_AudioFinishedDelegates);
+
+		OnAudioFinished.Broadcast();
+		OnAudioFinishedNative.Broadcast(this);
+	}
+
+	// Auto destruction is handled via marking object for deletion.
+	if (bAutoDestroy)
+	{
+		DestroyComponent();
+	}
+	// Otherwise see if we should detach ourself and wait until we're needed again
+	else if (bAutoManageAttachment)
+	{
+		CancelAutoAttachment(true);
 	}
 }
 
@@ -1107,6 +1145,48 @@ void UAudioComponent::SetSubmixSend(USoundSubmix* Submix, float SendLevel)
 	}
 }
 
+// BP function to set source bus sends (pre effect)
+void UAudioComponent::SetSourceBusSendPreEffect(USoundSourceBus* SoundSourceBus, float SourceBusSendLevel)
+{
+	if (FAudioDevice* AudioDevice = GetAudioDevice())
+	{
+		const uint64 MyAudioComponentID = AudioComponentID;
+		FAudioThread::RunCommandOnAudioThread([AudioDevice, MyAudioComponentID, SoundSourceBus, SourceBusSendLevel]()
+		{
+			FActiveSound* ActiveSound = AudioDevice->FindActiveSound(MyAudioComponentID);
+			if (ActiveSound)
+			{
+				FSoundSourceBusSendInfo SourceBusSendInfo;
+				SourceBusSendInfo.SoundSourceBus = SoundSourceBus;
+				SourceBusSendInfo.SendLevel = SourceBusSendLevel;
+
+				ActiveSound->SetSourceBusSend(EBusSendType::PreEffect, SourceBusSendInfo);
+			}
+		});
+	}
+}
+
+// BP function to set source bus sends (post effect)
+void UAudioComponent::SetSourceBusSendPostEffect(USoundSourceBus * SoundSourceBus, float SourceBusSendLevel)
+{
+	if (FAudioDevice* AudioDevice = GetAudioDevice())
+	{
+		const uint64 MyAudioComponentID = AudioComponentID;
+		FAudioThread::RunCommandOnAudioThread([AudioDevice, MyAudioComponentID, SoundSourceBus, SourceBusSendLevel]()
+		{
+			FActiveSound* ActiveSound = AudioDevice->FindActiveSound(MyAudioComponentID);
+			if (ActiveSound)
+			{
+				FSoundSourceBusSendInfo SourceBusSendInfo;
+				SourceBusSendInfo.SoundSourceBus = SoundSourceBus;
+				SourceBusSendInfo.SendLevel = SourceBusSendLevel;
+
+				ActiveSound->SetSourceBusSend(EBusSendType::PostEffect, SourceBusSendInfo);
+			}
+		});
+	}
+}
+
 void UAudioComponent::SetLowPassFilterEnabled(bool InLowPassFilterEnabled)
 {
 	if (FAudioDevice* AudioDevice = GetAudioDevice())
@@ -1244,7 +1324,7 @@ bool UAudioComponent::GetCookedFFTData(const TArray<float>& FrequenciesToGet, TA
 							}
 						}
 					}
-					
+
 					++NumEntriesAdded;
 					bHadData = true;
 				}

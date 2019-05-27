@@ -12,6 +12,7 @@
 #include "UObject/UObjectIterator.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectThreadContext.h"
 #include "GameplayTagsSettings.h"
 #include "GameplayTagsModule.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -60,8 +61,9 @@ void UGameplayTagsManager::LoadGameplayTagTables(bool bAllowAsyncLoad)
 	UGameplayTagsSettings* MutableDefault = GetMutableDefault<UGameplayTagsSettings>();
 	GameplayTagTables.Empty();
 
+#if !WITH_EDITOR
 	// If we're a cooked build and in a safe spot, start an async load so we can pipeline it
-	if (bAllowAsyncLoad && !WITH_EDITOR && !IsLoading() && MutableDefault->GameplayTagTableList.Num() > 0)
+	if (bAllowAsyncLoad && !IsLoading() && MutableDefault->GameplayTagTableList.Num() > 0)
 	{
 		for (FSoftObjectPath DataTablePath : MutableDefault->GameplayTagTableList)
 		{
@@ -70,6 +72,7 @@ void UGameplayTagsManager::LoadGameplayTagTables(bool bAllowAsyncLoad)
 
 		return;
 	}
+#endif // !WITH_EDITOR
 
 	SCOPE_LOG_GAMEPLAYTAGS(TEXT("UGameplayTagsManager::LoadGameplayTagTables"));
 	for (FSoftObjectPath DataTablePath : MutableDefault->GameplayTagTableList)
@@ -634,7 +637,9 @@ void UGameplayTagsManager::RedirectTagsForContainer(FGameplayTagContainer& Conta
 			FGameplayTag OldTag = RequestGameplayTag(TagName, false);
 			if (!OldTag.IsValid() && ShouldWarnOnInvalidTags())
 			{
-				UE_LOG(LogGameplayTags, Warning, TEXT("Invalid GameplayTag %s found while loading property %s."), *TagName.ToString(), *GetPathNameSafe(SerializingProperty));
+				FUObjectSerializeContext* LoadContext = FUObjectThreadContext::Get().GetSerializeContext();
+				UObject* LoadingObject = LoadContext ? LoadContext->SerializedObject : nullptr;
+				UE_LOG(LogGameplayTags, Warning, TEXT("Invalid GameplayTag %s found while loading %s in property %s."), *TagName.ToString(), *GetPathNameSafe(LoadingObject), *GetPathNameSafe(SerializingProperty));
 			}
 		}
 #endif
@@ -680,7 +685,9 @@ void UGameplayTagsManager::RedirectSingleGameplayTag(FGameplayTag& Tag, UPropert
 		FGameplayTag OldTag = RequestGameplayTag(TagName, false);
 		if (!OldTag.IsValid() && ShouldWarnOnInvalidTags())
 		{
-			UE_LOG(LogGameplayTags, Warning, TEXT("Invalid GameplayTag %s found while loading property %s."), *TagName.ToString(), *GetPathNameSafe(SerializingProperty));
+			FUObjectSerializeContext* LoadContext = FUObjectThreadContext::Get().GetSerializeContext();
+			UObject* LoadingObject = LoadContext ? LoadContext->SerializedObject : nullptr;
+			UE_LOG(LogGameplayTags, Warning, TEXT("Invalid GameplayTag %s found while loading %s in property %s."), *TagName.ToString(), *GetPathNameSafe(LoadingObject), *GetPathNameSafe(SerializingProperty));
 		}
 	}
 #endif

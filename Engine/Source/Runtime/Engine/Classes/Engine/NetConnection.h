@@ -24,6 +24,7 @@
 #include "Analytics/EngineNetAnalytics.h"
 #include "PacketTraits.h"
 #include "Net/Util/ResizableCircularQueue.h"
+#include "Net/NetAnalyticsTypes.h"
 
 #include "NetConnection.generated.h"
 
@@ -628,12 +629,6 @@ public:
 
 	EResendAllDataState ResendAllDataState;
 
-	/** Set of guids we may need to ignore when processing a delta checkpoint */
-	TSet<FNetworkGUID> IgnoredGuids;
-
-	/** Set of channels we may need to ignore when processing a delta checkpoint */
-	TSet<int32> IgnoredChannels;
-
 #if !UE_BUILD_SHIPPING
 	/** Delegate for hooking ReceivedRawPacket */
 	FOnReceivedRawPacket	ReceivedRawPacketDel;
@@ -1054,6 +1049,12 @@ public:
 	 */
 	void SetIgnoreAlreadyOpenedChannels(bool bInIgnoreAlreadyOpenedChannels);
 
+	/**
+	 * Sets whether or not we should ignore bunches for a specific set of NetGUIDs.
+	 * Should only be used with InternalAck.
+	 */
+	void SetIgnoreActorBunches(bool bInIgnoreActorBunches, TSet<FNetworkGUID>&& InIgnoredBunchGuids);
+
 	/** Returns the OutgoingBunches array, only to be used by UChannel::SendBunch */
 	TArray<FOutBunch *>& GetOutgoingBunches() { return OutgoingBunches; }
 
@@ -1070,6 +1071,43 @@ public:
 	 */
 	void FlushPacketOrderCache(bool bFlushWholeCache=false);
 
+	/** Called when an actor channel is open and knows its NetGUID. */
+	ENGINE_API virtual void NotifyActorNetGUID(UActorChannel* Channel) {}
+
+	/**
+	 * Returns the current delinquency analytics and resets them.
+	 * This would be similar to calls to Get and Reset separately, except that the caller
+	 * will assume ownership of data in this case.
+	 */
+	ENGINE_API void ConsumeQueuedActorDelinquencyAnalytics(FNetQueuedActorDelinquencyAnalytics& Out);
+
+	/** Returns the current delinquency analytics. */
+	ENGINE_API const FNetQueuedActorDelinquencyAnalytics& GetQueuedActorDelinquencyAnalytics() const;
+
+	/** Resets the current delinquency analytics. */
+	ENGINE_API void ResetQueuedActorDelinquencyAnalytics();
+
+	/**
+	 * Returns the current saturation analytics and resets them.
+	 * This would be similar to calls to Get and Reset separately, except that the caller
+	 * will assume ownership of data in this case.
+	 */
+	ENGINE_API void ConsumeSaturationAnalytics(FNetConnectionSaturationAnalytics& Out);
+
+	/** Returns the current saturation analytics. */
+	ENGINE_API const FNetConnectionSaturationAnalytics& GetSaturationAnalytics() const;
+
+	/** Resets the current saturation analytics. */
+	ENGINE_API void ResetSaturationAnalytics();
+
+	/**
+	 * Called to notify the connection that we attempted to replicate its actors this frame.
+	 * This is primarily for analytics book keeping.
+	 *
+	 * @param bWasSaturated		True if we failed to replicate all data because we were saturated.
+	 */
+	ENGINE_API void TrackReplicationForAnalytics(const bool bWasSaturated);
+	
 protected:
 
 	ENGINE_API void SetPendingCloseDueToSocketSendFailure();
@@ -1132,6 +1170,14 @@ private:
 	TMap<int32, FNetworkGUID> IgnoringChannels;
 	bool bIgnoreAlreadyOpenedChannels;
 
+	/** Set of guids we may need to ignore when processing a delta checkpoint */
+	TSet<FNetworkGUID> IgnoredBunchGuids;
+
+	/** Set of channels we may need to ignore when processing a delta checkpoint */
+	TSet<int32> IgnoredBunchChannels;
+
+	bool bIgnoreActorBunches;
+
 	/** This is only used in UChannel::SendBunch. It's a member so that we can preserve the allocation between calls, as an optimization, and in a thread-safe way to be compatible with demo.ClientRecordAsyncEndOfFrame */
 	TArray<FOutBunch*> OutgoingBunches;
 
@@ -1155,7 +1201,6 @@ private:
 
 	FNetworkGUID GetActorGUIDFromOpenBunch(FInBunch& Bunch);
 
-
 	/** Out of order packet tracking/correction */
 
 	/** Stat tracking for the total number of out of order packets, for this connection */
@@ -1170,11 +1215,11 @@ private:
 	/** The current number of valid packets in PacketOrderCache */
 	int32 PacketOrderCacheCount;
 
+	FNetConnectionSaturationAnalytics SaturationAnalytics;
+
 	/** Whether or not PacketOrderCache is presently being flushed */
 	bool bFlushingPacketOrderCache;
 };
-
-
 
 /** Help structs for temporarily setting network settings */
 struct FNetConnectionSettings

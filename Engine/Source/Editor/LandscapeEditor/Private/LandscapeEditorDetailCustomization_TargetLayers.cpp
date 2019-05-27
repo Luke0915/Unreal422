@@ -42,7 +42,6 @@
 #include "IDetailGroup.h"
 #include "Widgets/SBoxPanel.h"
 #include "Editor/EditorStyle/Private/SlateEditorStyle.h"
-#include "Settings/EditorExperimentalSettings.h"
 
 #define LOCTEXT_NAMESPACE "LandscapeEditor.TargetLayers"
 
@@ -620,7 +619,7 @@ TSharedPtr<SWidget> FLandscapeEditorCustomNodeBuilder_TargetLayers::GenerateRow(
 						.HAlign(HAlign_Right)
 						[
 							SNew(STextBlock)
-							.Visibility((Target->LayerInfoObj.IsValid() && Target->LayerInfoObj->bNoWeightBlend) ? EVisibility::Visible : EVisibility::Collapsed)
+							.Visibility_Lambda([=] { return (Target->LayerInfoObj.IsValid() && Target->LayerInfoObj->bNoWeightBlend) ? EVisibility::Visible : EVisibility::Collapsed; })
 							.Font(IDetailLayoutBuilder::GetDetailFont())
 							.Text(LOCTEXT("NoWeightBlend", "No Weight-Blend"))
 							.ShadowOffset(FVector2D::UnitVector)
@@ -702,17 +701,17 @@ TSharedPtr<SWidget> FLandscapeEditorCustomNodeBuilder_TargetLayers::GenerateRow(
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
-						.Visibility_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::GetProceduralLayerSubstractiveBlendVisibility, Target)
+						.Visibility_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::GetLayersSubstractiveBlendVisibility, Target)
 						+ SHorizontalBox::Slot()
 						.AutoWidth()
 						.Padding(0, 2, 2, 2)
 						[
 							SNew(SCheckBox)
-							.IsChecked_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::ProceduralLayerSubstractiveBlendIsChecked, Target)
-							.OnCheckStateChanged_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::OnProceduralLayerSubstractiveBlendChanged, Target)
+							.IsChecked_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::IsLayersSubstractiveBlendChecked, Target)
+							.OnCheckStateChanged_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::OnLayersSubstractiveBlendChanged, Target)
 							[
 								SNew(STextBlock)
-								.Text(LOCTEXT("ViewMode.Debug_None", "Substractive Blend"))
+								.Text(LOCTEXT("SubtractiveBlend", "Subtractive Blend"))
 							]
 						]
 					]
@@ -1094,7 +1093,7 @@ void FLandscapeEditorCustomNodeBuilder_TargetLayers::OnFillLayer(const TSharedRe
 		FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 		if (LandscapeEdMode)
 		{
-			FScopedSetLandscapeCurrentEditingProceduralLayer Scope(LandscapeEdMode->GetLandscape(), LandscapeEdMode->GetCurrentProceduralLayerGuid(), [&] { LandscapeEdMode->RequestProceduralContentUpdate(true); });
+			FScopedSetLandscapeEditingLayer Scope(LandscapeEdMode->GetLandscape(), LandscapeEdMode->GetCurrentLayerGuid(), [&] { LandscapeEdMode->RequestLayersContentUpdateForceAll(); });
 			LandscapeEdit.FillLayer(Target->LayerInfoObj.Get());
 		}
 	}
@@ -1106,12 +1105,12 @@ void FLandscapeEditorCustomNodeBuilder_TargetLayers::FillEmptyLayers(ULandscapeI
 	if (LandscapeEdMode)
 	{
 		FLandscapeEditDataInterface LandscapeEdit(LandscapeInfo);
-		
-		if (GetMutableDefault<UEditorExperimentalSettings>()->bProceduralLandscape)
+
+		if (LandscapeEdMode->CanHaveLandscapeLayersContent())
 		{
-			if (LandscapeEdMode->NeedToFillEmptyLayersForProcedural())
+			if (LandscapeEdMode->NeedToFillEmptyMaterialLayers())
 			{
-				FScopedSetLandscapeCurrentEditingProceduralLayer Scope(LandscapeEdMode->GetLandscape(), LandscapeEdMode->GetCurrentProceduralLayerGuid());
+				FScopedSetLandscapeEditingLayer Scope(LandscapeEdMode->GetLandscape(), LandscapeEdMode->GetCurrentLayerGuid());
 				LandscapeEdit.FillEmptyLayers(LandscapeInfoObject);
 			}
 		}
@@ -1132,7 +1131,7 @@ void FLandscapeEditorCustomNodeBuilder_TargetLayers::OnClearLayer(const TSharedR
 		FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 		if (LandscapeEdMode)
 		{
-			FScopedSetLandscapeCurrentEditingProceduralLayer Scope(LandscapeEdMode->GetLandscape(), LandscapeEdMode->GetCurrentProceduralLayerGuid(), [&] { LandscapeEdMode->RequestProceduralContentUpdate(true); });
+			FScopedSetLandscapeEditingLayer Scope(LandscapeEdMode->GetLandscape(), LandscapeEdMode->GetCurrentLayerGuid(), [&] { LandscapeEdMode->RequestLayersContentUpdateForceAll(); });
 			FLandscapeEditDataInterface LandscapeEdit(Target->LandscapeInfo.Get());
 			LandscapeEdit.DeleteLayer(Target->LayerInfoObj.Get());
 		}
@@ -1202,15 +1201,13 @@ void FLandscapeEditorCustomNodeBuilder_TargetLayers::OnTargetLayerSetObject(cons
 					Target->LandscapeInfo->CreateLayerEditorSettingsFor(SelectedLayerInfo);
 				}
 			}
-
+						
 			FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 			if (LandscapeEdMode)
 			{
-				if (LandscapeEdMode->CurrentToolTarget.LayerName == Target->LayerName
-					&& LandscapeEdMode->CurrentToolTarget.LayerInfo == Target->LayerInfoObj)
-				{
-					LandscapeEdMode->CurrentToolTarget.LayerInfo = SelectedLayerInfo;
-				}
+				LandscapeEdMode->CurrentToolTarget.LayerName = Target->LayerName;
+				LandscapeEdMode->CurrentToolTarget.TargetType = Target->TargetType;
+				LandscapeEdMode->CurrentToolTarget.LayerInfo = SelectedLayerInfo;
 				LandscapeEdMode->UpdateTargetList();
 			}
 
@@ -1425,9 +1422,10 @@ EVisibility FLandscapeEditorCustomNodeBuilder_TargetLayers::GetDebugModeLayerUsa
 	return EVisibility::Visible;
 }
 
-EVisibility FLandscapeEditorCustomNodeBuilder_TargetLayers::GetProceduralLayerSubstractiveBlendVisibility(const TSharedRef<FLandscapeTargetListInfo> Target)
+EVisibility FLandscapeEditorCustomNodeBuilder_TargetLayers::GetLayersSubstractiveBlendVisibility(const TSharedRef<FLandscapeTargetListInfo> Target)
 {
-	if (GetMutableDefault<UEditorExperimentalSettings>()->bProceduralLandscape && Target->TargetType != ELandscapeToolTargetType::Heightmap && Target->LayerInfoObj.IsValid())
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	if (LandscapeEdMode != nullptr && LandscapeEdMode->CanHaveLandscapeLayersContent() && Target->TargetType != ELandscapeToolTargetType::Heightmap && Target->LayerInfoObj.IsValid())
 	{
 		return EVisibility::Visible;
 	}
@@ -1435,23 +1433,24 @@ EVisibility FLandscapeEditorCustomNodeBuilder_TargetLayers::GetProceduralLayerSu
 	return EVisibility::Collapsed;
 }
 
-ECheckBoxState FLandscapeEditorCustomNodeBuilder_TargetLayers::ProceduralLayerSubstractiveBlendIsChecked(const TSharedRef<FLandscapeTargetListInfo> Target)
+ECheckBoxState FLandscapeEditorCustomNodeBuilder_TargetLayers::IsLayersSubstractiveBlendChecked(const TSharedRef<FLandscapeTargetListInfo> Target)
 {
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 	if (LandscapeEdMode)
 	{
-		return LandscapeEdMode->IsCurrentProceduralLayerBlendSubstractive(Target.Get().LayerInfoObj) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		return LandscapeEdMode->IsCurrentLayerBlendSubstractive(Target.Get().LayerInfoObj) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 	}
 
 	return ECheckBoxState::Unchecked;
 }
 
-void FLandscapeEditorCustomNodeBuilder_TargetLayers::OnProceduralLayerSubstractiveBlendChanged(ECheckBoxState NewCheckedState, const TSharedRef<FLandscapeTargetListInfo> Target)
+void FLandscapeEditorCustomNodeBuilder_TargetLayers::OnLayersSubstractiveBlendChanged(ECheckBoxState NewCheckedState, const TSharedRef<FLandscapeTargetListInfo> Target)
 {
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 	if (LandscapeEdMode)
 	{
-		LandscapeEdMode->SetCurrentProceduralLayerSubstractiveBlendStatus(NewCheckedState == ECheckBoxState::Checked, Target.Get().LayerInfoObj);
+		FScopedTransaction Transaction(LOCTEXT("Undo_SubtractiveBlend", "Set Subtractive Blend Layer"));
+		LandscapeEdMode->SetCurrentLayerSubstractiveBlendStatus(NewCheckedState == ECheckBoxState::Checked, Target.Get().LayerInfoObj);
 	}
 }
 
@@ -1544,15 +1543,15 @@ FReply SLandscapeEditorSelectableBorder::OnMouseButtonUp(const FGeometry& MyGeom
 		}
 		else if (MouseEvent.GetEffectingButton() == EKeys::RightMouseButton &&
 			OnContextMenuOpening.IsBound())
-		{
-			TSharedPtr<SWidget> Content = OnContextMenuOpening.Execute();
-			if (Content.IsValid())
 			{
-				FWidgetPath WidgetPath = MouseEvent.GetEventPath() != nullptr ? *MouseEvent.GetEventPath() : FWidgetPath();
+				TSharedPtr<SWidget> Content = OnContextMenuOpening.Execute();
+				if (Content.IsValid())
+				{
+					FWidgetPath WidgetPath = MouseEvent.GetEventPath() != nullptr ? *MouseEvent.GetEventPath() : FWidgetPath();
 
-				FSlateApplication::Get().PushMenu(SharedThis(this), WidgetPath, Content.ToSharedRef(), MouseEvent.GetScreenSpacePosition(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
-			}
-
+					FSlateApplication::Get().PushMenu(SharedThis(this), WidgetPath, Content.ToSharedRef(), MouseEvent.GetScreenSpacePosition(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+				}
+			
 			return FReply::Handled().ReleaseMouseCapture();
 		}
 	}

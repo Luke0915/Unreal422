@@ -323,10 +323,10 @@ struct FLandscapeProxyMaterialOverride
 	UMaterialInterface* Material;
 };
 
-class FLandscapeProceduralTexture2DCPUReadBackResource : public FTextureResource
+class FLandscapeLayersTexture2DCPUReadBackResource : public FTextureResource
 {
 public:
-	FLandscapeProceduralTexture2DCPUReadBackResource(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, uint32 InNumMips)
+	FLandscapeLayersTexture2DCPUReadBackResource(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, uint32 InNumMips)
 		: SizeX(InSizeX)
 		, SizeY(InSizeY)
 		, Format(InFormat)
@@ -357,52 +357,6 @@ private:
 	uint32 SizeY;
 	EPixelFormat Format;
 	uint32 NumMips;
-};
-
-USTRUCT()
-struct FRenderDataPerHeightmap
-{
-	GENERATED_USTRUCT_BODY()
-
-	UPROPERTY(Transient)
-	UTexture2D* OriginalHeightmap;
-
-	FLandscapeProceduralTexture2DCPUReadBackResource* HeightmapsCPUReadBack;
-
-	UPROPERTY(Transient)
-	TArray<ULandscapeComponent*> Components;
-
-	UPROPERTY(Transient)
-	FIntPoint TopLeftSectionBase;
-};
-
-USTRUCT()
-struct FWeightmapLayerData
-{
-	GENERATED_USTRUCT_BODY()
-
-	UPROPERTY()
-	TArray<UTexture2D*> Weightmaps;
-
-	UPROPERTY()
-	TArray<FWeightmapLayerAllocationInfo> WeightmapLayerAllocations;
-
-	TArray<ULandscapeWeightmapUsage*> WeightmapTextureUsages;	// Easy Access ref to data stored into the LandscapeProxy weightmap usage map
-};
-
-USTRUCT()
-struct FProceduralLayerData
-{
-	GENERATED_USTRUCT_BODY()
-
-	FProceduralLayerData()
-	{}
-
-	UPROPERTY()
-	TMap<UTexture2D*, UTexture2D*> Heightmaps; // Mapping between Original Heightmap -> Layer Heightmap
-
-	UPROPERTY()
-	TMap<ULandscapeComponent*, FWeightmapLayerData> WeightmapData; // Weightmaps per components
 };
 
 UCLASS(Abstract, MinimalAPI, NotBlueprintable, hidecategories=(Display, Attachment, Physics, Debug, Lighting, LOD), showcategories=(Lighting, Rendering, "Utilities|Transformation"), hidecategories=(Mobility))
@@ -642,17 +596,8 @@ public:
 	UPROPERTY()
 	TArray<FLandscapeEditorLayerSettings> EditorLayerSettings;
 
-	UPROPERTY(TextExportTransient)
-	TMap<FGuid, FProceduralLayerData> ProceduralLayersData;
-
-	UPROPERTY()
-	bool HasProceduralContent;
-
-	UPROPERTY(Transient)
-	TMap<UTexture2D*, FRenderDataPerHeightmap> RenderDataPerHeightmap; // Mapping between Original heightmap and general render data
-
-	TMap<UTexture2D*, FLandscapeProceduralTexture2DCPUReadBackResource*> WeightmapCPUReadBackTextures; // Mapping between Original weightmap and tyhe CPU readback resource
-
+	TMap<UTexture2D*, FLandscapeLayersTexture2DCPUReadBackResource*> HeightmapsCPUReadBack;
+	TMap<UTexture2D*, FLandscapeLayersTexture2DCPUReadBackResource*> WeightmapsCPUReadBack;
 	FRenderCommandFence ReleaseResourceFence;
 #endif
 
@@ -685,6 +630,10 @@ public:
 	/** Flag whether or not this Landscape's surface can be used for culling hidden triangles **/
 	UPROPERTY(EditAnywhere, Category = HierarchicalLOD)
 	bool bUseLandscapeForCullingInvisibleHLODVertices;
+
+	/** Flag that tell if we have some layers content **/
+	UPROPERTY()
+	bool bHasLayersContent;
 
 public:
 
@@ -764,6 +713,10 @@ public:
 	virtual void RerunConstructionScripts() override {}
 	virtual bool IsLevelBoundsRelevant() const override { return true; }
 
+	virtual void BeginDestroy() override;
+	virtual bool IsReadyForFinishDestroy() override;
+	virtual void FinishDestroy() override;
+
 #if WITH_EDITOR
 	virtual void Destroyed() override;
 	virtual void EditorApplyScale(const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
@@ -771,12 +724,14 @@ public:
 	virtual void PostEditMove(bool bFinished) override;
 	virtual bool ShouldImport(FString* ActorPropString, bool IsMovingLevel) override;
 	virtual bool ShouldExport() override;
+	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 	//~ End AActor Interface
 #endif	//WITH_EDITOR
 
 	FGuid GetLandscapeGuid() const { return LandscapeGuid; }
 	void SetLandscapeGuid(const FGuid& Guid) { LandscapeGuid = Guid; }
 	virtual ALandscape* GetLandscapeActor() PURE_VIRTUAL(GetLandscapeActor, return nullptr;)
+	virtual const ALandscape* GetLandscapeActor() const PURE_VIRTUAL(GetLandscapeActor, return nullptr;)
 
 	/* Per-frame call to update dynamic grass placement and render grassmaps */
 	void TickGrass();
@@ -801,6 +756,10 @@ public:
 
 	/* Invalidate the precomputed grass and baked texture data for the specified components */
 	LANDSCAPE_API static void InvalidateGeneratedComponentData(const TSet<ULandscapeComponent*>& Components);
+	LANDSCAPE_API static void InvalidateGeneratedComponentData(const TArray<ULandscapeComponent*>& Components);
+
+	/* Invalidate the precomputed grass and baked texture data on all components */
+	LANDSCAPE_API void InvalidateGeneratedComponentData();
 
 #if WITH_EDITOR
 	/** Render grass maps for the specified components */
@@ -829,14 +788,13 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	virtual void PostLoad() override;
-	virtual void BeginDestroy() override;
-	virtual bool IsReadyForFinishDestroy() override;
-	virtual void FinishDestroy() override;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditImport() override;
 	//~ End UObject Interface
+
+	LANDSCAPE_API void InitializeProxyLayersWeightmapUsage();
 
 	LANDSCAPE_API static TArray<FName> GetLayersFromMaterial(UMaterialInterface* Material);
 	LANDSCAPE_API TArray<FName> GetLayersFromMaterial() const;
@@ -863,8 +821,9 @@ public:
 
 	// Copy properties from parent Landscape actor
 	LANDSCAPE_API void GetSharedProperties(ALandscapeProxy* Landscape);
-	// Assign only mismatched properties and mark proxy package dirty
-	LANDSCAPE_API void ConditionalAssignCommonProperties(ALandscape* Landscape);
+
+	// Assign only mismatching data and mark proxy package dirty
+	LANDSCAPE_API void FixupSharedData(ALandscape* Landscape);
 	
 	/** Get the LandcapeActor-to-world transform with respect to landscape section offset*/
 	LANDSCAPE_API FTransform LandscapeActorToWorld() const;
@@ -892,9 +851,8 @@ public:
 	LANDSCAPE_API static ULandscapeMaterialInstanceConstant* GetLayerThumbnailMIC(UMaterialInterface* LandscapeMaterial, FName LayerName, UTexture2D* ThumbnailWeightmap, UTexture2D* ThumbnailHeightmap, ALandscapeProxy* Proxy);
 
 	/** Import the given Height/Weight data into this landscape */
-	LANDSCAPE_API void Import(FGuid Guid, int32 MinX, int32 MinY, int32 MaxX, int32 MaxY, int32 NumSubsections, int32 SubsectionSizeQuads,
-							const uint16* HeightData, const TCHAR* HeightmapFileName,
-							const TArray<FLandscapeImportLayerInfo>& ImportLayerInfos, ELandscapeImportAlphamapType ImportLayerType);
+	LANDSCAPE_API void Import(const FGuid& InGuid, int32 InMinX, int32 InMinY, int32 InMaxX, int32 InMaxY, int32 InNumSubsections, int32 InSubsectionSizeQuads, const TMap<FGuid, TArray<uint16>>& InImportHeightData,
+							  const TCHAR* const InHeightmapFileName, const TMap<FGuid, TArray<FLandscapeImportLayerInfo>>& InImportMaterialLayerInfos, ELandscapeImportAlphamapType InImportMaterialLayerType, const TArray<struct FLandscapeLayer>* InImportLayers = nullptr);
 
 	/**
 	 * Exports landscape into raw mesh
@@ -922,8 +880,11 @@ public:
 	/** @return Current size of bounding rectangle in quads space */
 	LANDSCAPE_API FIntRect GetBoundingRect() const;
 
-	/** Creates a Texture2D for use by this landscape proxy or one of it's components. If OptionalOverrideOuter is not specified, the level is used. */
-	LANDSCAPE_API UTexture2D* CreateLandscapeTexture(int32 InSizeX, int32 InSizeY, TextureGroup InLODGroup, ETextureSourceFormat InFormat, UObject* OptionalOverrideOuter = nullptr, bool bCompress = false) const;
+	/** Creates a Texture2D for use by this landscape proxy or one of it's components. */
+	LANDSCAPE_API UTexture2D* CreateLandscapeTexture(int32 InSizeX, int32 InSizeY, TextureGroup InLODGroup, ETextureSourceFormat InFormat, bool bCompress = false) const;
+
+	/** Creates a LandscapeWeightMapUsage object outered to this proxy. */
+	LANDSCAPE_API ULandscapeWeightmapUsage* CreateWeightmapUsage();
 
 	/* For the grassmap rendering notification */
 	int32 NumComponentsNeedingGrassMapRender;
@@ -983,9 +944,39 @@ public:
 	DECLARE_EVENT(ALandscape, FLandscapeMaterialChangedDelegate);
 	FLandscapeMaterialChangedDelegate& OnMaterialChangedDelegate() { return LandscapeMaterialChangedDelegate; }
 
+	/** Will tell if the landscape proxy as some content related to the layer system */
+	LANDSCAPE_API virtual bool HasLayersContent() const;
+	
+	/** Will tell if the landscape proxy can have some content related to the layer system */
+	LANDSCAPE_API bool CanHaveLayersContent() const;
+
+	void UpdateCachedHasLayersContent(bool InCheckComponentDataIntegrity = false);
+
+protected:
+	friend class ALandscape;
+
+	/** Add Layer if it doesn't exist yet.
+	* @return True if layer was added.
+	*/
+	LANDSCAPE_API bool AddLayer(const FGuid& InLayerGuid);
+
+	/** Delete Layer.
+	*/
+	LANDSCAPE_API void DeleteLayer(const FGuid& InLayerGuid);
+
+	/** Remove Layers not found in InExistingLayers
+	* @return True if some layers were removed.
+	*/
+	LANDSCAPE_API bool RemoveObsoleteLayers(const TSet<FGuid>& InExistingLayers);
+
+	/** Initialize Layer with empty content if it hasn't been initialized yet. */
+	LANDSCAPE_API void InitializeLayerWithEmptyContent(const FGuid& InLayerGuid);
+
 protected:
 	FLandscapeMaterialChangedDelegate LandscapeMaterialChangedDelegate;
-	
-	LANDSCAPE_API void SetupProceduralLayers(int32 InNumComponentsX = INDEX_NONE, int32 InNumComponentsY = INDEX_NONE);
+
 #endif
+private:
+	/** Returns Grass Update interval */
+	int32 GetGrassUpdateInterval() const;
 };

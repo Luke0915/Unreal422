@@ -10,6 +10,10 @@
 #include "Animation/BlendSpaceUtilities.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/UObjectIterator.h"
+#include "Logging/TokenizedMessage.h"
+#include "Logging/MessageLog.h"
+
+#define LOCTEXT_NAMESPACE "BlendSpaceBase"
 
 DECLARE_CYCLE_STAT(TEXT("BlendSpace GetAnimPose"), STAT_BlendSpace_GetAnimPose, STATGROUP_Anim);
 
@@ -673,7 +677,9 @@ bool UBlendSpaceBase::GetSamplesFromBlendInput(const FVector &BlendInput, TArray
 		{
 			const int32 SampleDataIndex = GridElement.Indices[Ind];		
 			if( SampleData.IsValidIndex(SampleDataIndex) 
-#if WITH_EDITOR
+#if WITH_EDITOR // we check these in editor because these could change when editor is running
+				&& SampleData[SampleDataIndex].bIsValid
+				&& SampleData[SampleDataIndex].Animation 
 				&& SampleData[SampleDataIndex].Animation->GetSkeleton() == GetSkeleton()
 #endif // WITH_EDITOR
 				)
@@ -828,6 +834,24 @@ void UBlendSpaceBase::ValidateSampleData()
 				}
 			}
 		}		
+		else
+		{
+			if (IsRunningGame())
+			{
+				UE_LOG(LogAnimation, Error, TEXT("[%s : %d] - Missing Sample Animation"), *GetFullName(), SampleIndex + 1);
+			}
+			else
+			{
+				static FName NAME_LoadErrors("LoadErrors");
+				FMessageLog LoadErrors(NAME_LoadErrors);
+
+				TSharedRef<FTokenizedMessage> Message = LoadErrors.Error();
+				Message->AddToken(FTextToken::Create(LOCTEXT("EmptyAnimationData1", "The BlendSpace ")));
+				Message->AddToken(FAssetNameToken::Create(GetPathName(), FText::FromString(GetName())));
+				Message->AddToken(FTextToken::Create(LOCTEXT("EmptyAnimationData2", " has sample with no animation. Recommend to remove sample point or set new animation.")));
+				LoadErrors.Notify();
+			}
+		}
 	}
 
 	// set rotation blend in mesh space
@@ -1329,3 +1353,5 @@ TArray<FName>* UBlendSpaceBase::GetUniqueMarkerNames()
 {
 	return (SampleIndexWithMarkers != INDEX_NONE && SampleData.Num() > 0) ? SampleData[SampleIndexWithMarkers].Animation->GetUniqueMarkerNames() : nullptr;
 }
+
+#undef LOCTEXT_NAMESPACE 

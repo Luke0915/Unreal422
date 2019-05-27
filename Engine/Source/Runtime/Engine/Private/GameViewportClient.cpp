@@ -59,6 +59,8 @@
 #include "DynamicResolutionState.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
+CSV_DEFINE_CATEGORY(View, true);
+
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
 #endif
@@ -113,6 +115,48 @@ static TAutoConsoleVariable<float> CVarSecondaryScreenPercentage( // TODO: make 
 	TEXT(" 0: Compute secondary screen percentage = 100 / DPIScalefactor automaticaly (default);\n")
 	TEXT(" 1: override secondary screen percentage."),
 	ECVF_Default);
+
+
+void UGameViewportClient::UpdateCsvCameraStats(const FSceneView* View)
+{
+#if CSV_PROFILER
+	if (!View)
+	{
+		return;
+	}
+	static uint32 PrevFrameNumber = GFrameNumber;
+	static double PrevTime = 0.0;
+	static FVector PrevViewOrigin = FVector(ForceInitToZero);
+
+	// TODO: support multiple views/view families, e.g for splitscreen. For now, we just output stats for the first one.
+	if (GFrameNumber != PrevFrameNumber)
+	{
+		FVector ViewOrigin = View->ViewMatrices.GetViewOrigin();
+		FVector ForwardVec = View->ViewMatrices.GetOverriddenTranslatedViewMatrix().GetColumn(2);
+		FVector UpVec = View->ViewMatrices.GetOverriddenTranslatedViewMatrix().GetColumn(1);
+		FVector Diff = ViewOrigin - PrevViewOrigin;
+		double CurrentTime = FPlatformTime::Seconds();
+		double DeltaT = CurrentTime - PrevTime;
+		FVector Velocity = Diff / float(DeltaT);
+		float CameraSpeed = Velocity.Size();
+		PrevViewOrigin = ViewOrigin;
+		PrevTime = CurrentTime;
+		PrevFrameNumber = GFrameNumber;
+
+		CSV_CUSTOM_STAT(View, PosX, View->ViewMatrices.GetViewOrigin().X, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, PosY, View->ViewMatrices.GetViewOrigin().Y, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, PosZ, View->ViewMatrices.GetViewOrigin().Z, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, ForwardX, ForwardVec.X, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, ForwardY, ForwardVec.Y, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, ForwardZ, ForwardVec.Z, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, UpX, UpVec.X, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, UpY, UpVec.Y, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, UpZ, UpVec.Z, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(View, Speed, CameraSpeed, ECsvCustomStatOp::Set);
+	}
+#endif
+}
+
 
 UGameViewportClient::UGameViewportClient(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -452,7 +496,7 @@ UGameInstance* UGameViewportClient::GetGameInstance() const
 bool UGameViewportClient::TryToggleFullscreenOnInputKey(FKey Key, EInputEvent EventType)
 {
 	if ((Key == EKeys::Enter && EventType == EInputEvent::IE_Pressed && FSlateApplication::Get().GetModifierKeys().IsAltDown() && GetDefault<UInputSettings>()->bAltEnterTogglesFullscreen)
-		|| (IsRunningGame() && Key == EKeys::F11 && EventType == EInputEvent::IE_Pressed && GetDefault<UInputSettings>()->bF11TogglesFullscreen))
+		|| (IsRunningGame() && Key == EKeys::F11 && EventType == EInputEvent::IE_Pressed && GetDefault<UInputSettings>()->bF11TogglesFullscreen && !FSlateApplication::Get().GetModifierKeys().AreModifersDown(EModifierKey::Control | EModifierKey::Alt)))
 	{
 		HandleToggleFullscreenCommand();
 		return true;
@@ -1121,14 +1165,8 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 		// Force enable view family show flag for HighDPI derived's screen percentage.
 		ViewFamily.EngineShowFlags.ScreenPercentage = true;
 	}
-	if (ViewFamily.GetDebugViewShaderMode() != DVSM_None && HasMissingDebugViewModeShaders(true))
-	{
-		TSet<UMaterialInterface*> Materials;
-		if (GetUsedMaterialsInWorld(MyWorld, Materials, nullptr))
-		{
-			CompileDebugViewModeShaders(ViewFamily.GetDebugViewShaderMode(), GetCachedScalabilityCVars().MaterialQualityLevel, ViewFamily.GetFeatureLevel(), false, false, Materials, nullptr);
-		}
-	}
+
+	UpdateDebugViewModeShaders();
 #endif
 
 	ViewFamily.ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(InViewport);
@@ -1313,6 +1351,10 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 
 					#if RHI_RAYTRACING
 						View->SetupRayTracedRendering();
+					#endif
+
+					#if CSV_PROFILER
+						UpdateCsvCameraStats(View);
 					#endif
 					}
 
@@ -2515,11 +2557,15 @@ void UGameViewportClient::RemoveViewportWidgetContent( TSharedRef<SWidget> Viewp
 
 void UGameViewportClient::AddViewportWidgetForPlayer(ULocalPlayer* Player, TSharedRef<SWidget> ViewportContent, const int32 ZOrder)
 {
-	TSharedPtr< IGameLayerManager > GameLayerManager(GameLayerManagerPtr.Pin());
-	if ( GameLayerManager.IsValid() )
+	if (ensure(Player))
 	{
-		GameLayerManager->AddWidgetForPlayer(Player, ViewportContent, ZOrder);
+		TSharedPtr< IGameLayerManager > GameLayerManager(GameLayerManagerPtr.Pin());
+		if (GameLayerManager.IsValid())
+		{
+			GameLayerManager->AddWidgetForPlayer(Player, ViewportContent, ZOrder);
+		}
 	}
+	//TODO - If this fails what should we do?
 }
 
 void UGameViewportClient::RemoveViewportWidgetForPlayer(ULocalPlayer* Player, TSharedRef<SWidget> ViewportContent)

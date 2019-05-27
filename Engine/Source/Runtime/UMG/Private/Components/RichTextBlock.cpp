@@ -11,11 +11,37 @@
 #include "Framework/Text/RichTextMarkupProcessing.h"
 #include "Framework/Text/IRichTextMarkupParser.h"
 #include "Framework/Text/IRichTextMarkupWriter.h"
+#include "RenderingThread.h"
+#include "Editor/WidgetCompilerLog.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
 // URichTextBlock
+
+template< class ObjectType >
+struct FDeferredDeletor : public FDeferredCleanupInterface
+{
+public:
+	FDeferredDeletor(ObjectType* InInnerObjectToDelete)
+		: InnerObjectToDelete(InInnerObjectToDelete)
+	{
+	}
+
+	virtual ~FDeferredDeletor()
+	{
+		delete InnerObjectToDelete;
+	}
+
+private:
+	ObjectType* InnerObjectToDelete;
+};
+
+template< class ObjectType >
+FORCEINLINE SharedPointerInternals::FRawPtrProxy< ObjectType > MakeShareableDeferredCleanup(ObjectType* InObject)
+{
+	return MakeShareable(InObject, [](ObjectType* ObjectToDelete) { BeginCleanup(new FDeferredDeletor<ObjectType>(ObjectToDelete)); });
+}
 
 URichTextBlock::URichTextBlock(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -66,23 +92,7 @@ void URichTextBlock::UpdateStyleData()
 
 	if (!StyleInstance.IsValid())
 	{
-		StyleInstance = MakeShareable(new FSlateStyleSet(TEXT("RichTextStyle")));
-
-		if (TextStyleSet && TextStyleSet->GetRowStruct()->IsChildOf(FRichTextStyleRow::StaticStruct()))
-		{
-			for (const auto& Entry : TextStyleSet->GetRowMap())
-			{
-				FName SubStyleName = Entry.Key;
-				FRichTextStyleRow* RichTextStyle = (FRichTextStyleRow*)Entry.Value;
-
-				if (SubStyleName == FName(TEXT("Default")))
-				{
-					DefaultTextStyle = RichTextStyle->TextStyle;
-				}
-
-				StyleInstance->Set(SubStyleName, RichTextStyle->TextStyle);
-			}
-		}
+		RebuildStyleInstance();
 
 		for (TSubclassOf<URichTextBlockDecorator> DecoratorClass : DecoratorClasses)
 		{
@@ -104,6 +114,40 @@ void URichTextBlock::SetText(const FText& InText)
 	if (MyRichTextBlock.IsValid())
 	{
 		MyRichTextBlock->SetText(InText);
+	}
+}
+
+void URichTextBlock::RebuildStyleInstance()
+{
+	StyleInstance = MakeShareableDeferredCleanup(new FSlateStyleSet(TEXT("RichTextStyle")));
+
+	if (TextStyleSet && TextStyleSet->GetRowStruct()->IsChildOf(FRichTextStyleRow::StaticStruct()))
+	{
+		for (const auto& Entry : TextStyleSet->GetRowMap())
+		{
+			FName SubStyleName = Entry.Key;
+			FRichTextStyleRow* RichTextStyle = (FRichTextStyleRow*)Entry.Value;
+
+			if (SubStyleName == FName(TEXT("Default")))
+			{
+				DefaultTextStyle = RichTextStyle->TextStyle;
+			}
+
+			StyleInstance->Set(SubStyleName, RichTextStyle->TextStyle);
+		}
+	}
+}
+
+void URichTextBlock::SetTextStyleSet(class UDataTable* NewTextStyleSet)
+{
+	if (TextStyleSet != NewTextStyleSet)
+	{
+		TextStyleSet = NewTextStyleSet;
+
+		RebuildStyleInstance();
+
+		MyRichTextBlock->SetDecoratorStyleSet(StyleInstance.Get());
+		MyRichTextBlock->SetTextStyle(DefaultTextStyle);
 	}
 }
 
@@ -149,7 +193,7 @@ void URichTextBlock::CreateDecorators(TArray< TSharedRef< class ITextDecorator >
 
 TSharedPtr< IRichTextMarkupParser > URichTextBlock::CreateMarkupParser()
 {
-	return FDefaultRichTextMarkupParser::Create();
+	return FDefaultRichTextMarkupParser::GetStaticInstance();
 }
 
 TSharedPtr< IRichTextMarkupWriter > URichTextBlock::CreateMarkupWriter()
@@ -179,7 +223,20 @@ void URichTextBlock::OnCreationFromPalette()
 	//Decorators.Add(NewObject<URichTextBlockDecorator>(this, NAME_None, RF_Transactional));
 }
 
-#endif
+void URichTextBlock::ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) const
+{
+	Super::ValidateCompiledDefaults(CompileLog);
+
+	if (TextStyleSet && !TextStyleSet->GetRowStruct()->IsChildOf(FRichTextStyleRow::StaticStruct()))
+	{
+		CompileLog.Warning(FText::Format(
+			LOCTEXT("RichTextBlock_InvalidTextStyle", "{0} Text Style Set property expects a Data Table with a Rich Text Style Row structure (currently set to {1})."), 
+			FText::FromString(GetName()), 
+			FText::AsCultureInvariant(TextStyleSet->GetPathName())));
+	}
+}
+
+#endif //if WITH_EDITOR
 
 void URichTextBlock::SetDefaultTextStyle(const FTextBlockStyle& InDefaultTextStyle)
 {

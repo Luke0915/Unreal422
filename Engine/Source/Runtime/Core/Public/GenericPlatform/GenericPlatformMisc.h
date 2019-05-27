@@ -652,6 +652,12 @@ public:
 	 */
 	static void RequestExitWithStatus( bool Force, uint8 ReturnCode );
 
+
+	/**
+	 * Requests application to restart
+	 */
+	static bool RestartApplication();
+
 	/**
 	 * Returns the last system error code in string form.  NOTE: Only one return value is valid at a time!
 	 *
@@ -1280,6 +1286,10 @@ public:
 	static FString LoadTextFileFromPlatformPackage(const FString& RelativePath);
 
 	static void ParseChunkIdPakchunkIndexMapping(TArray<FString> ChunkIndexRedirects, TMap<int32, int32>& OutMapping);
+
+	static void PumpMessagesOutsideMainLoop()
+	{
+	}
 
 #if !UE_BUILD_SHIPPING
 	/** 

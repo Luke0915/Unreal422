@@ -48,6 +48,9 @@ template <class T> class TConsoleVariableData;
  */
 enum EConsoleVariableFlags
 {
+	/* Mask for flags. Use this instead of ~ECVF_SetByMask */
+	ECVF_FlagMask = 0x0000ffff,
+
 	/**
 	 * Default, no flags are set, the value is set by the constructor 
 	 */
@@ -88,9 +91,17 @@ enum EConsoleVariableFlags
 
 	// ------------------------------------------------
 
+	/* Set flags */
+	ECVF_SetFlagMask =				0x00ff0000,
+
+	// Use to set a cvar without calling all cvar sinks. Much faster, but potentially unsafe. Use only if you know the particular cvar/setting does not require a sink call
+	ECVF_Set_NoSinkCall_Unsafe =	0x00010000,
+
+	// ------------------------------------------------
+
 	/* to get some history of where the last value was set by ( useful for track down why a cvar is in a specific state */
 	ECVF_SetByMask =				0xff000000,
-	
+
 	// the ECVF_SetBy are sorted in override order (weak to strong), the value is not serialized, it only affects it's override behavior when calling Set()
 
 	// lowest priority (default after console variable creation)
@@ -842,7 +853,7 @@ public:
 };
 
 /**
- * Autoregistering float, int REF variable class...this changes that value when the console variable is changed. 
+ * Autoregistering float, int, bool, FString REF variable class...this changes that value when the console variable is changed. 
  */
 class CORE_API FAutoConsoleVariableRef : private FAutoConsoleObject
 {
@@ -864,6 +875,26 @@ public:
 	 * @param Flags bitmask combined from EConsoleVariableFlags
 	 */
 	FAutoConsoleVariableRef(const TCHAR* Name, float& RefValue, const TCHAR* Help, uint32 Flags = ECVF_Default)
+		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleVariableRef(Name, RefValue, Help, Flags))
+	{
+	}
+	/**
+	 * Create a reference to a bool console variable
+	 * @param Name must not be 0
+	 * @param Help must not be 0
+	 * @param Flags bitmask combined from EConsoleVariableFlags
+	 */
+	FAutoConsoleVariableRef(const TCHAR* Name, bool& RefValue, const TCHAR* Help, uint32 Flags = ECVF_Default)
+		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleVariableRef(Name, RefValue, Help, Flags))
+	{
+	}
+	/**
+	 * Create a reference to a FString console variable
+	 * @param Name must not be 0
+	 * @param Help must not be 0
+	 * @param Flags bitmask combined from EConsoleVariableFlags
+	 */
+	FAutoConsoleVariableRef(const TCHAR* Name, FString& RefValue, const TCHAR* Help, uint32 Flags = ECVF_Default)
 		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleVariableRef(Name, RefValue, Help, Flags))
 	{
 	}
@@ -889,6 +920,32 @@ public:
 	 * @param Flags bitmask combined from EConsoleVariableFlags
 	 */
 	FAutoConsoleVariableRef(const TCHAR* Name, float& RefValue, const TCHAR* Help, const FConsoleVariableDelegate& Callback, uint32 Flags = ECVF_Default)
+		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleVariableRef(Name, RefValue, Help, Flags))
+	{
+		AsVariable()->SetOnChangedCallback(Callback);
+	}
+
+	/**
+	 * Create a reference to a bool console variable
+	 * @param Name must not be 0
+	 * @param Help must not be 0
+	 * @param Callback Delegate called when the variable changes. @see IConsoleVariable::SetOnChangedCallback
+	 * @param Flags bitmask combined from EConsoleVariableFlags
+	 */
+	FAutoConsoleVariableRef(const TCHAR* Name, bool& RefValue, const TCHAR* Help, const FConsoleVariableDelegate& Callback, uint32 Flags = ECVF_Default)
+		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleVariableRef(Name, RefValue, Help, Flags))
+	{
+		AsVariable()->SetOnChangedCallback(Callback);
+	}
+
+	/**
+	 * Create a reference to a FString console variable
+	 * @param Name must not be 0
+	 * @param Help must not be 0
+	 * @param Callback Delegate called when the variable changes. @see IConsoleVariable::SetOnChangedCallback
+	 * @param Flags bitmask combined from EConsoleVariableFlags
+	 */
+	FAutoConsoleVariableRef(const TCHAR* Name, FString& RefValue, const TCHAR* Help, const FConsoleVariableDelegate& Callback, uint32 Flags = ECVF_Default)
 		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleVariableRef(Name, RefValue, Help, Flags))
 	{
 		AsVariable()->SetOnChangedCallback(Callback);

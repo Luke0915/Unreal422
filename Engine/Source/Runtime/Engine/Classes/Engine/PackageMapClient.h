@@ -27,6 +27,7 @@
 #include "Misc/NetworkVersion.h"
 #include "UObject/CoreNet.h"
 #include "Net/DataBunch.h"
+#include "Net/NetAnalyticsTypes.h"
 #include "PackageMapClient.generated.h"
 
 class UNetConnection;
@@ -205,6 +206,23 @@ enum class EAppendNetExportFlags : uint32
 ENUM_CLASS_FLAGS(EAppendNetExportFlags);
 
 
+/** Convenience type for holding onto references to objects while we have queued bunches referring to those objects. */
+struct FQueuedBunchObjectReference
+{
+private:
+
+	friend class FNetGUIDCache;
+
+	FQueuedBunchObjectReference(const FNetworkGUID InNetGUID, UObject* InObject) :
+		NetGUID(InNetGUID),
+		Object(InObject)
+	{
+	}
+
+	FNetworkGUID NetGUID;
+	UObject* Object;
+};
+
 class ENGINE_API FNetGUIDCache
 {
 public:
@@ -240,6 +258,7 @@ public:
 	void			RegisterNetGUIDFromPath_Server( const FNetworkGUID& NetGUID, const FString& PathName, const FNetworkGUID& OuterGUID, const uint32 NetworkChecksum, const bool bNoLoad, const bool bIgnoreWhenMissing );
 	UObject *		GetObjectFromNetGUID( const FNetworkGUID& NetGUID, const bool bIgnoreMustBeMapped );
 	bool			ShouldIgnoreWhenMissing( const FNetworkGUID& NetGUID ) const;
+	FNetGuidCacheObject const * const GetCacheObject(const FNetworkGUID& NetGUID) const;
 	bool			IsGUIDRegistered( const FNetworkGUID& NetGUID ) const;
 	bool			IsGUIDLoaded( const FNetworkGUID& NetGUID ) const;
 	bool			IsGUIDBroken( const FNetworkGUID& NetGUID, const bool bMustBeRegistered ) const;
@@ -260,6 +279,13 @@ public:
 
 	void			CountBytes(FArchive& Ar) const;
 
+	void ConsumeAsyncLoadDelinquencyAnalytics(FNetAsyncLoadDelinquencyAnalytics& Out);
+	const FNetAsyncLoadDelinquencyAnalytics& GetAsyncLoadDelinquencyAnalytics() const;
+	void ResetAsyncLoadDelinquencyAnalytics();
+
+	void CollectReferences(class FReferenceCollector& ReferenceCollector);
+	TSharedRef<FQueuedBunchObjectReference> TrackQueuedBunchObjectReference(const FNetworkGUID InNetGUID, UObject* InObject);
+
 	TMap< FNetworkGUID, FNetGuidCacheObject >		ObjectLookup;
 	TMap< TWeakObjectPtr< UObject >, FNetworkGUID >	NetGUIDLookup;
 	int32											UniqueNetIDs[2];
@@ -269,6 +295,7 @@ public:
 
 	UNetDriver *									Driver;
 
+	UE_DEPRECATED(4.23, "This member will be made private in future versions")
 	TMap< FName, FNetworkGUID >						PendingAsyncPackages;
 
 	ENetworkChecksumMode							NetworkChecksumMode;
@@ -301,6 +328,36 @@ public:
 	TMap<FNetworkGUID, FString>						History;
 private:
 #endif
+
+	struct FPendingAsyncLoadRequest
+	{
+		FPendingAsyncLoadRequest(const FNetworkGUID InNetGUID, const float InRequestStartTime):
+			NetGUID(InNetGUID),
+			RequestStartTime(InRequestStartTime)
+		{
+		}
+
+		FNetworkGUID NetGUID;
+		float RequestStartTime;
+	};
+
+	/** Set of packages that are currently pending Async loads, referenced by package name. */
+	TMap<FName, FPendingAsyncLoadRequest> PendingAsyncLoadRequests;
+
+	FNetAsyncLoadDelinquencyAnalytics DelinquentAsyncLoads;
+
+	void StartAsyncLoadingPackage(FNetGuidCacheObject& Object, const FNetworkGUID ObjectGUID, const bool bWasAlreadyAsyncLoading);
+	void ValidateAsyncLoadingPackage(FNetGuidCacheObject& Object, const FNetworkGUID ObjectGUID);
+
+	void UpdateQueuedBunchObjectReference(const FNetworkGUID NetGUID, UObject* NewObject);
+
+	/**
+	 * Set of all current Objects that we've been requested to be referenced while channels
+	 * resolve their queued bunches. This is used to prevent objects (especially async load objects,
+	 * which may have no other references) from being GC'd while a channel is waiting for more
+	 * pending guids. 
+	 */
+	TMap<FNetworkGUID, TWeakPtr<FQueuedBunchObjectReference>> QueuedBunchObjectReferences;
 };
 
 class ENGINE_API FPackageMapAckState
@@ -443,7 +500,9 @@ protected:
 
 	TArray<TArray<uint8>>				ExportGUIDArchives;
 	TSet< FNetworkGUID >				CurrentExportNetGUIDs;				// Current list of NetGUIDs being written to the Export Bunch.
-	TSet< FNetworkGUID >				CurrentQueuedBunchNetGUIDs;			// List of NetGuids with currently queued bunches
+
+	/** Set of Actor NetGUIDs with currently queued bunches and the time they were first queued. */
+	TMap<FNetworkGUID, float> CurrentQueuedBunchNetGUIDs;
 
 	TArray< FNetworkGUID >				PendingAckGUIDs;					// Quick access to all GUID's that haven't been acked
 
@@ -467,4 +526,14 @@ private:
 	void ReceiveNetFieldExportsCompat(FInBunch& InBunch);
 
 	bool bIgnoreReceivedExportGUIDs;
+
+public:
+
+	void ConsumeQueuedActorDelinquencyAnalytics(FNetQueuedActorDelinquencyAnalytics& Out);
+	const FNetQueuedActorDelinquencyAnalytics& GetQueuedActorDelinquencyAnalytics() const;
+	void ResetQueuedActorDelinquencyAnalytics();
+
+private:
+
+	FNetQueuedActorDelinquencyAnalytics DelinquentQueuedActors;
 };

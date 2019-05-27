@@ -87,14 +87,14 @@ UWorld* UGameplayAbility::GetWorld() const
 	return GetOuter()->GetWorld();
 }
 
-int32 UGameplayAbility::GetFunctionCallspace(UFunction* Function, void* Parameters, FFrame* Stack)
+int32 UGameplayAbility::GetFunctionCallspace(UFunction* Function, FFrame* Stack)
 {
 	if (HasAnyFlags(RF_ClassDefaultObject) || !IsSupportedForNetworking())
 	{
 		return FunctionCallspace::Local;
 	}
 	check(GetOuter() != nullptr);
-	return GetOuter()->GetFunctionCallspace(Function, Parameters, Stack);
+	return GetOuter()->GetFunctionCallspace(Function, Stack);
 }
 
 bool UGameplayAbility::CallRemoteFunction(UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack)
@@ -745,8 +745,11 @@ void UGameplayAbility::PreActivate(const FGameplayAbilitySpecHandle Handle, cons
 
 	RemoteInstanceEnded = false;
 
+	// This must be called before we start applying tags and blocking or canceling other abilities.
+	// We could set off a chain that results in calling functions on this ability that rely on the current info being set.
+	SetCurrentInfo(Handle, ActorInfo, ActivationInfo);
+
 	Comp->HandleChangeAbilityCanBeCanceled(AbilityTags, this, true);
-	Comp->ApplyAbilityBlockAndCancelTags(AbilityTags, this, true, BlockAbilitiesWithTag, true, CancelAbilitiesWithTag);
 	Comp->AddLooseGameplayTags(ActivationOwnedTags);
 
 	if (OnGameplayAbilityEndedDelegate)
@@ -754,9 +757,9 @@ void UGameplayAbility::PreActivate(const FGameplayAbilitySpecHandle Handle, cons
 		OnGameplayAbilityEnded.Add(*OnGameplayAbilityEndedDelegate);
 	}
 
-	SetCurrentInfo(Handle, ActorInfo, ActivationInfo);
-
 	Comp->NotifyAbilityActivated(Handle, this);
+
+	Comp->ApplyAbilityBlockAndCancelTags(AbilityTags, this, true, BlockAbilitiesWithTag, true, CancelAbilitiesWithTag);
 }
 
 void UGameplayAbility::CallActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, FOnGameplayAbilityEnded::FDelegate* OnGameplayAbilityEndedDelegate, const FGameplayEventData* TriggerEventData)

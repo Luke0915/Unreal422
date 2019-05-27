@@ -619,6 +619,11 @@ bool FSlateApplication::MouseCaptorHelper::SetMouseCaptor(uint32 UserIndex, uint
 		if (MouseCaptorWeakPath.IsValid())
 		{
 			PointerIndexToMouseCaptorWeakPathMap.Add(FUserAndPointer(UserIndex,PointerIndex), MouseCaptorWeakPath);
+
+#if WITH_SLATE_DEBUGGING
+			FSlateDebugging::BroadcastMouseCapture(UserIndex, PointerIndex, Widget);
+#endif
+
 			return true;
 		}
 	}
@@ -711,19 +716,23 @@ FWeakWidgetPath FSlateApplication::MouseCaptorHelper::ToWeakPath(uint32 UserInde
 	return FWeakWidgetPath();
 }
 
-void FSlateApplication::MouseCaptorHelper::InformCurrentCaptorOfCaptureLoss(uint32 UserIndex,uint32 PointerIndex) const
+void FSlateApplication::MouseCaptorHelper::InformCurrentCaptorOfCaptureLoss(uint32 UserIndex, uint32 PointerIndex) const
 {
 	// if we have a path to a widget then it is the current mouse captor and needs to know it has lost capture
-	const FWeakWidgetPath* MouseCaptorWeakPath = PointerIndexToMouseCaptorWeakPathMap.Find(FUserAndPointer(UserIndex,PointerIndex));
-	if (MouseCaptorWeakPath && MouseCaptorWeakPath->IsValid() )
+	const FWeakWidgetPath* MouseCaptorWeakPath = PointerIndexToMouseCaptorWeakPathMap.Find(FUserAndPointer(UserIndex, PointerIndex));
+	if (MouseCaptorWeakPath && MouseCaptorWeakPath->IsValid())
 	{
 		TWeakPtr< SWidget > WeakWidgetPtr = MouseCaptorWeakPath->GetLastWidget();
 		TSharedPtr< SWidget > SharedWidgetPtr = WeakWidgetPtr.Pin();
-		if ( SharedWidgetPtr.IsValid() )
+		if (SharedWidgetPtr.IsValid())
 		{
 			FCaptureLostEvent CaptureLostEvent(UserIndex, PointerIndex);
 			SharedWidgetPtr->OnMouseCaptureLost(CaptureLostEvent);
 		}
+
+#if WITH_SLATE_DEBUGGING
+		FSlateDebugging::BroadcastMouseCaptureLost(UserIndex, PointerIndex, SharedWidgetPtr);
+#endif
 	}
 }
 
@@ -1534,7 +1543,7 @@ void FSlateApplication::PrivateDrawWindows( TSharedPtr<SWindow> DrawOnlyThisWind
 			for( TArray< TSharedRef<SWindow> >::TConstIterator CurrentWindowIt( SlateWindows ); CurrentWindowIt; ++CurrentWindowIt )
 			{
 				const TSharedRef<SWindow>& CurrentWindow = *CurrentWindowIt;
-				if ( CurrentWindow->IsTopmostWindow() )
+				if ( CurrentWindow->GetType() == EWindowType::ToolTip )
 				{
 					DrawWindowAndChildren(CurrentWindow, DrawWindowArgs);
 				}
@@ -3279,10 +3288,6 @@ void FSlateApplication::ProcessReply( const FWidgetPath& CurrentEventPath, const
 		{
 			if ( MouseCaptor.SetMouseCaptor(UserIndex, PointerIndex, CurrentEventPath, RequestedMouseCaptor) )
 			{
-#if WITH_SLATE_DEBUGGING
-				FSlateDebugging::MouseCapture(RequestedMouseCaptor);
-#endif
-
 				if (WidgetsUnderMouse)
 				{
 					const FWeakWidgetPath& LastWidgetsUnderCursor = WidgetsUnderCursorLastEvent.FindRef(FUserAndPointer(UserIndex, PointerIndex));
@@ -4082,19 +4087,24 @@ void FSlateApplication::CancelDragDrop()
 		return;
 	}
 
+	FPointerEvent EmptyPointerEvent;
+
 	for( auto LastWidgetIterator = WidgetsUnderCursorLastEvent.CreateConstIterator(); LastWidgetIterator; ++LastWidgetIterator)
 	{
 		
 		FWidgetPath WidgetsToDragLeave = LastWidgetIterator.Value().ToWidgetPath(FWeakWidgetPath::EInterruptedPathHandling::Truncate);
 		if(WidgetsToDragLeave.IsValid())
 		{
-			const FDragDropEvent DragDropEvent(FPointerEvent(), DragDropContent);
+			const FDragDropEvent DragDropEvent(EmptyPointerEvent, DragDropContent);
 			for(int32 WidgetIndex = WidgetsToDragLeave.Widgets.Num() - 1; WidgetIndex >= 0; --WidgetIndex)
 			{
 				WidgetsToDragLeave.Widgets[WidgetIndex].Widget->OnDragLeave(DragDropEvent);
 			}
 		}
 	}
+
+	// cancel dragdrop operation correctly firing off callbacks
+	DragDropContent->OnDrop(false, EmptyPointerEvent);
 
 	WidgetsUnderCursorLastEvent.Empty();
 	ResetDragDropState();
@@ -4115,6 +4125,8 @@ void FSlateApplication::EnterDebuggingMode()
 		PreviousGameViewport->SetActive(false);
 		GameViewportWidget.Reset();
 	}
+	
+	Renderer->EndFrame();
 
 	Renderer->FlushCommands();
 	
@@ -4135,6 +4147,8 @@ void FSlateApplication::EnterDebuggingMode()
 		Tick();
 
 		Renderer->EndFrame();
+		
+		Renderer->FlushCommands();
 		
 		// Synchronize the game thread and the render thread so that the render thread doesn't get too far behind.
 		Renderer->Sync();
@@ -6512,7 +6526,7 @@ bool FSlateApplication::AttemptNavigation(const FWidgetPath& NavigationSource, c
 	}
 
 #if WITH_SLATE_DEBUGGING
-	FSlateDebugging::AttemptNavigation(NavigationEvent, NavigationReply, NavigationSource, DestinationWidget);
+	FSlateDebugging::BroadcastAttemptNavigation(NavigationEvent, NavigationReply, NavigationSource, DestinationWidget);
 #endif
 
 	return ExecuteNavigation(NavigationSource, DestinationWidget, NavigationEvent.GetUserIndex(), bAlwaysHandleNavigationAttempt);

@@ -15,6 +15,7 @@
 #include "InstancedFoliageActor.h"
 #include "VREditorInteractor.h"
 #include "AI/NavigationSystemBase.h"
+#include "Landscape.h"
 
 // VR Editor
 
@@ -690,19 +691,22 @@ struct FXYOffsetmapAccessor
 					NewHeights[X - X1 + (Y - Y1) * (X2 - X1 + 1)] = FMath::Clamp<uint16>(Data[(X - X1 + (Y - Y1) * (X2 - X1 + 1))].Z * LANDSCAPE_INV_ZSCALE + 32768.0f, 0, 65535);
 				}
 			}
-
-			// Flush dynamic foliage (grass)
-			ALandscapeProxy::InvalidateGeneratedComponentData(Components);
-
+						
 			// Notify foliage to move any attached instances
 			bool bUpdateFoliage = false;
-			for (ULandscapeComponent* Component : Components)
+			
+			ALandscapeProxy::InvalidateGeneratedComponentData(Components);
+
+			if (!LandscapeEdit->HasLandscapeLayersContent())
 			{
-				ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
-				if (CollisionComponent && AInstancedFoliageActor::HasFoliageAttached(CollisionComponent))
+				for (ULandscapeComponent* Component : Components)
 				{
-					bUpdateFoliage = true;
-					break;
+					ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
+					if (CollisionComponent && AInstancedFoliageActor::HasFoliageAttached(CollisionComponent))
+					{
+						bUpdateFoliage = true;
+						break;
+					}
 				}
 			}
 
@@ -834,18 +838,21 @@ struct FFullWeightmapAccessor
 
 	~FFullWeightmapAccessor()
 	{
-		// Recreate collision for modified components to update the physical materials
-		for (ULandscapeComponent* Component : ModifiedComponents)
+		if (!LandscapeEdit.HasLandscapeLayersContent())
 		{
-			ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
-			if (CollisionComponent)
+			// Recreate collision for modified components to update the physical materials
+			for (ULandscapeComponent* Component : ModifiedComponents)
 			{
-				CollisionComponent->RecreateCollision();
-
-				// We need to trigger navigation mesh build, in case user have painted holes on a landscape
-				if (LandscapeInfo->GetLayerInfoIndex(ALandscapeProxy::VisibilityLayer) != INDEX_NONE)
+				ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
+				if (CollisionComponent)
 				{
-					FNavigationSystem::UpdateComponentData(*CollisionComponent);
+					CollisionComponent->RecreateCollision();
+
+					// We need to trigger navigation mesh build, in case user have painted holes on a landscape
+					if (LandscapeInfo->GetLayerInfoIndex(ALandscapeProxy::VisibilityLayer) != INDEX_NONE)
+					{
+						FNavigationSystem::UpdateComponentData(*CollisionComponent);
+					}
 				}
 			}
 		}
@@ -868,11 +875,13 @@ struct FFullWeightmapAccessor
 		TSet<ULandscapeComponent*> Components;
 		if (LandscapeEdit.GetComponentsInRegion(X1, Y1, X2, Y2, &Components))
 		{
-			// Flush dynamic foliage (grass)
 			ALandscapeProxy::InvalidateGeneratedComponentData(Components);
 
+			if (!LandscapeEdit.HasLandscapeLayersContent())
+			{
+				ModifiedComponents.Append(Components);
+			}
 			LandscapeEdit.SetAlphaData(DirtyLayerInfos, X1, Y1, X2, Y2, Data, 0, PaintingRestriction);
-			ModifiedComponents.Append(Components);
 		}
 		DirtyLayerInfos.Empty();
 	}
@@ -1119,8 +1128,38 @@ public:
 	{
 	}
 
+	virtual bool ShouldUpdateEditingLayer() const { return EdMode->CanHaveLandscapeLayersContent(); }
+
+	virtual ELandscapeLayerUpdateMode GetBeginToolContentUpdateFlag() const
+	{
+		bool bUpdateHeightmap = this->EdMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Type::Heightmap; 
+		return bUpdateHeightmap ? ELandscapeLayerUpdateMode::Update_Heightmap_Editing : ELandscapeLayerUpdateMode::Update_Weightmap_Editing;
+	}
+
+	virtual ELandscapeLayerUpdateMode GetTickToolContentUpdateFlag() const
+	{
+		return GetBeginToolContentUpdateFlag();
+	}
+
+	virtual ELandscapeLayerUpdateMode GetEndToolContentUpdateFlag() const
+	{
+		bool bUpdateHeightmap = this->EdMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Type::Heightmap;
+		return bUpdateHeightmap ? ELandscapeLayerUpdateMode::Update_Heightmap_All : ELandscapeLayerUpdateMode::Update_Weightmap_All;
+	}
+
 	virtual bool BeginTool(FEditorViewportClient* ViewportClient, const FLandscapeToolTarget& InTarget, const FVector& InHitLocation) override
 	{
+		if (ShouldUpdateEditingLayer())
+		{
+			ALandscape* Landscape = this->EdMode->GetLandscape();
+			if (Landscape)
+			{
+				Landscape->RequestLayersContentUpdate(GetBeginToolContentUpdateFlag());
+				Landscape->SetEditingLayer(this->EdMode->GetCurrentLayerGuid());
+				Landscape->SetGrassUpdateEnabled(false);
+			}
+		}
+
 		if (!ensure(InteractorPositions.Num() == 0))
 		{
 			InteractorPositions.Empty(1);
@@ -1164,6 +1203,15 @@ public:
 
 			// Prevent landscape from baking textures while tool stroke is active
 			EdMode->CurrentToolTarget.LandscapeInfo->PostponeTextureBaking();
+
+			if (ShouldUpdateEditingLayer())
+			{
+				ALandscape* Landscape = this->EdMode->CurrentToolTarget.LandscapeInfo->LandscapeActor.Get();
+				if (Landscape != nullptr)
+				{
+					Landscape->RequestLayersContentUpdate(GetTickToolContentUpdateFlag());
+				}
+			}
 		}
 	}
 
@@ -1179,6 +1227,17 @@ public:
 		EdMode->CurrentBrush->EndStroke();
 		EdMode->UpdateLayerUsageInformation(&EdMode->CurrentToolTarget.LayerInfo);
 		bExternalModifierPressed = false;
+
+		if (ShouldUpdateEditingLayer())
+		{
+			ALandscape* Landscape = this->EdMode->GetLandscape();
+			if (Landscape)
+			{
+				Landscape->RequestLayersContentUpdate(GetEndToolContentUpdateFlag());
+				Landscape->SetEditingLayer();
+				Landscape->SetGrassUpdateEnabled(true);
+			}
+		}
 	}
 
 	virtual bool MouseMove(FEditorViewportClient* ViewportClient, FViewport* Viewport, int32 x, int32 y) override

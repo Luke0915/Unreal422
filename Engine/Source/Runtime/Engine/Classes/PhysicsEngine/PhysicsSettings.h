@@ -216,6 +216,14 @@ class ENGINE_API UPhysicsSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = Simulation)
 	bool bEnableEnhancedDeterminism;
 
+	/** Min Delta Time below which anim dynamics and rigidbody nodes will not simulate. */
+	UPROPERTY(config, EditAnywhere, meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"), Category = Framerate)
+	float AnimPhysicsMinDeltaTime;
+
+	/** Whether to simulate anim physics nodes in the tick where they're reset. */
+	UPROPERTY(config, EditAnywhere, Category = Simulation)
+	bool bSimulateAnimPhysicsAfterReset;
+
 	/** Max Physics Delta Time to be clamped. */
 	UPROPERTY(config, EditAnywhere, meta=(ClampMin="0.0013", UIMin = "0.0013", ClampMax="1.0", UIMax="1.0"), Category=Framerate)
 	float MaxPhysicsDeltaTime;

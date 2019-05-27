@@ -26,8 +26,8 @@ static vr::EVROverlayError sOvrError;
 //=============================================================================
 static void TransformToSteamSpace(const FTransform& In, vr::HmdMatrix34_t& Out, float WorldToMeterScale)
 {
-	const FRotator InRot = In.Rotator();
-	FRotator OutRot(InRot.Yaw, -InRot.Roll, -InRot.Pitch);
+	const FQuat InRot = In.GetRotation();
+	FQuat OutRot(InRot.Y, InRot.Z, -InRot.X, -InRot.W);
 
 	const FVector InPos = In.GetTranslation();
 	FVector OutPos(InPos.Y, InPos.Z, -InPos.X);
@@ -179,7 +179,7 @@ void FSteamVRHMD::UpdateLayer(struct FSteamVRLayer& Layer, uint32 LayerId, bool 
 
 	// Shift layer priority values up by -INT32_MIN, as SteamVR uses unsigned integers for the layer order where UE uses signed integers.
 	// This will preserve the correct order between layers with negative and positive priorities
-	OVR_VERIFY(VROverlay->SetOverlaySortOrder(Layer.OverlayHandle, Layer.LayerDesc.Priority-INT32_MIN)); 
+	OVR_VERIFY(VROverlay->SetOverlaySortOrder(Layer.OverlayHandle, Layer.LayerDesc.Priority-INT32_MIN));
 
 	// Transform
 	switch (Layer.LayerDesc.PositionType)
@@ -201,11 +201,10 @@ void FSteamVRHMD::UpdateLayer(struct FSteamVRLayer& Layer, uint32 LayerId, bool 
 	{
 		vr::HmdMatrix34_t HmdTransform;
 		TransformToSteamSpace(Layer.LayerDesc.Transform, HmdTransform, WorldToMeterScale);
-		OVR_VERIFY(VROverlay->SetOverlayTransformTrackedDeviceRelative(Layer.OverlayHandle, 0, &HmdTransform));
+		OVR_VERIFY(VROverlay->SetOverlayTransformTrackedDeviceRelative(Layer.OverlayHandle, vr::TrackingUniverseSeated, &HmdTransform));
 	}
 	};
 }
-
 
 //=============================================================================
 void FSteamVRHMD::UpdateStereoLayers_RenderThread()
@@ -226,22 +225,21 @@ void FSteamVRHMD::UpdateStereoLayers_RenderThread()
 	TArray<LayerPriorityInfo> LayerPriorities;
 
 	const float WorldToMeterScale = GetWorldToMetersScale();
-	check(WorldToMeterScale > 0.f);
-	FQuat AdjustedPlayerOrientation = BaseOrientation.Inverse() * PlayerOrientation;
-	AdjustedPlayerOrientation.Normalize();
-
-	check(XRCamera.IsValid());
-	FVector AdjustedPlayerLocation = PlayerLocation;
-	if (XRCamera->GetUseImplicitHMDPosition())
+	FTransform InvWorldTransform{ENoInit::NoInit};
 	{
-		FQuat DeviceOrientation; // Unused
-		FVector DevicePosition;
-		GetCurrentPose(IXRTrackingSystem::HMDDeviceId, DeviceOrientation, DevicePosition);
-		AdjustedPlayerLocation -= BaseOrientation.Inverse().RotateVector(DevicePosition);
+		// Calculate a transform to translate from world to tracker relative coordinates.
+		FQuat AdjustedPlayerOrientation = BaseOrientation.Inverse() * PlayerOrientation;
+		AdjustedPlayerOrientation.Normalize();
+
+		check(XRCamera.IsValid());
+		FVector AdjustedPlayerLocation = PlayerLocation;
+		if (XRCamera->GetUseImplicitHMDPosition())
+		{
+			AdjustedPlayerLocation -= BaseOrientation.Inverse().RotateVector(RenderTrackingFrame.DevicePosition[IXRTrackingSystem::HMDDeviceId]);
+		}
+
+		InvWorldTransform = FTransform(AdjustedPlayerOrientation, AdjustedPlayerLocation).Inverse();
 	}
-
-	FTransform InvWorldTransform = FTransform(AdjustedPlayerOrientation, AdjustedPlayerLocation).Inverse();
-
 
 	// We have loop through all layers every frame, in case we have world locked layers or continuously updated textures.
 	ForEachLayer([&](uint32 /* unused */, FSteamVRLayer& Layer)
@@ -381,7 +379,6 @@ IStereoLayers* FSteamVRHMD::GetStereoLayers()
 		return FHeadMountedDisplayBase::GetStereoLayers();
 	}
 
-	ensure(VROverlay);
 	if (VROverlay)
 	{
 		return this;

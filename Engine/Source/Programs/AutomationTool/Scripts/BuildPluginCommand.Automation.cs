@@ -197,7 +197,7 @@ class BuildPlugin : BuildCommand
 			FileReference ManifestFileName = FileReference.Combine(HostProjectFile.Directory, "Saved", String.Format("Manifest-{0}-{1}-{2}.xml", TargetName, Platform, Configuration));
 			ManifestFileNames.Add(ManifestFileName);
 			
-			string Arguments = String.Format("-plugin={0} -iwyu -noubtmakefiles -manifest={1}", CommandUtils.MakePathSafeToUseWithCommandLine(HostProjectPluginFile.FullName), CommandUtils.MakePathSafeToUseWithCommandLine(ManifestFileName.FullName));
+			string Arguments = String.Format("-plugin={0} -iwyu -noubtmakefiles -manifest={1} -nohotreload", CommandUtils.MakePathSafeToUseWithCommandLine(HostProjectPluginFile.FullName), CommandUtils.MakePathSafeToUseWithCommandLine(ManifestFileName.FullName));
 			if(!String.IsNullOrEmpty(InAdditionalArgs))
 			{
 				Arguments += InAdditionalArgs;
@@ -258,7 +258,10 @@ class BuildPlugin : BuildCommand
 		}
 
 		// Apply the standard exclusion rules
-		Filter.ExcludeRestrictedFolders();
+		foreach (string RestrictedFolderName in RestrictedFolder.GetNames())
+		{
+			Filter.AddRule(String.Format(".../{0}/...", RestrictedFolderName), FileFilterType.Exclude);
+		}
 
 		// Apply the filter to the plugin directory
 		return Filter.ApplyToDirectory(PluginFile.Directory, true);
@@ -297,11 +300,11 @@ class BuildPlugin : BuildCommand
 				foreach (string TargetPlatformName in TargetPlatformFilter.Split(new char[]{ '+' }, StringSplitOptions.RemoveEmptyEntries))
 				{
 					UnrealTargetPlatform TargetPlatform;
-					if(!Enum.TryParse(TargetPlatformName, out TargetPlatform))
+					if (!UnrealTargetPlatform.TryParse(TargetPlatformName, out TargetPlatform))
 					{
 						throw new AutomationException("Unknown target platform '{0}' specified on command line");
 					}
-					else if(TargetPlatforms.Contains(TargetPlatform))
+					if(TargetPlatforms.Contains(TargetPlatform))
 					{
 						NewTargetPlatforms.Add(TargetPlatform);
 					}

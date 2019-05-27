@@ -96,6 +96,7 @@
 	#include "HierarchicalLODUtilitiesModule.h"
 	#include "ObjectTools.h"
 	#include "Engine/LODActor.h"
+	#include "PIEPreviewDeviceProfileSelectorModule.h"
 #endif
 
 
@@ -132,7 +133,7 @@ static int32 bDisableRemapScriptActors = 0;
 FAutoConsoleVariableRef CVarDisableRemapScriptActors(TEXT("net.DisableRemapScriptActors"), bDisableRemapScriptActors, TEXT("When set, disables name remapping of compiled script actors (for networking)"));
 
 template<class Function>
-static void ForEachNetDriver(UEngine* Engine, UWorld* const World, const Function InFunction)
+static void ForEachNetDriver(UEngine* Engine, const UWorld* const World, const Function InFunction)
 {
 	if (Engine == nullptr || World == nullptr)
 	{
@@ -162,6 +163,7 @@ FActorSpawnParameters::FActorSpawnParameters()
 , bAllowDuringConstructionScript(false)
 #if WITH_EDITOR
 , bTemporaryEditorActor(false)
+, bHideFromSceneOutliner(false)
 #endif
 , ObjectFlags(RF_Transactional)
 {
@@ -804,6 +806,11 @@ void UWorld::BeginDestroy()
 		{
 			LevelCollection.RemoveLevel(CollectionLevel);
 		}
+	}
+
+	if (Scene)
+	{
+		Scene->UpdateParameterCollections(TArray<FMaterialParameterCollectionInstanceResource*>());
 	}
 }
 
@@ -1558,6 +1565,8 @@ void UWorld::MarkObjectsPendingKill()
 		Object->MarkPendingKill();
 	};
 	ForEachObjectWithOuter(this, MarkObjectPendingKill, true, RF_NoFlags, EInternalObjectFlags::PendingKill);
+
+	MarkPendingKill();
 	bMarkedObjectsPendingKill = true;
 }
 
@@ -1612,7 +1621,7 @@ UWorld* UWorld::CreateWorld(const EWorldType::Type InWorldType, bool bInformEngi
 	return NewWorld;
 }
 
-void UWorld::RemoveActor(AActor* Actor, bool bShouldModifyLevel)
+void UWorld::RemoveActor(AActor* Actor, bool bShouldModifyLevel) const
 {
 	ULevel* CheckLevel = Actor->GetLevel();
 	const int32 ActorListIndex = CheckLevel->Actors.Find( Actor );
@@ -1637,12 +1646,12 @@ void UWorld::RemoveActor(AActor* Actor, bool bShouldModifyLevel)
 }
 
 
-bool UWorld::ContainsActor( AActor* Actor )
+bool UWorld::ContainsActor( AActor* Actor ) const
 {
 	return (Actor && Actor->GetWorld() == this);
 }
 
-bool UWorld::AllowAudioPlayback()
+bool UWorld::AllowAudioPlayback() const
 {
 	return bAllowAudioPlayback;
 }
@@ -1844,7 +1853,7 @@ bool UWorld::UpdateCullDistanceVolumes(AActor* ActorToUpdate, UPrimitiveComponen
 }
 
 
-void UWorld::ModifyLevel(ULevel* Level)
+void UWorld::ModifyLevel(ULevel* Level) const
 {
 	if( Level && Level->HasAnyFlags(RF_Transactional))
 	{
@@ -1995,17 +2004,7 @@ void UWorld::TransferBlueprintDebugReferences(UWorld* NewWorld)
 			}
 		}
 	}
-	// Ensure the level script actor debug references are transferred to the new world.
-	if (NewWorld)
-	{
-		if (ALevelScriptActor* LevelScript = NewWorld->GetLevelScriptActor())
-		{
-			if (UBlueprint* LevelScriptBlueprint = Cast<UBlueprint>(LevelScript->GetClass()->ClassGeneratedBy))
-			{
-				LevelScriptBlueprint->SetObjectBeingDebugged(LevelScript);
-			}
-		}
-	}
+
 	// Empty the map, anything useful got moved over the map in the new world
 	BlueprintObjectsBeingDebugged.Empty();
 #endif	//#if WITH_EDITOR
@@ -2428,8 +2427,6 @@ void UWorld::RemoveFromWorld( ULevel* Level, bool bAllowIncrementalRemoval )
 	// If the level may be removed incrementally then there must also be no level pending visibility
 	if ( ((CurrentLevelPendingVisibility == nullptr) || (!bAllowIncrementalRemoval && (CurrentLevelPendingVisibility != Level))) && Level->bIsVisible )
 	{
-		UE_LOG(LogWorld, Log, TEXT("UWorld::RemoveFromWorld for %s"), *Level->GetOutermost()->GetName());
-
 		// Keep track of timing.
 		double StartTime = FPlatformTime::Seconds();	
 
@@ -2479,20 +2476,22 @@ void UWorld::RemoveFromWorld( ULevel* Level, bool bAllowIncrementalRemoval )
 			}
 
 			// Remove any pawns from the pawn list that are about to be streamed out
-			for( FConstPawnIterator Iterator = GetPawnIterator(); Iterator; ++Iterator )
+			for (APawn* Pawn : TActorRange<APawn>(this))
 			{
-				if (APawn* Pawn = Iterator->Get())
+				if (Pawn->IsInLevel(Level))
 				{
-					if (Pawn->IsInLevel(Level))
+					AController* Controller = Pawn->GetController();
+					// This should have happened as part of the RouteEndPlay above, but ensuring to validate this assumption and maintain behavior
+					// with RemovePawn having been deprecated
+					if (!ensure(Controller == nullptr || (Controller->GetPawn() == Pawn)))
 					{
-						RemovePawn(Pawn);
-						--Iterator;
+						Controller->UnPossess();
 					}
-					else if (UCharacterMovementComponent* CharacterMovement = Cast<UCharacterMovementComponent>(Pawn->GetMovementComponent()))
-					{
-						// otherwise force floor check in case the floor was streamed out from under it
-						CharacterMovement->bForceNextFloorCheck = true;
-					}
+				}
+				else if (UCharacterMovementComponent* CharacterMovement = Cast<UCharacterMovementComponent>(Pawn->GetMovementComponent()))
+				{
+					// otherwise force floor check in case the floor was streamed out from under it
+					CharacterMovement->bForceNextFloorCheck = true;
 				}
 			}
 
@@ -3078,6 +3077,7 @@ void UWorld::UpdateLevelStreaming()
 {
 	SCOPE_CYCLE_COUNTER(STAT_UpdateLevelStreamingTime);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(UpdateLevelStreaming);
+	LLM_SCOPE(ELLMTag::LoadMapMisc);
 
 	// do nothing if level streaming is frozen
 	if (bIsLevelStreamingFrozen)
@@ -3221,6 +3221,10 @@ bool UWorld::RemoveStreamingLevelAt(const int32 IndexToRemove)
 	if (IndexToRemove >= 0 && IndexToRemove < StreamingLevels.Num())
 	{
 		ULevelStreaming* StreamingLevel = StreamingLevels[IndexToRemove];
+		if (StreamingLevel && StreamingLevel->GetCurrentState() == ULevelStreaming::ECurrentState::Loading)
+		{
+			--NumStreamingLevelsBeingLoaded;
+		}
 		StreamingLevels.RemoveAt(IndexToRemove);
 		StreamingLevelsToConsider.Remove(StreamingLevel);
 		FStreamingLevelPrivateAccessor::OnLevelRemoved(StreamingLevel);
@@ -3254,10 +3258,12 @@ void UWorld::ClearStreamingLevels()
 {
 	StreamingLevels.Reset();
 	StreamingLevelsToConsider.Reset();
+	NumStreamingLevelsBeingLoaded = 0;
 }
 
 void UWorld::PopulateStreamingLevelsToConsider()
 {
+	NumStreamingLevelsBeingLoaded = 0;
 	StreamingLevelsToConsider.Reset();
 	for (ULevelStreaming* StreamingLevel : StreamingLevels)
 	{
@@ -3265,6 +3271,10 @@ void UWorld::PopulateStreamingLevelsToConsider()
 		if (StreamingLevel->GetCurrentState() == ULevelStreaming::ECurrentState::Removed)
 		{
 			FStreamingLevelPrivateAccessor::OnLevelAdded(StreamingLevel);
+		}
+		else if (StreamingLevel->GetCurrentState() == ULevelStreaming::ECurrentState::Loading)
+		{
+			++NumStreamingLevelsBeingLoaded;
 		}
 
 		if (FStreamingLevelPrivateAccessor::DetermineTargetState(StreamingLevel))
@@ -3289,10 +3299,7 @@ void UWorld::UpdateStreamingLevelPriority(ULevelStreaming* StreamingLevel)
 {
 	if (StreamingLevel)
 	{
-		if (StreamingLevelsToConsider.Remove(StreamingLevel))
-		{
-			StreamingLevelsToConsider.Add(StreamingLevel);
-		}
+		StreamingLevelsToConsider.Reevaluate(StreamingLevel);
 	}
 }
 
@@ -3460,21 +3467,9 @@ bool UWorld::AllowLevelLoadRequests()
 		}
 
 		// Don't allow requesting new levels if we're playing in game and already busy loading a maximum number of them.
-		if (GLevelStreamingMaxLevelRequestsAtOnceWhileInMatch > 0 && bIsPlaying)
+		if (bIsPlaying && GLevelStreamingMaxLevelRequestsAtOnceWhileInMatch > 0 && NumStreamingLevelsBeingLoaded >= GLevelStreamingMaxLevelRequestsAtOnceWhileInMatch)
 		{
-			int32 NumLoadingLevels = 0;
-			for (ULevelStreaming* LevelStreaming : StreamingLevels)
-			{
-				if (LevelStreaming && LevelStreaming->HasLoadRequestPending())
-				{
-					++NumLoadingLevels;
-				}
-			}
-
-			if (NumLoadingLevels >= GLevelStreamingMaxLevelRequestsAtOnceWhileInMatch)
-			{
-				return false;
-			}
+			return false;
 		}
 	}
 
@@ -3973,6 +3968,8 @@ bool UWorld::IsNavigationRebuilt() const
 
 void UWorld::CleanupWorld(bool bSessionEnded, bool bCleanupResources, UWorld* NewWorld)
 {
+	UE_LOG(LogWorld, Log, TEXT("UWorld::CleanupWorld for %s, bSessionEnded=%s, bCleanupResources=%s"), *GetName(), bSessionEnded ? TEXT("true") : TEXT("false"), bCleanupResources ? TEXT("true") : TEXT("false"));
+
 	check(IsVisibilityRequestPending() == false);
 	bCleanedUpWorld = true;
 
@@ -4180,35 +4177,69 @@ void UWorld::RemoveController( AController* Controller )
 	}
 }
 
+FConstPawnIterator::FConstPawnIterator(UWorld* World)
+	: Iterator(new TActorIterator<APawn>(World))
+{
+}
+
+FConstPawnIterator::~FConstPawnIterator()
+{
+	delete Iterator;
+}
+
+ FConstPawnIterator::operator bool() const
+{
+	return (bool)*Iterator;
+}
+
+FConstPawnIterator& FConstPawnIterator::operator++()
+{
+	++(*Iterator);
+	return *this;
+}
+
+FConstPawnIterator& FConstPawnIterator::operator++(int)
+{
+	++(*Iterator);
+	return *this;
+}
+
+FPawnIteratorObject FConstPawnIterator::operator*() const
+{
+	return FPawnIteratorObject(**Iterator);
+}
+
+TUniquePtr<FPawnIteratorObject> FConstPawnIterator::operator->() const
+{
+	return TUniquePtr<FPawnIteratorObject>(new FPawnIteratorObject(**Iterator));
+}
+
 FConstPawnIterator UWorld::GetPawnIterator() const
 {
-	auto Result = PawnList.CreateConstIterator();
-	return (const FConstPawnIterator&)Result;
+	return FConstPawnIterator(const_cast<UWorld*>(this)); // For backwards compat GetPawnIterator needs to remain const, but TActorIterator can't use a const UWorld.
 }
 
 int32 UWorld::GetNumPawns() const
 {
-	return PawnList.Num();
-}
-
-void UWorld::AddPawn( APawn* Pawn )
-{
-	check( Pawn );
-	PawnList.AddUnique( Pawn );
-}
-
-
-void UWorld::RemovePawn( APawn* Pawn )
-{
-	check( Pawn );
-	
-	AController* Controller = Pawn->GetController();
-	if (Controller && (Controller->GetPawn() == Pawn))
+	int32 NumPawns = 0;
+	for (APawn* Pawn : TActorRange<APawn>(const_cast<UWorld*>(this))) // For backwards compat GetNumPawns needs to remain const, but TActorRange can't use a const UWorld.
 	{
-		Controller->UnPossess();
+		++NumPawns;
 	}
 
-	PawnList.Remove( Pawn );	
+	return NumPawns;
+}
+
+void UWorld::RemovePawn( APawn* Pawn ) const
+{
+	if (Pawn)
+	{
+		AController* Controller = Pawn->GetController();
+		if (Controller && (Controller->GetPawn() == Pawn))
+		{
+			Controller->UnPossess();
+		}
+	}
 }
 
 
@@ -4252,7 +4283,7 @@ void UWorld::AddNetworkActor( AActor* Actor )
 	});
 }
 
-void UWorld::RemoveNetworkActor( AActor* Actor )
+void UWorld::RemoveNetworkActor( AActor* Actor ) const
 {
 	if (Actor)
 	{
@@ -5980,14 +6011,10 @@ UWorld* FSeamlessTravelHandler::Tick()
 				{
 					KeepAnnotation.Clear(TheActor);
 					TheActor->Rename(nullptr, LoadedWorld->PersistentLevel);
-					// if it's a Controller or a Pawn, add it to the appropriate list in the new world's WorldSettings
+					// if it's a Controller, add it to the appropriate list in the new world's WorldSettings
 					if (TheActor->IsA<AController>())
 					{
 						LoadedWorld->AddController(static_cast<AController*>(TheActor));
-					}
-					else if (TheActor->IsA<APawn>())
-					{
-						LoadedWorld->AddPawn(static_cast<APawn*>(TheActor));
 					}
 					else if (TheActor->IsA<AGameModeBase>())
 					{
@@ -6401,6 +6428,14 @@ bool UWorld::IsPlayInPreview() const
 
 bool UWorld::IsPlayInMobilePreview() const
 {
+#if WITH_EDITOR
+	if (FPIEPreviewDeviceModule::IsRequestingPreviewDevice()
+		|| FParse::Param(FCommandLine::Get(), TEXT("featureleveles2"))
+		|| FParse::Param(FCommandLine::Get(), TEXT("featureleveles31")))
+	{
+		return true;
+	}
+#endif // WITH_EDITOR
 	return FParse::Param(FCommandLine::Get(), TEXT("simmobile")) && !IsPlayInVulkanPreview();
 }
 
@@ -7271,7 +7306,7 @@ static void DumpVisibleActors(UWorld* InWorld)
 	for (FActorIterator ActorIterator(InWorld); ActorIterator; ++ActorIterator)
 	{
 		AActor* Actor = *ActorIterator;
-		if (Actor && Actor->GetLastRenderTime() > (InWorld->GetTimeSeconds() - 0.05f))
+		if (Actor && Actor->WasRecentlyRendered(0.05f))
 		{
 			UE_LOG(LogWorld, Log, TEXT("Visible Actor : %s"), *Actor->GetFullName());
 		}

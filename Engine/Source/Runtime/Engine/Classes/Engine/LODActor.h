@@ -70,6 +70,7 @@ public:
 	virtual FBox GetComponentsBoundingBox(bool bNonColliding = false) const override;
 	virtual void PostRegisterAllComponents() override;
 	virtual void Tick(float DeltaSeconds) override;	
+	virtual bool IsLevelBoundsRelevant() const override { return false; }
 	//~ End AActor Interface
 
 	/** Forces the mesh into view by setting the MinDrawDistance to zero (this pops the mesh into view, no fading)*/
@@ -97,6 +98,9 @@ public:
 	 */
 	const bool IsBuilt(bool bInForce = false) const;
 #endif
+
+	/** Returns whether or not this LODActor has valid SubActors and whether or not their contained Primitive Components are linked (LODParentPrimitive) to StaticMeshComponent*/
+	const bool HasValidLODChildren() const;
 
 #if WITH_EDITOR
 	/** Force this actor to appear unbuilt (zeros-out key) */
@@ -168,6 +172,9 @@ public:
 
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
 #endif // WITH_EDITOR	
+
+	
+
 	//~ End UObject Interface.	
 public:
 #if WITH_EDITORONLY_DATA

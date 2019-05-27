@@ -39,6 +39,11 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Paths to all potential module source directories (with platform extension directories added in)
+		/// </summary>
+		protected DirectoryReference[] ModuleDirectories;
+
+		/// <summary>
 		/// The name of the .Build.cs file this module was created from, if any
 		/// </summary>
 		public FileReference RulesFile
@@ -200,6 +205,17 @@ namespace UnrealBuildTool
 			IsRedistributableOverride = Rules.IsRedistributableOverride;
 
 			WhitelistRestrictedFolders = new HashSet<DirectoryReference>(Rules.WhitelistRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
+
+			// merge the main directory and any others set in the Rules
+			List<DirectoryReference> MergedDirectories = new List<DirectoryReference> { ModuleDirectory };
+			DirectoryReference[] ExtraModuleDirectories = Rules.GetModuleDirectoriesForAllSubClasses();
+			if (ExtraModuleDirectories != null)
+			{
+				MergedDirectories.AddRange(ExtraModuleDirectories);
+			}
+
+			// cache the results (it will always at least have the ModuleDirectory)
+			ModuleDirectories = MergedDirectories.ToArray();
 		}
 
 		/// <summary>
@@ -252,7 +268,7 @@ namespace UnrealBuildTool
 				foreach(string InputString in InEnumerableStrings)
 				{
 					DirectoryReference Dir = new DirectoryReference(ExpandPathVariables(InputString, null, null));
-					if(DirectoryReference.Exists(Dir))
+					if(DirectoryLookupCache.DirectoryExists(Dir))
 					{
 						Directories.Add(Dir);
 					}
@@ -317,6 +333,7 @@ namespace UnrealBuildTool
 				{
 					// Find the base directory containing this reference
 					DirectoryReference BaseDir;
+					// @todo platplug does this need to check platform extension engine directories? what are ReferencedDir's here?
 					if(ReferencedDir.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
 					{
 						BaseDir = UnrealBuildTool.EngineDirectory;
@@ -823,8 +840,10 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Write information about this binary to a JSON file
 		/// </summary>
+		/// <param name="BinaryOutputDir">The output directory for the binary containing this module</param>
+		/// <param name="TargetOutputDir">The output directory for the target executable</param>
 		/// <param name="Writer">Writer for this binary's data</param>
-		public virtual void ExportJson(JsonWriter Writer)
+		public virtual void ExportJson(DirectoryReference BinaryOutputDir, DirectoryReference TargetOutputDir, JsonWriter Writer)
 		{
 			Writer.WriteValue("Name", Name);
 			Writer.WriteValue("Directory", ModuleDirectory.FullName);
@@ -861,6 +880,20 @@ namespace UnrealBuildTool
 			foreach(string ModuleName in Rules.CircularlyReferencedDependentModules)
 			{
 				Writer.WriteValue(ModuleName);
+			}
+			Writer.WriteArrayEnd();
+
+			Writer.WriteArrayStart("RuntimeDependencies");
+			foreach(ModuleRules.RuntimeDependency RuntimeDependency in Rules.RuntimeDependencies.Inner)
+			{
+				Writer.WriteObjectStart();
+				Writer.WriteValue("Path", ExpandPathVariables(RuntimeDependency.Path, BinaryOutputDir, TargetOutputDir));
+				if(RuntimeDependency.SourcePath != null)
+				{
+					Writer.WriteValue("SourcePath", ExpandPathVariables(RuntimeDependency.SourcePath, BinaryOutputDir, TargetOutputDir));
+				}
+				Writer.WriteValue("Type", RuntimeDependency.Type.ToString());
+				Writer.WriteObjectEnd();
 			}
 			Writer.WriteArrayEnd();
 		}

@@ -307,7 +307,8 @@ void USocialToolkit::QueueUserDependentActionInternal(const FUniqueNetIdRepl& Su
 	}
 	
 	USocialUser* User = FindUser(SubsystemId);
-	if (!User)
+
+	if (!User && ensureMsgf(USocialToolkit::IsOwnerLoggedIn(), TEXT("Cannot QueueUserDependentAction while local user is logged out! Toolkit [%d], ID [%s], Subsystem [%s]"), GetLocalUserNum(), *SubsystemId.ToDebugString(), ToString(SubsystemType)))
 	{
 		if (SubsystemType == ESocialSubsystem::Primary)
 		{
@@ -648,6 +649,8 @@ void USocialToolkit::HandleReadFriendsListComplete(int32 LocalUserNum, bool bWas
 		//@todo DanH: This is a really big deal on primary and a frustrating deal on platform
 		// In both cases I think we should give it another shot, but I dunno how long to wait and if we should behave differently between the two
 	}
+
+	HandleExistingPartyInvites(SubsystemType);
 }
 
 void USocialToolkit::HandleQueryBlockedPlayersComplete(const FUniqueNetId& UserId, bool bWasSuccessful, const FString& ErrorStr, ESocialSubsystem SubsystemType)
@@ -962,4 +965,25 @@ void USocialToolkit::HandleGameDestroyed(const FName SessionName, bool bWasSucce
 void USocialToolkit::HandleUserInvalidated(USocialUser* InvalidUser)
 {
 	AllUsers.Remove(InvalidUser);
+}
+
+void USocialToolkit::HandleExistingPartyInvites(ESocialSubsystem SubsystemType)
+{
+	if (SubsystemType == ESocialSubsystem::Primary)
+	{
+		if (IOnlineSubsystem* Oss = GetSocialOss(SubsystemType))
+		{
+			IOnlinePartyPtr PartyInterface = Oss->GetPartyInterface();
+			FUniqueNetIdRepl LocalUserId = GetLocalUserNetId(SubsystemType);
+			if (PartyInterface.IsValid() && LocalUserId.IsValid())
+			{
+				TArray<IOnlinePartyJoinInfoConstRef> PendingInvites;
+				PartyInterface->GetPendingInvites(*LocalUserId, PendingInvites);
+				for (const IOnlinePartyJoinInfoConstRef& PendingInvite : PendingInvites)
+				{
+					HandlePartyInviteReceived(*LocalUserId, *PendingInvite->GetPartyId(), *PendingInvite->GetSourceUserId());
+				}
+			}
+		}
+	}
 }

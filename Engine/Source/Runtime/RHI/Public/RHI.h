@@ -127,22 +127,26 @@ RHI_API bool RHIGetPreviewFeatureLevel(ERHIFeatureLevel::Type& PreviewFeatureLev
 inline bool RHISupportsInstancedStereo(const EShaderPlatform Platform)
 {
 	// Only D3D SM5, PS4 and Metal SM5 supports Instanced Stereo
-	return (Platform == EShaderPlatform::SP_PCD3D_SM5 || Platform == EShaderPlatform::SP_PS4 || Platform == EShaderPlatform::SP_METAL_SM5 || Platform == EShaderPlatform::SP_METAL_SM5_NOTESS);
+	return Platform == EShaderPlatform::SP_PCD3D_SM5 || Platform == EShaderPlatform::SP_PS4 || Platform == EShaderPlatform::SP_METAL_SM5 || Platform == EShaderPlatform::SP_METAL_SM5_NOTESS
+		|| FDataDrivenShaderPlatformInfo::GetInfo(Platform).bSupportsInstancedStereo;
 }
 
 inline bool RHISupportsMultiView(const EShaderPlatform Platform)
 {
 	// Only PS4 and Metal SM5 from 10.13 onward supports Multi-View
-	return (Platform == EShaderPlatform::SP_PS4) || ((Platform == EShaderPlatform::SP_METAL_SM5 || Platform == SP_METAL_SM5_NOTESS));
+	return (Platform == EShaderPlatform::SP_PS4) || ((Platform == EShaderPlatform::SP_METAL_SM5 || Platform == SP_METAL_SM5_NOTESS))
+		|| FDataDrivenShaderPlatformInfo::GetInfo(Platform).bSupportsMultiView;
 }
 
 inline bool RHISupportsMSAA(EShaderPlatform Platform)
 {
 	return 
 		//@todo-rco: Fix when iOS OpenGL supports MSAA
-		Platform != SP_OPENGL_ES2_IOS
+		(Platform != SP_OPENGL_ES2_IOS
 		// @todo optimise MSAA for XboxOne, currently uses significant eRAM.
-		&& Platform != SP_XBOXONE_D3D12;
+		&& Platform != SP_XBOXONE_D3D12)
+		// @todo platplug: Maybe this should become bDisallowMSAA to default of 0 is a better default (since now MSAA is opt-out more than opt-in) 
+		|| FDataDrivenShaderPlatformInfo::GetInfo(Platform).bSupportsMSAA;
 }
 
 inline bool RHISupportsBufferLoadTypeConversion(EShaderPlatform Platform)
@@ -165,7 +169,8 @@ inline bool RHISupports4ComponentUAVReadWrite(EShaderPlatform Platform)
 {
 	// Must match usf PLATFORM_SUPPORTS_4COMPONENT_UAV_READ_WRITE
 	// D3D11 does not support multi-component loads from a UAV: "error X3676: typed UAV loads are only allowed for single-component 32-bit element types"
-	return Platform == SP_XBOXONE_D3D12 || Platform == SP_PS4 || IsMetalPlatform(Platform);
+	return Platform == SP_XBOXONE_D3D12 || Platform == SP_PS4 || IsMetalPlatform(Platform) 
+		|| FDataDrivenShaderPlatformInfo::GetInfo(Platform).bSupports4ComponentUAVReadWrite;
 }
 
 /** Whether Manual Vertex Fetch is supported for the specified shader platform.
@@ -1166,6 +1171,7 @@ struct FRHIResourceCreateInfo
 		: BulkData(nullptr)
 		, ResourceArray(nullptr)
 		, ClearValueBinding(FLinearColor::Transparent)
+		, bWithoutNativeResource(false)
 		, DebugName(nullptr)
 	{}
 
@@ -1174,6 +1180,7 @@ struct FRHIResourceCreateInfo
 		: BulkData(InBulkData)
 		, ResourceArray(nullptr)
 		, ClearValueBinding(FLinearColor::Transparent)
+		, bWithoutNativeResource(false)
 		, DebugName(nullptr)
 	{}
 
@@ -1182,6 +1189,7 @@ struct FRHIResourceCreateInfo
 		: BulkData(nullptr)
 		, ResourceArray(InResourceArray)
 		, ClearValueBinding(FLinearColor::Transparent)
+		, bWithoutNativeResource(false)
 		, DebugName(nullptr)
 	{}
 
@@ -1189,6 +1197,7 @@ struct FRHIResourceCreateInfo
 		: BulkData(nullptr)
 		, ResourceArray(nullptr)
 		, ClearValueBinding(InClearValueBinding)
+		, bWithoutNativeResource(false)
 		, DebugName(nullptr)
 	{
 	}
@@ -1197,6 +1206,7 @@ struct FRHIResourceCreateInfo
 		: BulkData(nullptr)
 		, ResourceArray(nullptr)
 		, ClearValueBinding(FLinearColor::Transparent)
+		, bWithoutNativeResource(false)
 		, DebugName(InDebugName)
 	{
 	}
@@ -1208,6 +1218,8 @@ struct FRHIResourceCreateInfo
 
 	// for binding clear colors to rendertargets.
 	FClearValueBinding ClearValueBinding;
+	// whether to create an RHI object with no underlying resource
+	bool bWithoutNativeResource;
 	const TCHAR* DebugName;
 };
 

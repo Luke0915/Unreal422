@@ -146,7 +146,7 @@ struct FRWBufferStructured
 
 	void Initialize(uint32 BytesPerElement, uint32 NumElements, uint32 AdditionalUsage = 0, const TCHAR* InDebugName = NULL, bool bUseUavCounter = false, bool bAppendBuffer = false)
 	{
-		check(GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5);
+		check(GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5 || GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1);
 		// Provide a debug name if using Fast VRAM so the allocators diagnostics will work
 		ensure(!((AdditionalUsage & BUF_FastVRAM) && !InDebugName));
 
@@ -1035,7 +1035,7 @@ struct FRHILockTracker
 				return Result;
 			}
 		}
-		check(!"Mismatched RHI buffer locks.");
+		UE_LOG(LogRHI, Fatal, TEXT("Mismatched RHI buffer locks."));
 		return FLockParams(nullptr, nullptr, 0, 0, RLM_WriteOnly, false, false);
 	}
 	

@@ -375,16 +375,20 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 			CommandInfo CurrentCommand = null;
 			for (int Index = 0; Index < Arguments.Length; ++Index)
 			{
-				var Param = Arguments[Index];
-				if (Param.StartsWith("-") || Param.Contains("="))
+				// Guard against empty arguments passed as "" on the command line
+				string Param = Arguments[Index];
+				if(Param.Length > 0) 
 				{
-					ParseParam(Arguments[Index], CurrentCommand, ref OutScriptsForProjectFileName, OutAdditionalScriptsFolders);
-				}
-				else
-				{
-					CurrentCommand = new CommandInfo();
-					CurrentCommand.CommandName = Arguments[Index];
-					OutCommandsToExecute.Add(CurrentCommand);
+					if (Param.StartsWith("-") || Param.Contains("="))
+					{
+						ParseParam(Arguments[Index], CurrentCommand, ref OutScriptsForProjectFileName, OutAdditionalScriptsFolders);
+					}
+					else
+					{
+						CurrentCommand = new CommandInfo();
+						CurrentCommand.CommandName = Arguments[Index];
+						OutCommandsToExecute.Add(CurrentCommand);
+					}
 				}
 			}
 
@@ -415,6 +419,11 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 		#endregion
 
 		#region Main Program
+
+		/// <summary>
+		/// Compiler with all scripts
+		/// </summary>
+		public static ScriptCompiler Compiler { get; set; }
 
 		/// <summary>
 		/// Main method.
@@ -474,7 +483,7 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 			ProjectUtils.CleanupFolders();
 
 			// Compile scripts.
-			ScriptCompiler Compiler = new ScriptCompiler();
+			Compiler = new ScriptCompiler();
 			using(TelemetryStopwatch ScriptCompileStopwatch = new TelemetryStopwatch("ScriptCompile"))
 			{
 				Compiler.FindAndCompileAllScripts(OutScriptsForProjectFileName, AdditionalScriptsFolders);

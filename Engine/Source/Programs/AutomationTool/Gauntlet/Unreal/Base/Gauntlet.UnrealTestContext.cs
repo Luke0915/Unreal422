@@ -159,6 +159,18 @@ namespace Gauntlet
 		public string LogDir;
 
 		/// <summary>
+		/// Custom name for the directory under LogDir where artifacts are stored.
+		/// </summary>
+		[AutoParam("")]
+		public string ArtifactName;
+
+		/// <summary>
+		/// Psotfix to apply to the artifact folder (e.g. don't replace the whole thing like ArtifactName, just append this string)
+		/// </summary>
+		[AutoParam("")]
+		public string ArtifactPostfix;
+
+		/// <summary>
 		/// Less logging
 		/// </summary>
 		[AutoParam(false)]
@@ -216,7 +228,7 @@ namespace Gauntlet
 			List<string> PlatformArgStrings = Params.ParseValues("Platform=");
 
 			// check for convenience flags of -Win64(params) (TODO - need to think about this..)
-			/*foreach (UnrealTargetPlatform Plat in Enum.GetValues(typeof(UnrealTargetPlatform)))
+			/*foreach (UnrealTargetPlatform Plat in UnrealTargetPlatform.GetValidPlatforms())
 			{
 				IEnumerable<string> RawPlatformArgs = InParams.Where(P => P.ToLower().StartsWith(Plat.ToString().ToLower()));
 
@@ -352,6 +364,9 @@ namespace Gauntlet
 		// Begin ITestContext implementation
 		public UnrealBuildSource BuildInfo { get; private set; }
 
+		// Worker Job ID (generates unique node results and logs in parallel runs)
+		public string WorkerJobID;
+
 		/// <summary>
 		/// Global options for this test
 		/// </summary>
@@ -400,11 +415,17 @@ namespace Gauntlet
 		public string ToString(bool bWithServerType = false)
 		{
 			string Description = string.Format("{0}", RoleContext[UnrealTargetRole.Client]);
+
+			if (WorkerJobID != null)
+			{
+				Description += " " + WorkerJobID;
+			}
 				
 			if (bWithServerType)
 			{
 				Description += ", " +  RoleContext[UnrealTargetRole.Server].ToString();
 			}
+
 			return Description;
 		}
 	}

@@ -174,7 +174,8 @@ private:
 private:
 
 	float AccumulatedDeltaTime;
-
+	float AnimPhysicsMinDeltaTime;
+	bool bSimulateAnimPhysicsAfterReset;
 	/** This should only be used for removing the delegate during termination. Do NOT use this for any per frame work */
 	TWeakObjectPtr<USkeletalMeshComponent> SkelMeshCompWeakPtr;
 

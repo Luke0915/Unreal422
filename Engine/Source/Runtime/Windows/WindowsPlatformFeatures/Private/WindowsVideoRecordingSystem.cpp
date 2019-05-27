@@ -70,7 +70,7 @@ void FWindowsVideoRecordingSystem::NextRecording()
 	}
 	else
 	{
-		CurrentFilename = Path + BaseFilename;
+		CurrentFilename = Path + BaseFilename + TEXT(".mp4");
 	}
 }
 
@@ -220,7 +220,7 @@ void FWindowsVideoRecordingSystem::FinalizeRecording(const bool bSaveRecording, 
 				FSimpleDelegateGraphTask::FDelegate::CreateRaw(this, &FWindowsVideoRecordingSystem::FinalizeCallbackOnGameThread,
 					bRes, Parameters.bAutoContinue && !bStopAutoContinue, Path, true),
 				TStatId(), nullptr, ENamedThreads::GameThread);
-		});
+		}, Parameters.RecordingLengthSeconds);
 
 		if (!bRet)
 		{
@@ -247,6 +247,10 @@ void FWindowsVideoRecordingSystem::FinalizeCallbackOnGameThread(bool bSaved, boo
 	{
 		NextRecording();
 		RecordState = EVideoRecordingState::Recording;
+	}
+	else
+	{
+		Recorder->Stop();
 	}
 
 	if (bBroadcast)

@@ -1391,8 +1391,11 @@ void FViewInfo::SetupUniformBufferParameters(
 	// Make sure there's no padding since we're going to cast to FVector4*
 	checkSlow(sizeof(ViewUniformShaderParameters.SkyIrradianceEnvironmentMap) == sizeof(FVector4)* 7);
 	SetupSkyIrradianceEnvironmentMapConstants((FVector4*)&ViewUniformShaderParameters.SkyIrradianceEnvironmentMap);
-
-	ViewUniformShaderParameters.MobilePreviewMode = Scene == nullptr ? 0.0f: (IsSimulatedPlatform(Scene->GetShaderPlatform()) ? 1.0f : 0.0f);
+	
+	ViewUniformShaderParameters.MobilePreviewMode =
+		(GIsEditor &&
+		(RHIFeatureLevel == ERHIFeatureLevel::ES2 || RHIFeatureLevel == ERHIFeatureLevel::ES3_1) &&
+		GMaxRHIFeatureLevel > ERHIFeatureLevel::ES3_1) ? 1.0f : 0.0f;
 
 	// Padding between the left and right eye may be introduced by an HMD, which instanced stereo needs to account for.
 	if ((StereoPass != eSSP_FULL) && (Family->Views.Num() > 1))
@@ -1579,6 +1582,25 @@ void FViewInfo::DestroyAllSnapshots()
 		FreeViewInfoSnapshots.Add(Snapshot);
 	}
 	ViewInfoSnapshots.Reset();
+}
+
+FInt32Range FViewInfo::GetDynamicMeshElementRange(uint32 PrimitiveIndex) const
+{
+	int32 Start = 0;	// inclusive
+	int32 AfterEnd = 0;	// exclusive
+
+	// DynamicMeshEndIndices contains valid values only for visible primitives with bDynamicRelevance.
+	if (PrimitiveVisibilityMap[PrimitiveIndex])
+	{
+		const FPrimitiveViewRelevance& ViewRelevance = PrimitiveViewRelevanceMap[PrimitiveIndex];
+		if (ViewRelevance.bDynamicRelevance)
+		{
+			Start = (PrimitiveIndex == 0) ? 0 : DynamicMeshEndIndices[PrimitiveIndex - 1];
+			AfterEnd = DynamicMeshEndIndices[PrimitiveIndex];
+		}
+	}
+
+	return FInt32Range(Start, AfterEnd);
 }
 
 FSceneViewState* FViewInfo::GetEffectiveViewState() const
@@ -2748,6 +2770,8 @@ void FSceneRenderer::RenderCustomDepthPassAtLocation(FRHICommandListImmediate& R
 
 void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderCustomDepthPass);
+
 	// do we have primitives in this pass?
 	bool bPrimitives = false;
 
@@ -2933,7 +2957,7 @@ void FSceneRenderer::WaitForTasksClearSnapshotsAndDeleteSceneRenderer(FRHIComman
 
 	// Can relase only after all mesh pass tasks are finished.
 	GPrimitiveIdVertexBufferPool.DiscardAll();
-	FGraphicsMinimalPipelineStateId::ResetOneFrameIdTable();
+	FGraphicsMinimalPipelineStateId::ResetLocalPipelineIdTableSize();
 
 	delete LocalRootMark;
 }

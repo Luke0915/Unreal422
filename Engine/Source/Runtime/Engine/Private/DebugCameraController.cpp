@@ -6,6 +6,7 @@
 =============================================================================*/
 
 #include "Engine/DebugCameraController.h"
+#include "Engine/DebugCameraControllerSettings.h"
 #include "EngineGlobals.h"
 #include "CollisionQueryParams.h"
 #include "Engine/World.h"
@@ -13,6 +14,7 @@
 #include "Engine/MapBuildDataRegistry.h"
 #include "Engine/Engine.h"
 #include "Engine/Player.h"
+#include "Materials/Material.h"
 #include "EngineUtils.h"
 #include "GameFramework/SpectatorPawn.h"
 #include "GameFramework/SpectatorPawnMovement.h"
@@ -21,8 +23,10 @@
 #include "Components/DrawFrustumComponent.h"
 #include "GameFramework/PlayerInput.h"
 #include "GameFramework/GameStateBase.h"
+#include "BufferVisualizationData.h"
 
 static const float SPEED_SCALE_ADJUSTMENT = 0.5f;
+static const float MIN_ORBIT_RADIUS = 30.0f;
 
 ADebugCameraController::ADebugCameraController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -48,8 +52,15 @@ ADebugCameraController::ADebugCameraController(const FObjectInitializer& ObjectI
 	SetAsLocalPlayerController();
 
 	bIsOrbitingSelectedActor = false;
+	bOrbitPivotUseCenter = false;
 	LastOrbitPawnLocation = FVector::ZeroVector;
 	OrbitPivot = FVector::ZeroVector;
+	OrbitRadius = MIN_ORBIT_RADIUS;
+
+	bEnableBufferVisualization = false;
+	bEnableBufferVisualizationFullMode = false;
+	LastViewModeIndex = VMI_Lit;
+	LastViewModeSettingsIndex = 0;
 }
 
 void InitializeDebugCameraInputBindings()
@@ -69,7 +80,15 @@ void InitializeDebugCameraInputBindings()
 		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_DecreaseFOV", EKeys::Period));
 		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_ToggleDisplay", EKeys::BackSpace));
 		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_FreezeRendering", EKeys::F));
-		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_Orbit", EKeys::O));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_OrbitHitPoint", EKeys::O));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_OrbitCenter", EKeys::O, true));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_CycleViewMode", EKeys::V));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_ToggleBufferVisualizationOverview", EKeys::B));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_BufferVisualizationUp", EKeys::Up));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_BufferVisualizationDown", EKeys::Down));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_BufferVisualizationRight", EKeys::Right));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_BufferVisualizationLeft", EKeys::Left));
+		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_ToggleBufferVisualizationFull", EKeys::Enter));
 
 		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_Select", EKeys::Gamepad_RightTrigger));
 		UPlayerInput::AddEngineDefinedActionMapping(FInputActionKeyMapping("DebugCamera_IncreaseSpeed", EKeys::Gamepad_RightShoulder));
@@ -97,7 +116,15 @@ void ADebugCameraController::SetupInputComponent()
 
 	InputComponent->BindAction("DebugCamera_ToggleDisplay", IE_Pressed, this, &ADebugCameraController::ToggleDisplay);
 	InputComponent->BindAction("DebugCamera_FreezeRendering", IE_Pressed, this, &ADebugCameraController::ToggleFreezeRendering);
-	InputComponent->BindAction("DebugCamera_Orbit", IE_Pressed, this, &ADebugCameraController::ToggleOrbit);
+	InputComponent->BindAction("DebugCamera_OrbitHitPoint", IE_Pressed, this, &ADebugCameraController::ToggleOrbitHitPoint);
+	InputComponent->BindAction("DebugCamera_OrbitCenter", IE_Pressed, this, &ADebugCameraController::ToggleOrbitCenter);
+	InputComponent->BindAction("DebugCamera_CycleViewMode", IE_Pressed, this, &ADebugCameraController::CycleViewMode);
+	InputComponent->BindAction("DebugCamera_ToggleBufferVisualizationOverview", IE_Pressed, this, &ADebugCameraController::ToggleBufferVisualizationOverviewMode);
+	InputComponent->BindAction("DebugCamera_BufferVisualizationUp", IE_Pressed, this, &ADebugCameraController::BufferVisualizationMoveUp);
+	InputComponent->BindAction("DebugCamera_BufferVisualizationDown", IE_Pressed, this, &ADebugCameraController::BufferVisualizationMoveDown);
+	InputComponent->BindAction("DebugCamera_BufferVisualizationRight", IE_Pressed, this, &ADebugCameraController::BufferVisualizationMoveRight);
+	InputComponent->BindAction("DebugCamera_BufferVisualizationLeft", IE_Pressed, this, &ADebugCameraController::BufferVisualizationMoveLeft);
+	InputComponent->BindAction("DebugCamera_ToggleBufferVisualizationFull", IE_Pressed, this, &ADebugCameraController::ToggleBufferVisualizationFullMode);
 
 	InputComponent->BindTouch(IE_Pressed, this, &ADebugCameraController::OnTouchBegin);
 	InputComponent->BindTouch(IE_Released, this, &ADebugCameraController::OnTouchEnd);
@@ -146,6 +173,7 @@ void ADebugCameraController::Select( FHitResult const& Hit )
 	// store selection
 	SelectedActor = Hit.GetActor();
 	SelectedComponent = Hit.Component.Get();
+	SelectedHitPoint = Hit;
 
 	//BP Event
 	ReceiveOnActorSelected(SelectedActor, Hit.ImpactPoint, Hit.ImpactNormal, Hit);
@@ -388,120 +416,146 @@ void ADebugCameraController::ToggleFreezeRendering()
 	bIsFrozenRendering = !bIsFrozenRendering;
 }
 
+void ADebugCameraController::PreProcessInput(const float DeltaTime, const bool bGamePaused)
+{
+	if (bIsOrbitingSelectedActor)
+	{
+		PreProcessInputForOrbit(DeltaTime, bGamePaused);
+	}
+	else
+	{
+		Super::PreProcessInput(DeltaTime, bGamePaused);
+	}
+}
+
 void ADebugCameraController::UpdateRotation(float DeltaTime)
 {
 	if (bIsOrbitingSelectedActor)
 	{
-		APawn* const CurrentPawn = GetPawnOrSpectator();
-		if (CurrentPawn)
+		UpdateRotationForOrbit(DeltaTime);
+	}
+	else
+	{
+		Super::UpdateRotation(DeltaTime);
+	}
+}
+
+void ADebugCameraController::PreProcessInputForOrbit(const float DeltaTime, const bool bGamePaused)
+{
+	if (bIsOrbitingSelectedActor)
+	{
+		if (APawn* const CurrentPawn = GetPawnOrSpectator())
 		{
-			bool bUpdatePawn = false;
-			FRotator ViewRotation;
-			float ViewLength = 0.0f;
-
-			if (!RotationInput.IsZero())
+			if (UPawnMovementComponent* MovementComponent = CurrentPawn->GetMovementComponent())
 			{
-				FVector ViewVector = OrbitPivot - CurrentPawn->GetActorLocation();
-				ViewRotation = ViewVector.ToOrientationRotator() + RotationInput;
-				ViewLength = ViewVector.Size();
-
-				FVector Axis;
-				float Angle;
-				FVector OppositeViewVector = -1.0 * ViewRotation.Vector();
-				FQuat::FindBetween(FVector::UpVector, OppositeViewVector).ToAxisAndAngle(Axis, Angle);
-
-				// Clamp rotation to 10 degrees from Up vector
-				const float MinAngle = PI / 18.f;
-				const float MaxAngle = PI - MinAngle;
-				if (Angle < MinAngle || Angle > MaxAngle)
-				{
-					float AdjustedAngle = FMath::Clamp(Angle, MinAngle, MaxAngle);
-					OppositeViewVector = FQuat(Axis, AdjustedAngle).RotateVector(FVector::UpVector);
-					ViewRotation = (-1.0 * OppositeViewVector).ToOrientationRotator();
-				}
-
-				bUpdatePawn = true;
-			} 
-			else
-			{
-				FVector OrbitPawnLocation = CurrentPawn->GetActorLocation();
-				FVector MoveDelta(OrbitPawnLocation - LastOrbitPawnLocation);
-
-				if (!MoveDelta.IsZero())
-				{
-					FRotationMatrix ObjectToWorld(GetControlRotation());
-					FVector MoveDeltaObj = ObjectToWorld.GetTransposed().TransformVector(MoveDelta);
-					FVector ViewVector = OrbitPivot - LastOrbitPawnLocation;
-
-					// Handle either forward or lateral motion but not both, because small 
-					// forward motion deltas while moving laterally cause the distance from pivot
-					// to drift.
-					if (FMath::Abs(MoveDeltaObj.X) > FMath::Abs(MoveDeltaObj.Y))
-					{
-						// Apply forward movement component
-						FVector ForwardDelta = ObjectToWorld.TransformVector(FVector(MoveDeltaObj.X, 0.0f, 0.0f));
-						ViewVector -= ForwardDelta;
-						ViewLength = ViewVector.Size();
-					}
-					else
-					{
-						// Apply lateral movement component, constraining distance from orbit pivot
-						FVector LateralDelta = ObjectToWorld.TransformVector(FVector(0.0f, MoveDeltaObj.Y, 0.0f));
-						ViewLength = ViewVector.Size();
-						ViewVector -= LateralDelta;
-					}
-					ViewRotation = ViewVector.Rotation();
-
-					bUpdatePawn = true;
-				}
-			}
-
-			if (bUpdatePawn)
-			{
-				// Update pawn location
-				FVector OrbitPawnLocation = OrbitPivot - ViewRotation.Vector() * ViewLength;
-				CurrentPawn->SetActorLocation(OrbitPawnLocation);
-
-				// Update pawn rotation
-				SetControlRotation(ViewRotation);
-				CurrentPawn->FaceRotation(ViewRotation, DeltaTime);
-
-				LastOrbitPawnLocation = OrbitPawnLocation;
-
-				return;
+				// Reset velocity before processing input when orbiting to limit acceleration which 
+				// can cause overshooting and jittering as orbit attempts to maintain a fixed radius.
+				MovementComponent->Velocity = FVector::ZeroVector;
+				MovementComponent->UpdateComponentVelocity();
 			}
 		}
 	}
+}
 
-	Super::UpdateRotation(DeltaTime);
+void ADebugCameraController::UpdateRotationForOrbit(float DeltaTime)
+{
+	APawn* const CurrentPawn = GetPawnOrSpectator();
+
+	if (bIsOrbitingSelectedActor && CurrentPawn)
+	{
+		bool bUpdatePawn = false;
+		FRotator ViewRotation = GetControlRotation();
+	
+		if (!CurrentPawn->GetLastMovementInputVector().IsZero())
+		{
+			FRotationMatrix ObjectToWorld(ViewRotation);
+			FVector MoveDelta(CurrentPawn->GetActorLocation() - LastOrbitPawnLocation);
+			FVector MoveDeltaObj = ObjectToWorld.GetTransposed().TransformVector(MoveDelta);
+
+			// Handle either forward or lateral motion but not both, because small forward
+			// motion deltas while moving laterally cause the distance from pivot to drift
+			if (FMath::IsNearlyZero(MoveDeltaObj.Y, 0.01f))
+			{
+				// Clamp delta to avoid flipping to opposite view
+				const float ForwardScale = 3.0f;
+				OrbitRadius = (MoveDeltaObj.X * ForwardScale > OrbitRadius - MIN_ORBIT_RADIUS) ? MIN_ORBIT_RADIUS : OrbitRadius - MoveDeltaObj.X * ForwardScale;
+			}
+			else
+			{
+				// Apply lateral movement component, constraining distance from orbit pivot
+				const float LateralScale = 2.0f;
+				FVector LateralDelta = ObjectToWorld.TransformVector(FVector(0.0f, MoveDeltaObj.Y * LateralScale, 0.0f));
+				ViewRotation = (OrbitPivot - LastOrbitPawnLocation - LateralDelta).ToOrientationRotator();
+			}
+			bUpdatePawn = true;
+		}
+		else if (!RotationInput.IsZero())
+		{
+			ViewRotation += RotationInput;
+
+			FVector Axis;
+			float Angle;
+			FVector OppositeViewVector = -1.0 * ViewRotation.Vector();
+			FQuat::FindBetween(FVector::UpVector, OppositeViewVector).ToAxisAndAngle(Axis, Angle);
+
+			// Clamp rotation to 10 degrees from Up vector
+			const float MinAngle = PI / 18.f;
+			const float MaxAngle = PI - MinAngle;
+			if (Angle < MinAngle || Angle > MaxAngle)
+			{
+				float AdjustedAngle = FMath::Clamp(Angle, MinAngle, MaxAngle);
+				OppositeViewVector = FQuat(Axis, AdjustedAngle).RotateVector(FVector::UpVector);
+				ViewRotation = (-1.0 * OppositeViewVector).ToOrientationRotator();
+			}
+
+			bUpdatePawn = true;
+		}
+
+		if (bUpdatePawn)
+		{
+			LastOrbitPawnLocation = OrbitPivot - ViewRotation.Vector() * OrbitRadius;
+			CurrentPawn->SetActorLocation(LastOrbitPawnLocation);
+
+			SetControlRotation(ViewRotation);
+			CurrentPawn->FaceRotation(ViewRotation);
+		}
+	}
 }
 
 bool ADebugCameraController::GetPivotForOrbit(FVector& PivotLocation) const
 {
 	if (SelectedActor)
 	{
-		FBox BoundingBox(ForceInit);
-		int32 NumValidComponents = 0;
-
-		// Use the center of the bounding box of the current selected actor as the pivot point for orbiting the camera
-		int32 NumSelectedActors = 0;
-
-		TInlineComponentArray<UMeshComponent*> MeshComponents(SelectedActor);
-
-		for (int32 ComponentIndex = 0; ComponentIndex < MeshComponents.Num(); ++ComponentIndex)
+		if (bOrbitPivotUseCenter)
 		{
-			UMeshComponent* MeshComponent = MeshComponents[ComponentIndex];
+			FBox BoundingBox(ForceInit);
+			int32 NumValidComponents = 0;
 
-			if (MeshComponent->IsRegistered())
+			// Use the center of the bounding box of the current selected actor as the pivot point for orbiting the camera
+			int32 NumSelectedActors = 0;
+
+			TInlineComponentArray<UMeshComponent*> MeshComponents(SelectedActor);
+
+			for (int32 ComponentIndex = 0; ComponentIndex < MeshComponents.Num(); ++ComponentIndex)
 			{
-				BoundingBox += MeshComponent->Bounds.GetBox();
-				++NumValidComponents;
+				UMeshComponent* MeshComponent = MeshComponents[ComponentIndex];
+
+				if (MeshComponent->IsRegistered() && MeshComponent->IsVisible())
+				{
+					BoundingBox += MeshComponent->Bounds.GetBox();
+					++NumValidComponents;
+				}
+			}
+
+			if (NumValidComponents > 0)
+			{
+				PivotLocation = BoundingBox.GetCenter();
+				return true;
 			}
 		}
-
-		if (NumValidComponents > 0)
+		else
 		{
-			PivotLocation = BoundingBox.GetCenter();
+			PivotLocation = SelectedHitPoint.Location;
 			return true;
 		}
 	}
@@ -509,16 +563,295 @@ bool ADebugCameraController::GetPivotForOrbit(FVector& PivotLocation) const
 	return false;
 }
 
-void ADebugCameraController::ToggleOrbit()
+void ADebugCameraController::ToggleOrbit(bool bOrbitCenter)
 {
-	bIsOrbitingSelectedActor = (!bIsOrbitingSelectedActor && GetPawnOrSpectator() && GetPivotForOrbit(OrbitPivot));
-
 	if (bIsOrbitingSelectedActor)
 	{
-		LastOrbitPawnLocation = GetPawnOrSpectator()->GetActorLocation();
-		FRotator ViewRotation = (OrbitPivot - LastOrbitPawnLocation).ToOrientationRotator();
-		SetControlRotation(ViewRotation);
-		GetPawnOrSpectator()->FaceRotation(ViewRotation);
+		bIsOrbitingSelectedActor = false;
+	}
+	else
+	{
+		APawn* const CurrentPawn = GetPawnOrSpectator();
+		bOrbitPivotUseCenter = bOrbitCenter;
+		bIsOrbitingSelectedActor = (CurrentPawn && GetPivotForOrbit(OrbitPivot));
+
+		if (bIsOrbitingSelectedActor)
+		{
+			LastOrbitPawnLocation = CurrentPawn->GetActorLocation();
+			FVector ViewVector = OrbitPivot - LastOrbitPawnLocation;
+			float ViewLength = ViewVector.Size();
+
+			if (ViewLength == 0.0f)
+			{
+				bIsOrbitingSelectedActor = false;
+				return;
+			}
+			else if (ViewLength >= MIN_ORBIT_RADIUS)
+			{
+				OrbitRadius = ViewLength;
+			}
+			else
+			{
+				LastOrbitPawnLocation = OrbitPivot - ViewVector.GetSafeNormal() * MIN_ORBIT_RADIUS;
+				CurrentPawn->SetActorLocation(LastOrbitPawnLocation);
+				OrbitRadius = MIN_ORBIT_RADIUS;
+			}
+
+			FRotator ViewRotation = ViewVector.ToOrientationRotator();
+			SetControlRotation(ViewRotation);
+			CurrentPawn->FaceRotation(ViewRotation);
+		}
+	}
+}
+
+void ADebugCameraController::ToggleOrbitCenter()
+{
+	ToggleOrbit(true);
+}
+
+void ADebugCameraController::ToggleOrbitHitPoint()
+{
+	ToggleOrbit(false);
+}
+
+void ADebugCameraController::CycleViewMode()
+{
+	if (bEnableBufferVisualization)
+	{
+		ToggleBufferVisualizationOverviewMode();
+	}
+
+	if (UGameViewportClient* GameViewportClient = GetWorld()->GetGameViewport())
+	{
+		TArray<EViewModeIndex> DebugViewModes = UDebugCameraControllerSettings::Get()->GetCycleViewModes();
+
+		if (DebugViewModes.Num() == 0)
+		{
+			UE_LOG(LogController, Warning, TEXT("Debug camera controller settings must specify at least one view mode for view mode cycling."));
+			return;
+		}
+
+		int32 CurrViewModeIndex = GameViewportClient->ViewModeIndex;
+		int32 CurrIndex = LastViewModeSettingsIndex;
+
+		int32 NextIndex = (CurrIndex < DebugViewModes.Num() && CurrViewModeIndex == DebugViewModes[CurrIndex]) ? (CurrIndex + 1) % DebugViewModes.Num() : 0;
+		int32 NextViewModeIndex = DebugViewModes[NextIndex];
+
+		if (NextViewModeIndex != CurrViewModeIndex)
+		{
+			FString NextViewModeName = GetViewModeName((EViewModeIndex)NextViewModeIndex);
+
+			if (!NextViewModeName.IsEmpty())
+			{
+				FString Cmd(TEXT("VIEWMODE "));
+				Cmd += NextViewModeName;
+				GameViewportClient->ConsoleCommand(Cmd);
+
+			}
+		}
+
+		LastViewModeSettingsIndex = NextIndex;
+		LastViewModeIndex = NextViewModeIndex;
+	}
+}
+
+TArray<FString> ADebugCameraController::GetBufferVisualizationOverviewTargets()
+{
+	TArray<FString> SelectedBuffers;
+
+	// Get the list of requested buffers from the console
+	static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.BufferVisualizationOverviewTargets"));
+	FString SelectedBufferNames = CVar->GetString();
+
+	// Extract each material name from the comma separated string
+	while (SelectedBufferNames.Len())
+	{
+		FString Left, Right;
+
+		// Detect last entry in the list
+		if (!SelectedBufferNames.Split(TEXT(","), &Left, &Right))
+		{
+			Left = SelectedBufferNames;
+			Right = FString();
+		}
+
+		Left.TrimStartInline();
+		SelectedBuffers.Add(*Left);
+		SelectedBufferNames = Right;
+	}
+
+	return SelectedBuffers;
+}
+
+void ADebugCameraController::ToggleBufferVisualizationOverviewMode()
+{
+	SetBufferVisualizationFullMode(false);
+
+	if (UGameViewportClient* GameViewportClient = GetWorld()->GetGameViewport())
+	{
+		bEnableBufferVisualization = !bEnableBufferVisualization;
+		bEnableBufferVisualizationFullMode = false;
+
+		FString Cmd(TEXT("VIEWMODE "));
+
+		if (bEnableBufferVisualization)
+		{
+			Cmd += GetViewModeName(VMI_VisualizeBuffer);
+			LastViewModeIndex = GameViewportClient->ViewModeIndex;
+
+			TArray<FString> SelectedBuffers = GetBufferVisualizationOverviewTargets();
+
+			if (LastSelectedBuffer.IsEmpty() || !SelectedBuffers.Contains(LastSelectedBuffer))
+			{
+				GetNextBuffer(SelectedBuffers, 1);
+			}
+		}
+		else
+		{
+			Cmd += GetViewModeName((EViewModeIndex)LastViewModeIndex);
+		}
+
+		GameViewportClient->ConsoleCommand(Cmd);
+	}
+}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+void ADebugCameraController::UpdateVisualizeBufferPostProcessing(FFinalPostProcessSettings& InOutPostProcessingSettings)
+{
+	if (bEnableBufferVisualization)
+	{
+		FName TargetBufferName = *LastSelectedBuffer;
+		if (UMaterial* Material = GetBufferVisualizationData().GetMaterial(TargetBufferName))
+		{
+			InOutPostProcessingSettings.bBufferVisualizationOverviewTargetIsSelected = true;
+			InOutPostProcessingSettings.BufferVisualizationOverviewSelectedTargetMaterialName = Material->GetName();
+			return;
+		}
+	}
+
+	InOutPostProcessingSettings.bBufferVisualizationOverviewTargetIsSelected = false;
+	InOutPostProcessingSettings.BufferVisualizationOverviewSelectedTargetMaterialName.Empty();
+}
+
+#endif
+
+void ADebugCameraController::GetNextBuffer(int32 Step)
+{
+	if (bEnableBufferVisualization)
+	{
+		TArray<FString> OverviewBuffers = GetBufferVisualizationOverviewTargets();
+		GetNextBuffer(OverviewBuffers, Step);
+	}
+}
+
+void ADebugCameraController::GetNextBuffer(const TArray<FString>& OverviewBuffers, int32 Step)
+{
+	if (bEnableBufferVisualization)
+	{
+		int32 BufferIndex = 0;
+
+		if (!LastSelectedBuffer.IsEmpty())
+		{
+			bool bFoundIndex = false;
+
+			for (int32 Index = 0; Index < OverviewBuffers.Num(); Index++)
+			{
+				if (OverviewBuffers[Index] == LastSelectedBuffer)
+				{
+					BufferIndex = Index;
+					bFoundIndex = true;
+					break;
+				}
+			}
+
+			if (!bFoundIndex)
+			{
+				LastSelectedBuffer.Empty();
+			}
+		}
+
+		if (LastSelectedBuffer.IsEmpty())
+		{
+			for (FString Buffer : OverviewBuffers)
+			{
+				if (!Buffer.IsEmpty())
+				{
+					LastSelectedBuffer = Buffer;
+					break;
+				}
+			}
+		}
+		else
+		{
+			int32 Incr = FMath::Abs(Step);
+			int32 Min = Incr == 1 ? (BufferIndex / 4) * 4 : BufferIndex % 4;
+			int32 Max = Min;
+			for (int32 i = 0; i < 3 && Max + Incr < OverviewBuffers.Num(); i++) { Max += Incr; }
+
+			auto Wrap = [&](int32 Index)
+			{
+				if (Index < Min)
+				{
+					Index = Max;
+				}
+				else if (Index > Max)
+				{
+					Index = Min;
+				}
+
+				return Index;
+			};
+
+			int32 NextIndex = Wrap(BufferIndex + Step);
+
+			while (NextIndex != BufferIndex)
+			{
+				if (!OverviewBuffers[NextIndex].IsEmpty())
+				{
+					LastSelectedBuffer = OverviewBuffers[NextIndex];
+					break;
+				}
+				NextIndex = Wrap(NextIndex + Step);
+			}
+		}
+	}
+}
+
+void ADebugCameraController::BufferVisualizationMoveUp()
+{
+	GetNextBuffer(-4);
+}
+
+void ADebugCameraController::BufferVisualizationMoveDown()
+{
+	GetNextBuffer(4);
+}
+
+void ADebugCameraController::BufferVisualizationMoveRight()
+{
+	GetNextBuffer(1);
+}
+
+void ADebugCameraController::BufferVisualizationMoveLeft()
+{
+	GetNextBuffer(-1);
+}
+
+void ADebugCameraController::ToggleBufferVisualizationFullMode()
+{
+	SetBufferVisualizationFullMode(!bEnableBufferVisualizationFullMode);
+}
+
+void ADebugCameraController::SetBufferVisualizationFullMode(bool bFullMode)
+{
+	bEnableBufferVisualizationFullMode = bFullMode;
+
+	static IConsoleVariable* ICVar = IConsoleManager::Get().FindConsoleVariable(FBufferVisualizationData::GetVisualizationTargetConsoleCommandName());
+	if (ICVar)
+	{
+		static const FName EmptyName = NAME_None;
+		ICVar->Set(bFullMode ? *LastSelectedBuffer : *EmptyName.ToString(), ECVF_SetByCode);
 	}
 }
 

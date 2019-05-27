@@ -71,6 +71,18 @@ namespace UnrealBuildTool
 		public bool bXGEExport = false;
 
 		/// <summary>
+		/// Whether we should just export the outdated actions list
+		/// </summary>
+		[CommandLine("-WriteOutdatedActions=")]
+		public FileReference WriteOutdatedActionsFile = null;
+
+		/// <summary>
+		/// Path to the manifest for passing info about the output to live coding
+		/// </summary>
+		[CommandLine("-LiveCodingManifest=")]
+		public FileReference LiveCodingManifest = null;
+
+		/// <summary>
 		/// Main entry point
 		/// </summary>
 		/// <param name="Arguments">Command-line arguments</param>
@@ -114,12 +126,7 @@ namespace UnrealBuildTool
 			BuildConfiguration BuildConfiguration = new BuildConfiguration();
 			XmlConfig.ApplyTo(BuildConfiguration);
 			Arguments.ApplyTo(BuildConfiguration);
-
-			// Parse the remote INI setting
-			string RemoteIniPath;
-			Arguments.TryGetValue("-RemoteIni=", out RemoteIniPath);
-			UnrealBuildTool.SetRemoteIniPath(RemoteIniPath);
-
+			
 			// now that we know the available platforms, we can delete other platforms' junk. if we're only building specific modules from the editor, don't touch anything else (it may be in use).
 			if (!bIgnoreJunk && !UnrealBuildTool.IsEngineInstalled())
 			{
@@ -193,7 +200,7 @@ namespace UnrealBuildTool
 					// Create the working set provider
 					using (ISourceFileWorkingSet WorkingSet = SourceFileWorkingSet.Create(UnrealBuildTool.RootDirectory, ProjectDirs))
 					{
-						Build(TargetDescriptors, BuildConfiguration, WorkingSet, Options);
+						Build(TargetDescriptors, BuildConfiguration, WorkingSet, Options, LiveCodingManifest, WriteOutdatedActionsFile);
 					}
 				}
 			}
@@ -213,8 +220,10 @@ namespace UnrealBuildTool
 		/// <param name="BuildConfiguration">Current build configuration</param>
 		/// <param name="WorkingSet">The source file working set</param>
 		/// <param name="Options">Additional options for the build</param>
+		/// <param name="LiveCodingManifest">Path to write the live coding manifest to</param>
+		/// <param name="WriteOutdatedActionsFile">Files to write the list of outdated actions to (rather than building them)</param>
 		/// <returns>Result from the compilation</returns>
-		public static void Build(List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, ISourceFileWorkingSet WorkingSet, BuildOptions Options)
+		public static void Build(List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, ISourceFileWorkingSet WorkingSet, BuildOptions Options, FileReference LiveCodingManifest, FileReference WriteOutdatedActionsFile)
 		{
 			// Create a makefile for each target
 			TargetMakefile[] Makefiles = new TargetMakefile[TargetDescriptors.Count];
@@ -223,17 +232,26 @@ namespace UnrealBuildTool
 				Makefiles[TargetIdx] = CreateMakefile(BuildConfiguration, TargetDescriptors[TargetIdx], WorkingSet);
 			}
 
-			// Output the manifest
-			for(int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
+			// Output the Live Coding manifest
+			if(LiveCodingManifest != null)
 			{
-				if(TargetDescriptors[TargetIdx].LiveCodingManifest != null)
+				List<Action> AllActions = Makefiles.SelectMany(x => x.Actions).ToList();
+				HotReload.WriteLiveCodingManifest(LiveCodingManifest, AllActions);
+			}
+
+			// Export the actions for each target
+			for (int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
+			{
+				TargetDescriptor TargetDescriptor = TargetDescriptors[TargetIdx];
+				foreach(FileReference WriteActionFile in TargetDescriptor.WriteActionFiles)
 				{
-					HotReload.WriteLiveCodeManifest(TargetDescriptors[TargetIdx].LiveCodingManifest, Makefiles[TargetIdx].Actions);
+					Log.TraceInformation("Writing actions to {0}", WriteActionFile);
+					ActionGraph.ExportJson(Makefiles[TargetIdx].Actions, WriteActionFile);
 				}
 			}
 
 			// Execute the build
-			if((Options & BuildOptions.SkipBuild) == 0)
+			if ((Options & BuildOptions.SkipBuild) == 0)
 			{
 				// Make sure that none of the actions conflict with any other (producing output files differently, etc...)
 				ActionGraph.CheckForConflicts(Makefiles.SelectMany(x => x.Actions));
@@ -285,6 +303,14 @@ namespace UnrealBuildTool
 					using(Timeline.ScopeEvent("XGE.ExportActions()"))
 					{
 						XGE.ExportActions(MergedActionsToExecute);
+					}
+				}
+				else if(WriteOutdatedActionsFile != null)
+				{
+					// Write actions to an output file
+					using(Timeline.ScopeEvent("ActionGraph.WriteActions"))
+					{
+						ActionGraph.ExportJson(MergedActionsToExecute, WriteOutdatedActionsFile);
 					}
 				}
 				else
@@ -397,7 +423,7 @@ namespace UnrealBuildTool
 
 				// Check that the makefile is still valid
 				string Reason;
-				if(!TargetMakefile.IsValidForSourceFiles(Makefile, TargetDescriptor.ProjectFile, WorkingSet, out Reason))
+				if(!TargetMakefile.IsValidForSourceFiles(Makefile, TargetDescriptor.ProjectFile, TargetDescriptor.Platform, WorkingSet, out Reason))
 				{
 					Log.TraceInformation("Invalidating makefile for {0} ({1})", TargetDescriptor.Name, Reason);
 					Makefile = null;

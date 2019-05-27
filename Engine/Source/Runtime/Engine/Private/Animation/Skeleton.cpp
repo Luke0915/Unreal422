@@ -1019,6 +1019,17 @@ void USkeleton::HandleSkeletonHierarchyChange()
 	// Clear exiting MeshLinkUp tables.
 	ClearCacheData();
 
+	for (int i = VirtualBones.Num() - 1; i >= 0; --i)
+	{
+		FVirtualBone& VB = VirtualBones[i];
+		if (ReferenceSkeleton.FindRawBoneIndex(VB.SourceBoneName) == INDEX_NONE ||
+			ReferenceSkeleton.FindRawBoneIndex(VB.TargetBoneName) == INDEX_NONE)
+		{
+			//Virtual Bone no longer valid
+			VirtualBones.RemoveAtSwap(i, 1, false);
+		}
+	}
+
 	// Fix up loaded animations (any animations that aren't loaded will be fixed on load)
 	int32 NumLoadedAssets = 0;
 	for (TObjectIterator<UAnimationAsset> It; It; ++It)
@@ -1649,8 +1660,13 @@ void USkeleton::HandleVirtualBoneChanges()
 		USkeletalMesh* SkelMesh = *ItMesh;
 		if (SkelMesh->Skeleton == this)
 		{
+			// also have to update retarget base pose
 			SkelMesh->RefSkeleton.RebuildRefSkeleton(this, bRebuildNameMap);
 			RebuildLinkup(SkelMesh);
+#if WITH_EDITOR
+			// whole bone count has changed, so it has to recalculate retarget base pose
+			SkelMesh->ReallocateRetargetBasePose();
+#endif // #if WITH_EDITOR
 		}
 	}
 

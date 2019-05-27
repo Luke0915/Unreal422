@@ -8,7 +8,6 @@ AsyncTextureStreaming.cpp: Definitions of classes used for texture streaming asy
 #include "Misc/App.h"
 #include "Streaming/StreamingManagerTexture.h"
 #include "Engine/World.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 
 void FAsyncRenderAssetStreamingData::Init(
 	TArray<FStreamingViewInfo> InViewInfos,
@@ -713,7 +712,6 @@ void FRenderAssetStreamingMipCalcTask::DoWork()
 {
 	SCOPED_NAMED_EVENT(FRenderAssetStreamingMipCalcTask_DoWork, FColor::Turquoise);
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FRenderAssetStreamingMipCalcTask::DoWork"), STAT_FRenderAssetStreamingMipCalcTask_DoWork, STATGROUP_StreamingDetails);
-	CSV_SCOPED_TIMING_STAT_GLOBAL(FRenderAssetStreamingMipCalcTask);
 
 	// While the async task is runnning, the StreamingRenderAssets are guarantied not to be reallocated.
 	// 2 things can happen : a texture can be removed, in which case the texture will be set to null
@@ -757,7 +755,11 @@ void FRenderAssetStreamingMipCalcTask::DoWork()
 
 	StreamingData.OnTaskDone_Async();
 
-	STAT(UpdateStats_Async());
+#if STATS
+	UpdateStats_Async();
+#elif UE_BUILD_TEST
+	UpdateCSVOnlyStats_Async();
+#endif // STATS
 }
 
 void FRenderAssetStreamingMipCalcTask::UpdateStats_Async()
@@ -861,4 +863,43 @@ void FRenderAssetStreamingMipCalcTask::UpdateStats_Async()
 	Stats.OverBudget += FMath::Max<int64>(Stats.RequiredPool - Stats.StreamingPool, 0);
 	Stats.Timestamp = FPlatformTime::Seconds();
 #endif
+}
+
+void FRenderAssetStreamingMipCalcTask::UpdateCSVOnlyStats_Async()
+{
+	const TArray<FStreamingRenderAsset>& StreamingRenderAssets = StreamingManager.StreamingRenderAssets;
+
+	FRenderAssetStreamingStats& Stats = StreamingManager.GatheredStats;
+
+	Stats.RenderAssetPool = PoolSize;
+
+	Stats.SafetyPool = MemoryMargin;
+	Stats.TemporaryPool = TempMemoryBudget;
+	Stats.StreamingPool = MemoryBudget;
+	Stats.NonStreamingMips = AllocatedMemory;
+
+	Stats.RequiredPool = 0;
+	Stats.CachedMips = 0;
+	Stats.WantedMips = 0;
+
+	for (const FStreamingRenderAsset& StreamingRenderAsset : StreamingRenderAssets)
+	{
+		if (IsAborted()) break;
+		if (!StreamingRenderAsset.RenderAsset) continue;
+
+		const int64 ResidentSize = StreamingRenderAsset.GetSize(StreamingRenderAsset.ResidentMips);
+		const int64 RequiredSize = StreamingRenderAsset.GetSize(StreamingRenderAsset.GetPerfectWantedMips());
+		const int64 BudgetedSize = StreamingRenderAsset.GetSize(StreamingRenderAsset.BudgetedMips);
+
+		// How much the streamer would use if there was no limit.
+		Stats.RequiredPool += RequiredSize;
+
+		// Remove from the non streaming budget what is actually taken by streaming.
+		Stats.NonStreamingMips -= ResidentSize;
+
+		const int64 UsedSize = FMath::Min3<int64>(RequiredSize, BudgetedSize, ResidentSize);
+
+		Stats.WantedMips += UsedSize;
+		Stats.CachedMips += FMath::Max<int64>(ResidentSize - UsedSize, 0);
+	}
 }

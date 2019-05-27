@@ -898,6 +898,23 @@ RENDERCORE_API bool IsSimpleForwardShadingEnabled(EShaderPlatform Platform)
 	return CVar->GetValueOnAnyThread() != 0 && PlatformSupportsSimpleForwardShading(Platform);
 }
 
+RENDERCORE_API bool MobileSupportsGPUScene(EShaderPlatform Platform)
+{
+	// make it shader platform setting?
+	static TConsoleVariableData<int32>* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.SupportGPUScene"));
+	return (CVar && CVar->GetValueOnAnyThread() != 0) ? true : false;
+}
+
+RENDERCORE_API bool AllowPixelDepthOffset(EShaderPlatform Platform)
+{
+	if (IsMobilePlatform(Platform))
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowPixelDepthOffset"));
+		return CVar->GetValueOnAnyThread() != 0;
+	}
+	return true;
+}
+
 RENDERCORE_API int32 GUseForwardShading = 0;
 static FAutoConsoleVariableRef CVarForwardShading(
 	TEXT("r.ForwardShading"),
@@ -908,11 +925,30 @@ static FAutoConsoleVariableRef CVarForwardShading(
 	ECVF_RenderThreadSafe | ECVF_ReadOnly
 	); 
 
-RENDERCORE_API uint32 GForwardShadingPlatformMask = 0;
+static TAutoConsoleVariable<int32> CVarDistanceFields(
+	TEXT("r.DistanceFields"),
+	1,
+	TEXT("Enables distance fields rendering.\n") \
+	TEXT(" 0: Disabled.\n") \
+	TEXT(" 1: Enabled."),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly
+	); 
+
+
+RENDERCORE_API uint64 GForwardShadingPlatformMask = 0;
 static_assert(SP_NumPlatforms <= sizeof(GForwardShadingPlatformMask) * 8, "GForwardShadingPlatformMask must be large enough to support all shader platforms");
 
-RENDERCORE_API uint32 GDBufferPlatformMask = 0;
+RENDERCORE_API uint64 GDBufferPlatformMask = 0;
 static_assert(SP_NumPlatforms <= sizeof(GDBufferPlatformMask) * 8, "GDBufferPlatformMask must be large enough to support all shader platforms");
+
+RENDERCORE_API uint64 GBasePassVelocityPlatformMask = 0;
+static_assert(SP_NumPlatforms <= sizeof(GBasePassVelocityPlatformMask) * 8, "GBasePassVelocityPlatformMask must be large enough to support all shader platforms");
+
+RENDERCORE_API uint64 GSelectiveBasePassOutputsPlatformMask = 0;
+static_assert(SP_NumPlatforms <= sizeof(GSelectiveBasePassOutputsPlatformMask) * 8, "GSelectiveBasePassOutputsPlatformMask must be large enough to support all shader platforms");
+
+RENDERCORE_API uint64 GDistanceFieldsPlatformMask = 0;
+static_assert(SP_NumPlatforms <= sizeof(GDistanceFieldsPlatformMask) * 8, "GDistanceFieldsPlatformMask must be large enough to support all shader platforms");
 
 RENDERCORE_API void RenderUtilsInit()
 {
@@ -921,10 +957,28 @@ RENDERCORE_API void RenderUtilsInit()
 		GForwardShadingPlatformMask = ~0u;
 	}
 
-	static IConsoleVariable* CDBufferVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DBuffer"));
-	if (CDBufferVar && CDBufferVar->GetInt())
+	static IConsoleVariable* DBufferVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DBuffer"));
+	if (DBufferVar && DBufferVar->GetInt())
 	{
 		GDBufferPlatformMask = ~0u;
+	}
+
+	static IConsoleVariable* BasePassVelocityCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.BasePassOutputsVelocity"));
+	if (BasePassVelocityCVar && BasePassVelocityCVar->GetInt())
+	{
+		GBasePassVelocityPlatformMask = ~0u;
+	}
+
+	static IConsoleVariable* SelectiveBasePassOutputsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.SelectiveBasePassOutputs"));
+	if (SelectiveBasePassOutputsCVar && SelectiveBasePassOutputsCVar->GetInt())
+	{
+		GSelectiveBasePassOutputsPlatformMask = ~0u;
+	}
+
+	static IConsoleVariable* DistanceFieldsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DistanceFields")); 
+	if (DistanceFieldsCVar && DistanceFieldsCVar->GetInt())
+	{
+		GDistanceFieldsPlatformMask = ~0u;
 	}
 
 #if WITH_EDITOR
@@ -938,7 +992,7 @@ RENDERCORE_API void RenderUtilsInit()
 			ITargetPlatform* TargetPlatform = TargetPlatformManager->FindTargetPlatform(PlatformName.ToString());
 			if (TargetPlatform)
 			{
-				uint32 Mask = 1u << ShaderPlatformIndex;
+				uint64 Mask = 1ull << ShaderPlatformIndex;
 
 				if (TargetPlatform->UsesForwardShading())
 				{
@@ -956,6 +1010,33 @@ RENDERCORE_API void RenderUtilsInit()
 				else
 				{
 					GDBufferPlatformMask &= ~Mask;
+				}
+
+				if (TargetPlatform->UsesBasePassVelocity())
+				{
+					GBasePassVelocityPlatformMask |= Mask;
+				}
+				else
+				{
+					GBasePassVelocityPlatformMask &= ~Mask;
+				}
+
+				if (TargetPlatform->UsesSelectiveBasePassOutputs())
+				{
+					GSelectiveBasePassOutputsPlatformMask |= Mask;
+				}
+				else
+				{
+					GSelectiveBasePassOutputsPlatformMask &= ~Mask;
+				}
+
+				if (TargetPlatform->UsesDistanceFields())
+				{
+					GDistanceFieldsPlatformMask |= Mask;
+				}
+				else
+				{
+					GDistanceFieldsPlatformMask &= ~Mask;
 				}
 			}
 		}

@@ -352,7 +352,7 @@ void USocialManager::CreateParty(const FOnlinePartyTypeId& PartyTypeId, const FP
 		}
 		else
 		{
-			UE_LOG(LogParty, Warning, TEXT("Cannot create party of type [%d] - no PartyInterface available on the primary OSS [%s]"), PartyTypeId.GetValue(), *GetSocialOssName(ESocialSubsystem::Primary).ToString());
+			UE_LOG(LogParty, Warning, TEXT("Cannot create party of type [%d] - PartyInterface.IsValid=%s PrimaryLocalUserId.IsValid=%s primary OSS [%s]"), PartyTypeId.GetValue(), *LexToString(PartyInterface.IsValid()), *LexToString(PrimaryLocalUserId.IsValid()), *GetSocialOssName(ESocialSubsystem::Primary).ToString());
 			OnCreatePartyComplete.ExecuteIfBound(ECreatePartyCompletionResult::UnknownClientFailure);
 		}
 	}
@@ -991,7 +991,10 @@ void USocialManager::HandlePersistentPartyStateChanged(EPartyState NewState, EPa
 		
 		if (PreviousState == EPartyState::Active)
 		{
-			PersistentParty->LeaveParty();
+			if (bLeavePartyOnDisconnect)
+			{
+				PersistentParty->LeaveParty();
+			}
 		}
 
 		// If we have other members in our party, then we will try to rejoin this when we come back online

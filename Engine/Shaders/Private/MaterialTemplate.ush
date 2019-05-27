@@ -145,6 +145,7 @@ float4 GetDynamicParameter(FMaterialParticleParameters Parameters, float4 Defaul
 	return Parameters.DynamicParameter;
 #endif
 	return Default;
+
 }
 
 /** 
@@ -1014,6 +1015,20 @@ MaterialFloat4 ProcessMaterialColorTextureLookup(MaterialFloat4 TextureValue)
 	return TextureValue;
 }
 
+MaterialFloat4 ProcessMaterialExternalTextureLookup(MaterialFloat4 TextureValue)
+{
+#if (FEATURE_LEVEL == FEATURE_LEVEL_ES2) || COMPILER_GLSL_ES3_1
+	// As per https://www.khronos.org/registry/OpenGL/extensions/OES/OES_EGL_image_external.txt
+	// sampling an external texture does not change the color space, so we always need to
+	// perform manual approximate sRGB conversion
+	float3 LinRGB = TextureValue.rgb;
+	LinRGB *= LinRGB; 
+	return MaterialFloat4(LinRGB, TextureValue.a);
+#else
+	return ProcessMaterialColorTextureLookup(TextureValue);
+#endif
+}
+
 MaterialFloat4 ProcessMaterialLinearColorTextureLookup(MaterialFloat4 TextureValue)
 {
 	return TextureValue;
@@ -1342,7 +1357,11 @@ MaterialFloat2 GetLightmapUVs(FMaterialPixelParameters Parameters)
 //Provides access to the EyeAdaptation RT. Only available in SM5.
 float EyeAdaptationLookup()
 {
+#if EYE_ADAPTATION_DISABLED
+	return 0.0;
+#else
 	return EyeAdaptationStruct.EyeAdaptation.Load(int3(0, 0, 0)).x;
+#endif
 }
 #endif
 
@@ -1386,11 +1405,6 @@ MaterialFloat4 MobileSceneTextureLookup(inout FMaterialPixelParameters Parameter
 	else if (SceneTextureId == 14)
 	{
 #if POST_PROCESS_MATERIAL	
-		// SceneColor was transformed to OpenGL coordinates during tonemapping
-		#if !POST_PROCESS_MATERIAL_BEFORE_TONEMAP && (COMPILER_GLSL_ES2 || COMPILER_GLSL_ES3_1)
-		UV.y = 1.0 - UV.y; 
-		#endif
-
 		MaterialFloat4 Input0 = Texture2DSample(PostprocessInput0, PostprocessInput0Sampler, UV);
 		#if POST_PROCESS_MATERIAL_BEFORE_TONEMAP
 		Input0 = Decode32BPPHDR(Input0);
@@ -1593,6 +1607,12 @@ half3 GetMaterialEmissive(FPixelMaterialInputs PixelMaterialInputs)
 half3 GetMaterialEmissiveForCS(FMaterialPixelParameters Parameters)
 {
 %s;
+}
+
+// Shading Model is an uint and represents a SHADINGMODELID_* in ShadingCommon.ush 
+uint GetMaterialShadingModel(FPixelMaterialInputs PixelMaterialInputs)
+{
+	return PixelMaterialInputs.ShadingModel;
 }
 
 half3 GetMaterialBaseColorRaw(FPixelMaterialInputs PixelMaterialInputs)

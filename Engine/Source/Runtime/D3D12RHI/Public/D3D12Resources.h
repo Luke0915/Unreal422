@@ -420,6 +420,7 @@ public:
 		eStandAlone,
 		eSubAllocation,
 		eFastAllocation,
+		eMultiFrameFastAllocation,
 		eAliased, // Oculus is the only API that uses this
 		eNodeReference,
 		eHeapAliased, 
@@ -495,9 +496,17 @@ public:
 	}
 
 
-	inline void AsFastAllocation(FD3D12Resource* Resource, uint32 BufferSize, D3D12_GPU_VIRTUAL_ADDRESS GPUBase, void* CPUBase, uint64 Offset)
+	inline void AsFastAllocation(FD3D12Resource* Resource, uint32 BufferSize, D3D12_GPU_VIRTUAL_ADDRESS GPUBase, void* CPUBase, uint64 Offset, bool bMultiFrame = false)
 	{
-		SetType(FD3D12ResourceLocation::ResourceLocationType::eFastAllocation);
+		if (bMultiFrame)
+		{
+			Resource->AddRef();
+			SetType(ResourceLocationType::eMultiFrameFastAllocation);
+		}
+		else
+		{
+			SetType(ResourceLocationType::eFastAllocation);
+		}
 		SetResource(Resource);
 		SetSize(BufferSize);
 		SetOffsetFromBaseOfResource(Offset);
@@ -523,6 +532,8 @@ public:
 	{
 		return bTransient;
 	}
+
+	void Swap(FD3D12ResourceLocation& Other);
 
 private:
 
@@ -657,6 +668,13 @@ class FD3D12BaseShaderResource : public FD3D12DeviceChild, public IRefCountedObj
 public:
 	FD3D12Resource* GetResource() const { return ResourceLocation.GetResource(); }
 
+	void Swap(FD3D12BaseShaderResource& Other)
+	{
+		::Swap(Parent, Other.Parent);
+		ResourceLocation.Swap(Other.ResourceLocation);
+		::Swap(BufferAlignment, Other.BufferAlignment);
+	}
+
 	FD3D12ResourceLocation ResourceLocation;
 	uint32 BufferAlignment;
 
@@ -711,6 +729,8 @@ public:
 class FD3D12TransientResource
 {
 	// Nothing special for fast ram
+public:
+	void Swap(FD3D12TransientResource&) {}
 };
 class FD3D12FastClearResource {};
 #endif
@@ -719,6 +739,10 @@ class FD3D12FastClearResource {};
 class FD3D12IndexBuffer : public FRHIIndexBuffer, public FD3D12BaseShaderResource, public FD3D12TransientResource, public FD3D12LinkedAdapterObject<FD3D12IndexBuffer>
 {
 public:
+	FD3D12IndexBuffer()
+		: FD3D12BaseShaderResource(nullptr)
+		, LockedData(nullptr)
+	{}
 
 	FD3D12IndexBuffer(FD3D12Device* InParent, uint32 InStride, uint32 InSize, uint32 InUsage)
 		: FRHIIndexBuffer(InStride, InSize, InUsage)
@@ -730,6 +754,10 @@ public:
 
 	void Rename(FD3D12ResourceLocation& NewLocation);
 	void RenameLDAChain(FD3D12ResourceLocation& NewLocation);
+
+	void Swap(FD3D12IndexBuffer& Other);
+
+	void ReleaseUnderlyingResource();
 
 	// IRefCountedObject interface.
 	virtual uint32 AddRef() const
@@ -791,6 +819,12 @@ public:
 	// Current SRV
 	FD3D12ShaderResourceView* DynamicSRV;
 
+	FD3D12VertexBuffer()
+		: FD3D12BaseShaderResource(nullptr)
+		, DynamicSRV(nullptr)
+		, LockedData(nullptr)
+	{}
+
 	FD3D12VertexBuffer(FD3D12Device* InParent, uint32 InStride, uint32 InSize, uint32 InUsage)
 		: FRHIVertexBuffer(InSize, InUsage)
 		, FD3D12BaseShaderResource(InParent)
@@ -809,6 +843,10 @@ public:
 	{
 		DynamicSRV = InSRV;
 	}
+
+	void Swap(FD3D12VertexBuffer& Other);
+
+	void ReleaseUnderlyingResource();
 
 	// IRefCountedObject interface.
 	virtual uint32 AddRef() const

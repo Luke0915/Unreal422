@@ -594,6 +594,9 @@ void USkeletalMeshComponent::OnUnregister()
 
 void USkeletalMeshComponent::InitAnim(bool bForceReinit)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_SkelMeshComp_InitAnim);
+	LLM_SCOPE(ELLMTag::Animation);
+
 	// a lot of places just call InitAnim without checking Mesh, so 
 	// I'm moving the check here
 	if ( SkeletalMesh != nullptr && IsRegistered() )
@@ -750,7 +753,7 @@ bool USkeletalMeshComponent::InitializeAnimScriptInstance(bool bForceReinit)
 
 				if(FAnimNode_SubInput* InputNode = PostProcessAnimInstance->GetSubInputNode())
 				{
-					InputNode->InputPose.SetBoneContainer(&PostProcessAnimInstance->GetRequiredBones());
+					InputNode->CachedInputPose.SetBoneContainer(&PostProcessAnimInstance->GetRequiredBones());
 				}
 
 				bInitializedPostInstance = true;
@@ -793,6 +796,13 @@ void USkeletalMeshComponent::ClearAnimScriptInstance()
 {
 	if (AnimScriptInstance)
 	{
+		// We may be doing parallel evaluation on the current anim instance
+		// Calling this here with true will block this init till that thread completes
+		// and it is safe to continue
+		const bool bBlockOnTask = true; // wait on evaluation task so it is safe to swap the buffers
+		const bool bPerformPostAnimEvaluation = true; // Do PostEvaluation so we make sure to swap the buffers back. 
+		HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
+
 		AnimScriptInstance->EndNotifyStates();
 	}
 	AnimScriptInstance = nullptr;
@@ -1822,14 +1832,14 @@ void USkeletalMeshComponent::EvaluatePostProcessMeshInstance(TArray<FTransform>&
 		{
 			if (InOutPose.IsValid())
 			{
-				InputNode->InputPose.CopyBonesFrom(InOutPose);
-				InputNode->InputCurve.CopyFrom(OutCurve);
+				InputNode->CachedInputPose.CopyBonesFrom(InOutPose);
+				InputNode->CachedInputCurve.CopyFrom(OutCurve);
 			}
 			else
 			{
 				const FBoneContainer& RequiredBone = PostProcessAnimInstance->GetRequiredBonesOnAnyThread();
-				InputNode->InputPose.ResetToRefPose(RequiredBone);
-				InputNode->InputCurve.InitFrom(RequiredBone);
+				InputNode->CachedInputPose.ResetToRefPose(RequiredBone);
+				InputNode->CachedInputCurve.InitFrom(RequiredBone);
 			}
 		}
 
@@ -2579,6 +2589,8 @@ void USkeletalMeshComponent::SetSkeletalMeshWithoutResettingAnimation(USkeletalM
 
 bool USkeletalMeshComponent::AllocateTransformData()
 {
+	LLM_SCOPE(ELLMTag::SkeletalMesh);
+
 	// Allocate transforms if not present.
 	if ( Super::AllocateTransformData() )
 	{
@@ -2679,16 +2691,37 @@ UAnimInstance* USkeletalMeshComponent::GetPostProcessInstance() const
 	return PostProcessAnimInstance;
 }
 
-UAnimInstance* USkeletalMeshComponent::GetSubInstanceByName(FName InName) const
+UAnimInstance* USkeletalMeshComponent::GetSubInstanceByTag(FName InName) const
 {
-	for(UAnimInstance* SubInstance : SubInstances)
+	if(AnimScriptInstance)
 	{
-		if(SubInstance->GetFName() == InName)
-		{
-			return SubInstance;
-		}
+		return AnimScriptInstance->GetSubInstanceByTag(InName);
 	}
+	return nullptr;
+}
 
+void USkeletalMeshComponent::GetSubInstancesByTag(FName InTag, TArray<UAnimInstance*>& OutSubInstances) const
+{
+	if(AnimScriptInstance)
+	{
+		AnimScriptInstance->GetSubInstancesByTag(InTag, OutSubInstances);
+	}
+}
+
+void USkeletalMeshComponent::SetLayerOverlay(TSubclassOf<UAnimInstance> InClass)
+{
+	if(AnimScriptInstance)
+	{
+		AnimScriptInstance->SetLayerOverlay(InClass);
+	}
+}
+
+UAnimInstance* USkeletalMeshComponent::GetLayerSubInstanceByGroup(FName InGroup) const
+{
+	if(AnimScriptInstance)
+	{
+		return AnimScriptInstance->GetLayerSubInstanceByGroup(InGroup);
+	}
 	return nullptr;
 }
 
@@ -2733,6 +2766,11 @@ void USkeletalMeshComponent::HideBone( int32 BoneIndex, EPhysBodyOp PhysBodyOpti
 		return;
 	}
 
+	if (MasterPoseComponent.IsValid())
+	{
+		return;
+	}
+
 	if (BoneSpaceTransforms.IsValidIndex(BoneIndex))
 	{
 		BoneSpaceTransforms[BoneIndex].SetScale3D(FVector::ZeroVector);
@@ -2749,7 +2787,7 @@ void USkeletalMeshComponent::HideBone( int32 BoneIndex, EPhysBodyOp PhysBodyOpti
 	}
 	else
 	{
-		UE_LOG(LogSkeletalMesh, Warning, TEXT("HideBone: Invalid Body Index has entered. This component doesn't contain buffer for the given body."));
+		UE_LOG(LogSkeletalMesh, Warning, TEXT("HideBone[%s]: Invalid Body Index (%d) has entered. This component doesn't contain buffer for the given body."), *GetNameSafe(SkeletalMesh), BoneIndex);
 	}
 }
 
@@ -2758,6 +2796,11 @@ void USkeletalMeshComponent::UnHideBone( int32 BoneIndex )
 	Super::UnHideBone(BoneIndex);
 
 	if (!SkeletalMesh)
+	{
+		return;
+	}
+
+	if (MasterPoseComponent.IsValid())
 	{
 		return;
 	}
@@ -2775,7 +2818,7 @@ void USkeletalMeshComponent::UnHideBone( int32 BoneIndex )
 	}
 	else
 	{
-		UE_LOG(LogSkeletalMesh, Warning, TEXT("UnHideBone: Invalid Body Index has entered. This component doesn't contain buffer for the given body."));
+		UE_LOG(LogSkeletalMesh, Warning, TEXT("UnHideBone[%s]: Invalid Body Index (%d) has entered. This component doesn't contain buffer for the given body."), *GetNameSafe(SkeletalMesh), BoneIndex);
 	}
 }
 

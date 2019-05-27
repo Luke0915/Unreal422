@@ -100,6 +100,8 @@ class CORE_API FThreadHeartBeat : public FRunnable
 	/** Id of the last thread that hung */
 	uint32 LastHungThreadId;
 
+	bool bHangsAreFatal;
+
 	/** Global suspended count */
 	FThreadSafeCounter GlobalSuspendCount;
 
@@ -159,6 +161,12 @@ public:
 	 * Can be used to extend the duration during loading screens etc.
 	 */
 	void SetDurationMultiplier(double NewMultiplier);
+
+	/*
+	* Get the Id of the last thread to trigger the hang detector.
+	* Returns InvalidThreadId if hang detector has not been triggered.
+	*/
+	uint32 GetLastHungThreadId() const { return LastHungThreadId; }
 
 	//~ Begin FRunnable Interface.
 	virtual bool Init();

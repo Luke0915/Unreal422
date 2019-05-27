@@ -10,6 +10,13 @@ StaticMeshUpdate.cpp: Helpers to stream in and out static mesh LODs.
 #include "Streaming/TextureStreamingHelpers.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Serialization/MemoryReader.h"
+#include "Streaming/RenderAssetUpdate.inl"
+
+// Instantiate TRenderAssetUpdate for FStaticMeshUpdateContext
+template class TRenderAssetUpdate<FStaticMeshUpdateContext>;
+
+static constexpr uint32 GMaxNumResourceUpdatesPerLOD = 14;
+static constexpr uint32 GMaxNumResourceUpdatesPerBatch = (MAX_STATIC_MESH_LODS - 1) * GMaxNumResourceUpdatesPerLOD;
 
 FStaticMeshUpdateContext::FStaticMeshUpdateContext(UStaticMesh* InMesh, EThreadType InCurrentThread)
 	: Mesh(InMesh)
@@ -100,22 +107,22 @@ void FStaticMeshStreamIn::FIntermediateBuffers::SafeRelease()
 	AdjacencyIndexBuffer.SafeRelease();
 }
 
-template <int32 MaxNumUpdates>
+template <uint32 MaxNumUpdates>
 void FStaticMeshStreamIn::FIntermediateBuffers::TransferBuffers(FStaticMeshLODResources& LODResource, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
 {
 	FStaticMeshVertexBuffers& VBs = LODResource.VertexBuffers;
 	VBs.StaticMeshVertexBuffer.InitRHIForStreaming(TangentsVertexBuffer, TexCoordVertexBuffer, Batcher);
 	VBs.PositionVertexBuffer.InitRHIForStreaming(PositionVertexBuffer, Batcher);
 	VBs.ColorVertexBuffer.InitRHIForStreaming(ColorVertexBuffer, Batcher);
-	LODResource.IndexBuffer.InitRHIForStreaming(IndexBuffer);
-	LODResource.DepthOnlyIndexBuffer.InitRHIForStreaming(DepthOnlyIndexBuffer);
+	LODResource.IndexBuffer.InitRHIForStreaming(IndexBuffer, Batcher);
+	LODResource.DepthOnlyIndexBuffer.InitRHIForStreaming(DepthOnlyIndexBuffer, Batcher);
 
 	if (LODResource.AdditionalIndexBuffers)
 	{
-		LODResource.AdditionalIndexBuffers->ReversedIndexBuffer.InitRHIForStreaming(ReversedIndexBuffer);
-		LODResource.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.InitRHIForStreaming(ReversedDepthOnlyIndexBuffer);
-		LODResource.AdditionalIndexBuffers->WireframeIndexBuffer.InitRHIForStreaming(WireframeIndexBuffer);
-		LODResource.AdditionalIndexBuffers->AdjacencyIndexBuffer.InitRHIForStreaming(AdjacencyIndexBuffer);
+		LODResource.AdditionalIndexBuffers->ReversedIndexBuffer.InitRHIForStreaming(ReversedIndexBuffer, Batcher);
+		LODResource.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.InitRHIForStreaming(ReversedDepthOnlyIndexBuffer, Batcher);
+		LODResource.AdditionalIndexBuffers->WireframeIndexBuffer.InitRHIForStreaming(WireframeIndexBuffer, Batcher);
+		LODResource.AdditionalIndexBuffers->AdjacencyIndexBuffer.InitRHIForStreaming(AdjacencyIndexBuffer, Batcher);
 	}
 	SafeRelease();
 }
@@ -151,6 +158,8 @@ FStaticMeshStreamIn::~FStaticMeshStreamIn()
 template <bool bRenderThread>
 void FStaticMeshStreamIn::CreateBuffers_Internal(const FContext& Context)
 {
+	LLM_SCOPE(ELLMTag::StaticMesh);
+	
 	UStaticMesh* Mesh = Context.Mesh;
 	FStaticMeshRenderData* RenderData = Context.RenderData;
 	if (!IsCancelled() && Mesh && RenderData)
@@ -210,9 +219,7 @@ void FStaticMeshStreamIn::DoFinishUpdate(const FContext& Context)
 			&& PendingFirstMip < CurrentFirstLODIdx);
 		// Use a scope to flush the batcher before updating CurrentFirstLODIdx
 		{
-			constexpr int32 MaxNumUpdatesPerLOD = 4;
-			constexpr int32 MaxNumUpdates = (MAX_STATIC_MESH_LODS - 1) * MaxNumUpdatesPerLOD;
-			TRHIResourceUpdateBatcher<MaxNumUpdates> Batcher;
+			TRHIResourceUpdateBatcher<GMaxNumResourceUpdatesPerBatch> Batcher;
 
 			for (int32 LODIdx = PendingFirstMip; LODIdx < CurrentFirstLODIdx; ++LODIdx)
 			{
@@ -262,10 +269,8 @@ void FStaticMeshStreamOut::DoReleaseBuffers(const FContext& Context)
 
 		RenderData->CurrentFirstLODIdx = PendingFirstMip;
 		Mesh->SetCachedNumResidentLODs(static_cast<uint8>(RenderData->LODResources.Num() - PendingFirstMip));
-		
-		constexpr int32 MaxNumUpdatesPerLOD = 4;
-		constexpr int32 MaxNumUpdates = (MAX_STATIC_MESH_LODS - 1) * MaxNumUpdatesPerLOD;
-		TRHIResourceUpdateBatcher<MaxNumUpdates> Batcher;
+
+		TRHIResourceUpdateBatcher<GMaxNumResourceUpdatesPerBatch> Batcher;
 
 		for (int32 LODIdx = CurrentFirstLODIdx; LODIdx < PendingFirstMip; ++LODIdx)
 		{
@@ -276,15 +281,15 @@ void FStaticMeshStreamOut::DoReleaseBuffers(const FContext& Context)
 			VBs.PositionVertexBuffer.ReleaseRHIForStreaming(Batcher);
 			VBs.ColorVertexBuffer.ReleaseRHIForStreaming(Batcher);
 			// Index buffers don't need to update SRV so we can reuse ReleaseRHI
-			LODResource.IndexBuffer.ReleaseRHI();
-			LODResource.DepthOnlyIndexBuffer.ReleaseRHI();
+			LODResource.IndexBuffer.ReleaseRHIForStreaming(Batcher);
+			LODResource.DepthOnlyIndexBuffer.ReleaseRHIForStreaming(Batcher);
 
 			if (LODResource.AdditionalIndexBuffers)
 			{
-				LODResource.AdditionalIndexBuffers->ReversedIndexBuffer.ReleaseRHI();
-				LODResource.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.ReleaseRHI();
-				LODResource.AdditionalIndexBuffers->WireframeIndexBuffer.ReleaseRHI();
-				LODResource.AdditionalIndexBuffers->AdjacencyIndexBuffer.ReleaseRHI();
+				LODResource.AdditionalIndexBuffers->ReversedIndexBuffer.ReleaseRHIForStreaming(Batcher);
+				LODResource.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.ReleaseRHIForStreaming(Batcher);
+				LODResource.AdditionalIndexBuffers->WireframeIndexBuffer.ReleaseRHIForStreaming(Batcher);
+				LODResource.AdditionalIndexBuffers->AdjacencyIndexBuffer.ReleaseRHIForStreaming(Batcher);
 			}
 		}
 	}
@@ -295,10 +300,9 @@ void FStaticMeshStreamIn_IO::FCancelIORequestsTask::DoWork()
 	check(PendingUpdate);
 	// Acquire the lock of this object in order to cancel any pending IO.
 	// If the object is currently being ticked, wait.
-	PendingUpdate->DoLock();
+	const ETaskState PreviousTaskState = PendingUpdate->DoLock();
 	PendingUpdate->CancelIORequest();
-	PendingUpdate->DoUnlock();
-	FPlatformAtomics::InterlockedDecrement(&PendingUpdate->ScheduledTaskCount);
+	PendingUpdate->DoUnlock(PreviousTaskState);
 }
 
 FStaticMeshStreamIn_IO::FStaticMeshStreamIn_IO(UStaticMesh* InMesh, int32 InRequestedMips, bool bHighPrio)
@@ -319,7 +323,6 @@ void FStaticMeshStreamIn_IO::Abort()
 		{
 			// Prevent the update from being considered done before this is finished.
 			// By checking that it was not already cancelled, we make sure this doesn't get called twice.
-			FPlatformAtomics::InterlockedIncrement(&ScheduledTaskCount);
 			(new FAsyncCancelIORequestsTask(this))->StartBackgroundTask();
 		}
 	}
@@ -360,7 +363,7 @@ void FStaticMeshStreamIn_IO::SetAsyncFileCallback(const FContext& Context)
 
 		// The tick here is intended to schedule the success or cancel callback.
 		// Using TT_None ensure gets which could create a dead lock.
-		Tick(Context.Mesh, FStaticMeshUpdate::TT_None);
+		Tick(FStaticMeshUpdate::TT_None);
 	};
 }
 
@@ -403,6 +406,7 @@ void FStaticMeshStreamIn_IO::SetIORequest(const FContext& Context, const FString
 		TaskSynchronization.Increment();
 		LODData.Empty(ReadSize);
 		LODData.AddUninitialized(ReadSize);
+
 		IORequest = IOFileHandle->ReadRequest(
 			ReadOffset,
 			ReadSize,
@@ -477,6 +481,7 @@ TStaticMeshStreamIn_IO<bRenderThread>::TStaticMeshStreamIn_IO(UStaticMesh* InMes
 template <bool bRenderThread>
 void TStaticMeshStreamIn_IO<bRenderThread>::DoInitiateIO(const FContext& Context)
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("TStaticMeshStreamIn_IO::DoInitiateIO"), STAT_StaticMeshStreamInIO_DoInitiateIO, STATGROUP_StreamingDetails);
 	check(Context.CurrentThread == TT_Async);
 	const FString IOFilename = GetIOFilename(Context);
 	SetIORequest(Context, IOFilename);
@@ -486,6 +491,7 @@ void TStaticMeshStreamIn_IO<bRenderThread>::DoInitiateIO(const FContext& Context
 template <bool bRenderThread>
 void TStaticMeshStreamIn_IO<bRenderThread>::DoSerializeLODData(const FContext& Context)
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("TStaticMeshStreamIn_IO::DoSerializeLODData"), STAT_StaticMeshStreamInIO_DoSerializeLODData, STATGROUP_StreamingDetails);
 	check(Context.CurrentThread == TT_Async);
 	SerializeLODData(Context);
 	ClearIORequest(Context);
@@ -497,6 +503,7 @@ void TStaticMeshStreamIn_IO<bRenderThread>::DoSerializeLODData(const FContext& C
 template <bool bRenderThread>
 void TStaticMeshStreamIn_IO<bRenderThread>::DoCreateBuffers(const FContext& Context)
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("TStaticMeshStreamIn_IO::DoCreateBuffers"), STAT_StaticMeshStreamInIO_DoCreateBuffers, STATGROUP_StreamingDetails);
 	if (bRenderThread)
 	{
 		CreateBuffers_RenderThread(Context);
@@ -512,6 +519,7 @@ void TStaticMeshStreamIn_IO<bRenderThread>::DoCreateBuffers(const FContext& Cont
 template <bool bRenderThread>
 void TStaticMeshStreamIn_IO<bRenderThread>::DoCancelIO(const FContext& Context)
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("TStaticMeshStreamIn_IO::DoCancelIO"), STAT_StaticMeshStreamInIO_DoCancelIO, STATGROUP_StreamingDetails);
 	ClearIORequest(Context);
 	PushTask(Context, TT_None, nullptr, (EThreadType)Context.CurrentThread, SRA_UPDATE_CALLBACK(DoCancel));
 }
@@ -541,6 +549,7 @@ TStaticMeshStreamIn_DDC<bRenderThread>::TStaticMeshStreamIn_DDC(UStaticMesh* InM
 template <bool bRenderThread>
 void TStaticMeshStreamIn_DDC<bRenderThread>::DoLoadNewLODsFromDDC(const FContext& Context)
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("TStaticMeshStreamInDDC::DoLoadNewLODsFromDDC"), STAT_StaticMeshStreamInDDC_DoLoadNewLODsFromDDC, STATGROUP_StreamingDetails);
 	LoadNewLODsFromDDC(Context);
 	check(!TaskSynchronization.GetValue());
 	const EThreadType TThread = bRenderThread ? TT_Render : TT_Async;
@@ -551,6 +560,7 @@ void TStaticMeshStreamIn_DDC<bRenderThread>::DoLoadNewLODsFromDDC(const FContext
 template <bool bRenderThread>
 void TStaticMeshStreamIn_DDC<bRenderThread>::DoCreateBuffers(const FContext& Context)
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("TStaticMeshStreamInDDC::DoCreateBuffers"), STAT_StaticMeshStreamInDDC_DoCreateBuffers, STATGROUP_StreamingDetails);
 	if (bRenderThread)
 	{
 		CreateBuffers_RenderThread(Context);

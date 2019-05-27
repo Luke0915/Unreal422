@@ -116,6 +116,8 @@
 #include "BaseWidgetBlueprint.h"
 #include "Components/Widget.h"
 #include "UObject/UObjectThreadContext.h"
+#include "AnimGraphNode_SubInput.h"
+#include "AnimGraphNode_Root.h"
 
 extern COREUOBJECT_API bool GBlueprintUseCompilationManager;
 
@@ -718,7 +720,7 @@ void FBlueprintEditorUtils::PreloadConstructionScript(UBlueprint* Blueprint)
 
 void FBlueprintEditorUtils::PatchNewCDOIntoLinker(UObject* CDO, FLinkerLoad* Linker, int32 ExportIndex, FUObjectSerializeContext* InLoadContext)
 {
-	if( (CDO != nullptr) && (Linker != nullptr) && (ExportIndex != INDEX_NONE) )
+	if( (CDO != nullptr) && (Linker != nullptr) && (ExportIndex != INDEX_NONE) && Linker->ExportMap.Num() != 0 )
 	{
 		// Get rid of the old thing that was in its place
 		UObject* OldCDO = Linker->ExportMap[ExportIndex].Object;
@@ -1004,6 +1006,15 @@ struct FRegenerationHelper
 		{
 			Struct->StaticLink(true);
 			ensure(Struct->IsA<UFunction>() || (OldPropertiesSize == Struct->GetPropertiesSize()) || !Struct->HasAnyFlags(RF_LoadCompleted));
+			
+			// UStruct::Link is going to attempt to set the StructFlags, but it has no knowledge of UserDefinedStruct::DefaultStructInstance.
+			// We don't want to set CPF_ZeroConstructor if UserDefinedStruct::DefaultStructInstance has non zero data, so this call
+			// gives UUserDefinedStruct a chance to enforce its invariants. The cooked/EDL path relies on setting struct flags in 
+			// serialize, after link has been called.
+			if(UUserDefinedStruct* AsUDS = Cast<UUserDefinedStruct>(Struct))
+			{
+				AsUDS->UpdateStructFlags();
+			}
 		}
 	}
 
@@ -1816,6 +1827,9 @@ void FBlueprintEditorUtils::PostDuplicateBlueprint(UBlueprint* Blueprint, bool b
 				if (FBlueprintDuplicationScopeFlags::HasAnyFlag(FBlueprintDuplicationScopeFlags::TheSameTimelineGuid))
 				{
 					NewTimeline->TimelineGuid = OldTimeline->TimelineGuid;
+
+					// Ensure that cached names sync back up with the original GUID.
+					FUpdateTimelineCachedNames::Execute(NewTimeline);
 				}
 
 				NewBPGC->Timelines.Add(NewTimeline);
@@ -3920,28 +3934,86 @@ void FBlueprintEditorUtils::SetBlueprintFunctionOrMacroCategory(UEdGraph* Graph,
 	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraphChecked(Graph);
 	if (FKismetUserDeclaredFunctionMetadata* MetaData = FBlueprintEditorUtils::GetGraphFunctionMetaData(Graph))
 	{
-		UFunction* Function = nullptr;
-		for (TFieldIterator<UFunction> FunctionIt(Blueprint->SkeletonGeneratedClass, EFieldIteratorFlags::IncludeSuper); FunctionIt; ++FunctionIt)
+		if(!MetaData->Category.EqualTo(InCategoryName))
 		{
-			if (FunctionIt->GetName() == Graph->GetName())
+			FScopedTransaction Transaction(LOCTEXT("SetBlueprintFunctionOrMacroCategory", "Set Category"));
+
+			FBlueprintEditorUtils::ModifyFunctionMetaData(Graph);
+
+			UFunction* Function = nullptr;
+			for (TFieldIterator<UFunction> FunctionIt(Blueprint->SkeletonGeneratedClass, EFieldIteratorFlags::IncludeSuper); FunctionIt; ++FunctionIt)
 			{
-				Function = *FunctionIt;
-				break;
+				if (FunctionIt->GetName() == Graph->GetName())
+				{
+					Function = *FunctionIt;
+					break;
+				}
+			}
+
+			const FText& NewCategory = InCategoryName.IsEmpty() ? UEdGraphSchema_K2::VR_DefaultCategory : InCategoryName;
+			MetaData->Category = NewCategory;
+
+			if (Function)
+			{
+				check(!Function->IsNative()); // Should never get here with a native function, as we wouldn't have been able to find metadata for it
+				Function->Modify();
+				Function->SetMetaData(FBlueprintMetadata::MD_FunctionCategory, *NewCategory.ToString());
+			}
+
+			if (!bDontRecompile)
+			{
+				FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 			}
 		}
+	}
+}
 
-		const FText& NewCategory = InCategoryName.IsEmpty() ? UEdGraphSchema_K2::VR_DefaultCategory : InCategoryName;
-		MetaData->Category = NewCategory;
+UAnimGraphNode_Root* FBlueprintEditorUtils::GetAnimGraphRoot(UEdGraph* InGraph)
+{
+	if(InGraph->GetSchema()->IsA(UAnimationGraphSchema::StaticClass()))
+	{
+		TArray<UAnimGraphNode_Root*> Roots;
+		InGraph->GetNodesOfClass<UAnimGraphNode_Root>(Roots);
+		check(Roots.Num() == 1);
 
-		if (Function)
+		return Roots[0];
+	}
+	return nullptr;
+}
+
+void FBlueprintEditorUtils::SetAnimationGraphLayerGroup(UEdGraph* InGraph, const FText& InGroupName)
+{
+	if(InGraph->GetSchema()->IsA(UAnimationGraphSchema::StaticClass()))
+	{
+		const FName NewGroup = InGroupName.IsEmpty() ? NAME_None : FName(*InGroupName.ToString());
+		UAnimGraphNode_Root* Root = GetAnimGraphRoot(InGraph);
+		if(NewGroup != Root->Node.Group)
 		{
-			check(!Function->IsNative()); // Should never get here with a native function, as we wouldn't have been able to find metadata for it
-			Function->Modify();
-			Function->SetMetaData(FBlueprintMetadata::MD_FunctionCategory, *NewCategory.ToString());
-		}
+			FScopedTransaction Transaction(LOCTEXT("SetAnimationGraphLayerGroup", "Set Group"));
 
-		if (!bDontRecompile)
-		{
+			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraphChecked(InGraph);
+		
+			Root->Modify();
+
+			UFunction* Function = nullptr;
+			for (TFieldIterator<UFunction> FunctionIt(Blueprint->SkeletonGeneratedClass, EFieldIteratorFlags::IncludeSuper); FunctionIt; ++FunctionIt)
+			{
+				if (FunctionIt->GetName() == InGraph->GetName())
+				{
+					Function = *FunctionIt;
+					break;
+				}
+			}
+
+		
+			Root->Node.Group = NewGroup;
+
+			if (Function)
+			{
+				Function->Modify();
+				Function->SetMetaData(FBlueprintMetadata::MD_FunctionCategory, NewGroup == NAME_None ? TEXT("") : *NewGroup.ToString());
+			}
+
 			FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 		}
 	}
@@ -5655,10 +5727,9 @@ bool FBlueprintEditorUtils::ShouldNativizeImplicitly(const UBlueprint* Blueprint
 //////////////////////////////////////////////////////////////////////////
 // Interfaces
 
-FGuid FBlueprintEditorUtils::FindInterfaceFunctionGuid(const UFunction* Function, const UClass* InterfaceClass)
+FGuid FBlueprintEditorUtils::FindInterfaceGraphGuid(const FName& GraphName, const UClass* InterfaceClass)
 {
 	// check if this is a blueprint - only blueprint interfaces can have Guids
-	check(Function);
 	check(InterfaceClass);
 	const UBlueprint* InterfaceBlueprint = Cast<UBlueprint>(InterfaceClass->ClassGeneratedBy);
 	if(InterfaceBlueprint != nullptr)
@@ -5669,7 +5740,7 @@ FGuid FBlueprintEditorUtils::FindInterfaceFunctionGuid(const UFunction* Function
 
 		for (const UEdGraph* InterfaceGraph : InterfaceGraphs)
 		{
-			if(InterfaceGraph != nullptr && InterfaceGraph->GetFName() == Function->GetFName())
+			if(InterfaceGraph != nullptr && InterfaceGraph->GetFName() == GraphName)
 			{
 				return InterfaceGraph->GraphGuid;
 			}
@@ -5677,6 +5748,12 @@ FGuid FBlueprintEditorUtils::FindInterfaceFunctionGuid(const UFunction* Function
 	}
 
 	return FGuid();
+}
+
+FGuid FBlueprintEditorUtils::FindInterfaceFunctionGuid(const UFunction* Function, const UClass* InterfaceClass)
+{
+	check(Function);
+	return FindInterfaceGraphGuid(Function->GetFName(), InterfaceClass);
 }
 
 // Add a new interface, and member function graphs to the blueprint
@@ -5716,7 +5793,9 @@ bool FBlueprintEditorUtils::ImplementNewInterface(UBlueprint* Blueprint, const F
 	for( TFieldIterator<UFunction> FunctionIter(InterfaceClass, EFieldIteratorFlags::IncludeSuper); FunctionIter; ++FunctionIter )
 	{
 		UFunction* Function = *FunctionIter;
-		if( UEdGraphSchema_K2::CanKismetOverrideFunction(Function) && !UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function) )
+		const bool bIsAnimFunction = Function->HasMetaData(FBlueprintMetadata::MD_AnimBlueprintFunction) && Blueprint->IsA<UAnimBlueprint>();
+		if( (UEdGraphSchema_K2::CanKismetOverrideFunction(Function) && !UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function)) || 
+			bIsAnimFunction)
 		{
 			FName FunctionName = Function->GetFName();
 			UEdGraph* FuncGraph = FindObject<UEdGraph>( Blueprint, *(FunctionName.ToString()) );
@@ -5735,7 +5814,15 @@ bool FBlueprintEditorUtils::ImplementNewInterface(UBlueprint* Blueprint, const F
 				break;
 			}
 
-			UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(Blueprint, FunctionName, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+			UEdGraph* NewGraph;
+			if(bIsAnimFunction)
+			{
+				NewGraph = FBlueprintEditorUtils::CreateNewGraph(Blueprint, FunctionName, UAnimationGraph::StaticClass(), UAnimationGraphSchema::StaticClass());
+			}
+			else
+			{
+				NewGraph = FBlueprintEditorUtils::CreateNewGraph(Blueprint, FunctionName, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+			}
 			NewGraph->bAllowDeletion = false;
 			NewGraph->InterfaceGuid = FindInterfaceFunctionGuid(Function, InterfaceClass);
 
@@ -5903,6 +5990,14 @@ void FBlueprintEditorUtils::PromoteGraphFromInterfaceOverride(UBlueprint* InBlue
 				FunctionResult->PromoteFromInterfaceOverride(false);
 			}
 		}
+	}
+
+	// Promote any animation sub-inputs
+	TArray<UAnimGraphNode_SubInput*> SubInputNodes;
+	InInterfaceGraph->GetNodesOfClass(SubInputNodes);
+	for (UAnimGraphNode_SubInput* SubInput : SubInputNodes)
+	{
+		SubInput->PromoteFromInterfaceOverride();
 	}
 }
 
@@ -6411,10 +6506,10 @@ static void ConformInterfaceByName(UBlueprint* Blueprint, FBPInterfaceDescriptio
 		}
 
 		// Cache off the graph names for this interface, for easier searching
-		TMap<FName, const UEdGraph*> InterfaceFunctionGraphs;
+		TMap<FName, UEdGraph*> InterfaceFunctionGraphs;
 		for (int32 GraphIndex = 0; GraphIndex < CurrentInterfaceDesc.Graphs.Num(); GraphIndex++)
 		{
-			const UEdGraph* CurrentGraph = CurrentInterfaceDesc.Graphs[GraphIndex];
+			UEdGraph* CurrentGraph = CurrentInterfaceDesc.Graphs[GraphIndex];
 			if( CurrentGraph )
 			{
 				InterfaceFunctionGraphs.Add(CurrentGraph->GetFName()) = CurrentGraph;
@@ -6437,7 +6532,7 @@ static void ConformInterfaceByName(UBlueprint* Blueprint, FBPInterfaceDescriptio
 			{
 				if( UEdGraphSchema_K2::CanKismetOverrideFunction(Function) && !UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function) )
 				{
-					if (const UEdGraph** FunctionGraphPtr = InterfaceFunctionGraphs.Find(FunctionName))
+					if (UEdGraph** FunctionGraphPtr = InterfaceFunctionGraphs.Find(FunctionName))
 					{
 						const bool bIsConstInterfaceFunction = (Function->FunctionFlags & FUNC_Const) != 0;
 
@@ -6483,6 +6578,24 @@ static void ConformInterfaceByName(UBlueprint* Blueprint, FBPInterfaceDescriptio
 						FBlueprintEditorUtils::AddInterfaceGraph(Blueprint, NewGraph, CurrentInterfaceDesc.Interface);
 					}
 				}
+				else if(Function->HasMetaData(FBlueprintMetadata::MD_AnimBlueprintFunction))
+				{
+					if (UEdGraph** FunctionGraphPtr = InterfaceFunctionGraphs.Find(FunctionName))
+					{
+						UAnimationGraphSchema::ConformAnimGraphToInterface(Blueprint, *(*FunctionGraphPtr), Function);
+					}
+					// We perform the check here to avoid creating a graph if it isnt implemented in the full interface (note not the skeleton interface that we are iterating over)
+					// this is to avoid creating it then removing the graph below if it isnt present in the full class, which will cause a name conflict second time around
+					else if(FindField<UFunction>(CurrentInterfaceDesc.Interface, FunctionName))
+					{
+						UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(Blueprint, FunctionName, UAnimationGraph::StaticClass(), UAnimationGraphSchema::StaticClass());
+						NewGraph->bAllowDeletion = false;
+						NewGraph->InterfaceGuid = FBlueprintEditorUtils::FindInterfaceFunctionGuid(Function, CurrentInterfaceDesc.Interface);
+						CurrentInterfaceDesc.Graphs.Add(NewGraph);
+
+						FBlueprintEditorUtils::AddInterfaceGraph(Blueprint, NewGraph, CurrentInterfaceDesc.Interface);
+					}
+				}
 			}
 			else
 			{
@@ -6502,6 +6615,7 @@ static void ConformInterfaceByName(UBlueprint* Blueprint, FBPInterfaceDescriptio
 		{
 			// If we can't find the function associated with the graph, delete it
 			const UEdGraph* CurrentGraph = CurrentInterfaceDesc.Graphs[GraphIndex];
+
 			if (!CurrentGraph || !FindField<UFunction>(CurrentInterfaceDesc.Interface, CurrentGraph->GetFName()))
 			{
 				CurrentInterfaceDesc.Graphs.RemoveAt(GraphIndex, 1);
@@ -6548,7 +6662,6 @@ void FBlueprintEditorUtils::ConformImplementedInterfaces(UBlueprint* Blueprint)
 			}
 		}
 	}
-
 	for (int32 InterfaceIndex = 0; InterfaceIndex < Blueprint->ImplementedInterfaces.Num(); )
 	{
 		FBPInterfaceDescription& CurrentInterface = Blueprint->ImplementedInterfaces[InterfaceIndex];
@@ -6602,28 +6715,31 @@ void FBlueprintEditorUtils::UpdateOutOfDateAnimBlueprints(UBlueprint* InBlueprin
 		}
 
 		// Handle a reparented anim blueprint that either needs or no longer needs an anim graph
-		if (UAnimBlueprint::FindRootAnimBlueprint(AnimBlueprint) == nullptr)
+		if(AnimBlueprint->BlueprintType != BPTYPE_Interface)
 		{
-			// Add an anim graph if not present
-			if (FindObject<UEdGraph>(AnimBlueprint, *(UEdGraphSchema_K2::GN_AnimGraph.ToString())) == nullptr)
+			if (UAnimBlueprint::FindRootAnimBlueprint(AnimBlueprint) == nullptr)
 			{
-				UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(AnimBlueprint, UEdGraphSchema_K2::GN_AnimGraph, UAnimationGraph::StaticClass(), UAnimationGraphSchema::StaticClass());
-				FBlueprintEditorUtils::AddDomainSpecificGraph(AnimBlueprint, NewGraph);
-				AnimBlueprint->LastEditedDocuments.Add(NewGraph);
-				NewGraph->bAllowDeletion = false;
-			}
-		}
-		else
-		{
-			// Remove an anim graph if present
-			for (int32 i = 0; i < AnimBlueprint->FunctionGraphs.Num(); ++i)
-			{
-				UEdGraph* FuncGraph = AnimBlueprint->FunctionGraphs[i];
-				if ((FuncGraph != nullptr) && (FuncGraph->GetFName() == UEdGraphSchema_K2::GN_AnimGraph))
+				// Add an anim graph if not present
+				if (FindObject<UEdGraph>(AnimBlueprint, *(UEdGraphSchema_K2::GN_AnimGraph.ToString())) == nullptr)
 				{
-					UE_LOG(LogBlueprint, Log, TEXT("!!! Removing AnimGraph from %s, because it has a parent anim blueprint that defines the AnimGraph"), *AnimBlueprint->GetPathName());
-					AnimBlueprint->FunctionGraphs.RemoveAt(i);
-					break;
+					UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(AnimBlueprint, UEdGraphSchema_K2::GN_AnimGraph, UAnimationGraph::StaticClass(), UAnimationGraphSchema::StaticClass());
+					FBlueprintEditorUtils::AddDomainSpecificGraph(AnimBlueprint, NewGraph);
+					AnimBlueprint->LastEditedDocuments.Add(NewGraph);
+					NewGraph->bAllowDeletion = false;
+				}
+			}
+			else
+			{
+				// Remove an anim graph if present
+				for (int32 i = 0; i < AnimBlueprint->FunctionGraphs.Num(); ++i)
+				{
+					UEdGraph* FuncGraph = AnimBlueprint->FunctionGraphs[i];
+					if ((FuncGraph != nullptr) && (FuncGraph->GetFName() == UEdGraphSchema_K2::GN_AnimGraph))
+					{
+						UE_LOG(LogBlueprint, Log, TEXT("!!! Removing AnimGraph from %s, because it has a parent anim blueprint that defines the AnimGraph"), *AnimBlueprint->GetPathName());
+						AnimBlueprint->FunctionGraphs.RemoveAt(i);
+						break;
+					}
 				}
 			}
 		}
@@ -7644,6 +7760,8 @@ TSharedRef<SWidget> FBlueprintEditorUtils::ConstructBlueprintParentClassPicker( 
 	bool bIsAnimBlueprint = false;
 	bool bIsLevelScriptActor = false;
 	bool bIsComponentBlueprint = false;
+	bool bIsEditorOnlyBlueprint = false;
+	bool bIsWidgetBlueprint = false;
 	TArray<UClass*> BlueprintClasses;
 	for( auto BlueprintIter = Blueprints.CreateConstIterator(); (!bIsActor && !bIsAnimBlueprint) && BlueprintIter; ++BlueprintIter )
 	{
@@ -7652,6 +7770,8 @@ TSharedRef<SWidget> FBlueprintEditorUtils::ConstructBlueprintParentClassPicker( 
 		bIsAnimBlueprint |= Blueprint->IsA(UAnimBlueprint::StaticClass());
 		bIsLevelScriptActor |= Blueprint->ParentClass->IsChildOf( ALevelScriptActor::StaticClass() );
 		bIsComponentBlueprint |= Blueprint->ParentClass->IsChildOf( UActorComponent::StaticClass() );
+		bIsEditorOnlyBlueprint |= IsEditorUtilityBlueprint(Blueprint);
+		bIsWidgetBlueprint = Blueprint->IsA(UBaseWidgetBlueprint::StaticClass());
 		if(Blueprint->GeneratedClass)
 		{
 			BlueprintClasses.Add(Blueprint->GeneratedClass);
@@ -7668,6 +7788,7 @@ TSharedRef<SWidget> FBlueprintEditorUtils::ConstructBlueprintParentClassPicker( 
 
 	// Only allow parenting to base blueprints.
 	Options.bIsBlueprintBaseOnly = true;
+	Options.bEditorClassesOnly = bIsEditorOnlyBlueprint;
 
 	// never allow parenting to Interface
 	Filter->DisallowedChildrenOfClasses.Add( UInterface::StaticClass() );
@@ -7709,6 +7830,10 @@ TSharedRef<SWidget> FBlueprintEditorUtils::ConstructBlueprintParentClassPicker( 
 	{
 		// If it is a component blueprint, only allow classes under and including UActorComponent
 		Filter->AllowedChildrenOfClasses.Add( UActorComponent::StaticClass() );
+	}
+	else if (bIsEditorOnlyBlueprint && !bIsWidgetBlueprint)
+	{
+		Filter->DisallowedChildrenOfClasses.Add(UWidget::StaticClass());
 	}
 	else
 	{
@@ -8722,6 +8847,22 @@ FKismetUserDeclaredFunctionMetadata* FBlueprintEditorUtils::GetGraphFunctionMeta
 	}
 
 	return nullptr;
+}
+
+void FBlueprintEditorUtils::ModifyFunctionMetaData(const UEdGraph* InGraph)
+{
+	if (InGraph)
+	{
+		UK2Node_EditablePinBase* FunctionEntryNode = GetEntryNode(InGraph);
+		if (UK2Node_FunctionEntry* TypedEntryNode = Cast<UK2Node_FunctionEntry>(FunctionEntryNode))
+		{
+			TypedEntryNode->Modify();
+		}
+		else if (UK2Node_Tunnel* TunnelNode = ExactCast<UK2Node_Tunnel>(FunctionEntryNode))
+		{
+			TunnelNode->Modify();
+		}
+	}
 }
 
 FText FBlueprintEditorUtils::GetGraphDescription(const UEdGraph* InGraph)

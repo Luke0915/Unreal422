@@ -32,6 +32,16 @@ bool GMetalCommandBufferHasStartEndTimeAPI = false;
 
 FMetalBufferFormat GMetalBufferFormats[PF_MAX];
 
+static TAutoConsoleVariable<int32> CVarUseRHIThread(
+													TEXT("r.Metal.IOSRHIThread"),
+													0,
+													TEXT("Controls RHIThread usage for IOS:\n")
+													TEXT("\t0: No RHIThread.\n")
+													TEXT("\t1: Use RHIThread.\n")
+													TEXT("Default is 0."),
+													ECVF_Default | ECVF_RenderThreadSafe
+													);
+
 static void ValidateTargetedRHIFeatureLevelExists(EShaderPlatform Platform)
 {
 	bool bSupportsShaderPlatform = false;
@@ -69,7 +79,7 @@ static void ValidateTargetedRHIFeatureLevelExists(EShaderPlatform Platform)
 		FMessageDialog::Open(EAppMsgType::Ok, LocalizedMsg, &Title);
 		FPlatformMisc::RequestExit(true);
 		
-		UE_LOG(LogMetal, Fatal, TEXT("Shader platform: %s was not cooked! Please enable this shader platform in the project's target settings."), *LegacyShaderPlatformToShaderFormat(Platform).ToString());
+		METAL_FATAL_ERROR(TEXT("Shader platform: %s was not cooked! Please enable this shader platform in the project's target settings."), *LegacyShaderPlatformToShaderFormat(Platform).ToString());
 	}
 }
 
@@ -150,9 +160,10 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 
     bool bProjectSupportsMRTs = false;
     GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetalMRT"), bProjectSupportsMRTs, GEngineIni);
-	
+
 	bool const bRequestedMetalMRT = ((RequestedFeatureLevel >= ERHIFeatureLevel::SM4) || (!bRequestedFeatureLevel && FParse::Param(FCommandLine::Get(),TEXT("metalmrt"))));
-	
+	bSupportsRHIThread = FParse::Param(FCommandLine::Get(),TEXT("rhithread"));
+
     // only allow GBuffers, etc on A8s (A7s are just not going to cut it)
     if (bProjectSupportsMRTs && bCanUseWideMRTs && bRequestedMetalMRT)
     {
@@ -164,8 +175,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
         GMaxRHIShaderPlatform = SP_METAL_MRT;
 #endif
 		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
-		
-		bSupportsRHIThread = FParse::Param(FCommandLine::Get(),TEXT("rhithread"));
     }
     else
 	{
@@ -422,6 +431,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	}
 	else
 	{
+		GRHISupportsRHIThread = bSupportsRHIThread || (CVarUseRHIThread.GetValueOnAnyThread() > 0);
 		GRHISupportsParallelRHIExecute = false;
 		GSupportsEfficientAsyncCompute = false;
 		GSupportsParallelOcclusionQueries = false;
@@ -501,7 +511,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMaxShadowDepthBufferSizeX = 16384;
 	GMaxShadowDepthBufferSizeY = 16384;
     bSupportsD16 = !FParse::Param(FCommandLine::Get(),TEXT("nometalv2")) && Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v2);
-    GRHISupportsHDROutput = FPlatformMisc::MacOSXVersionCompare(10,13,0) >= 0 && Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v2);
+    GRHISupportsHDROutput = FPlatformMisc::MacOSXVersionCompare(10,14,4) >= 0 && Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v2);
 	GRHIHDRDisplayOutputFormat = (GRHISupportsHDROutput) ? PF_PLATFORM_HDR_0 : PF_B8G8R8A8;
 #else
 #if PLATFORM_TVOS

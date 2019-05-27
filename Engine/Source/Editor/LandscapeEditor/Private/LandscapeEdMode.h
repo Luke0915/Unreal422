@@ -12,6 +12,7 @@
 #include "LandscapeInfo.h"
 #include "LandscapeLayerInfoObject.h"
 #include "LandscapeGizmoActiveActor.h"
+#include "LandscapeEdit.h"
 
 class ALandscape;
 class FCanvas;
@@ -69,9 +70,9 @@ struct FLandscapeTargetListInfo
 	TWeakObjectPtr<class UMaterialInstanceConstant> ThumbnailMIC;	// ignored for heightmap
 	int32 DebugColorChannel;										// ignored for heightmap
 	uint32 bValid : 1;												// ignored for heightmap
-	int32 ProceduralLayerIndex;
+	int32 LayerIndex;
 
-	FLandscapeTargetListInfo(FText InTargetName, ELandscapeToolTargetType::Type InTargetType, const FLandscapeInfoLayerSettings& InLayerSettings, int32 InProceduralLayerIndex)
+	FLandscapeTargetListInfo(FText InTargetName, ELandscapeToolTargetType::Type InTargetType, const FLandscapeInfoLayerSettings& InLayerSettings, int32 InLayerIndex)
 		: TargetName(InTargetName)
 		, TargetType(InTargetType)
 		, LandscapeInfo(InLayerSettings.Owner->GetLandscapeInfo())
@@ -81,11 +82,11 @@ struct FLandscapeTargetListInfo
 		, ThumbnailMIC(InLayerSettings.ThumbnailMIC)
 		, DebugColorChannel(InLayerSettings.DebugColorChannel)
 		, bValid(InLayerSettings.bValid)
-		, ProceduralLayerIndex (InProceduralLayerIndex)
+		, LayerIndex(InLayerIndex)
 	{
 	}
 
-	FLandscapeTargetListInfo(FText InTargetName, ELandscapeToolTargetType::Type InTargetType, ULandscapeInfo* InLandscapeInfo, int32 InProceduralLayerIndex)
+	FLandscapeTargetListInfo(FText InTargetName, ELandscapeToolTargetType::Type InTargetType, ULandscapeInfo* InLandscapeInfo, int32 InLayerIndex)
 		: TargetName(InTargetName)
 		, TargetType(InTargetType)
 		, LandscapeInfo(InLandscapeInfo)
@@ -94,7 +95,7 @@ struct FLandscapeTargetListInfo
 		, Owner(NULL)
 		, ThumbnailMIC(NULL)
 		, bValid(true)
-		, ProceduralLayerIndex(InProceduralLayerIndex)
+		, LayerIndex(InLayerIndex)
 	{
 	}
 
@@ -250,11 +251,13 @@ enum class ELandscapeEditingState : uint8
 /**
  * Landscape editor mode
  */
-class FEdModeLandscape : public FEdMode
+class FEdModeLandscape : public FEdMode, public ILandscapeEdModeInterface
 {
 public:
 
 	ULandscapeEditorObject* UISettings;
+
+	FText ErrorReasonOnMouseUp;
 
 	FLandscapeToolMode* CurrentToolMode;
 	FLandscapeTool* CurrentTool;
@@ -321,10 +324,16 @@ public:
 	void InitializeTool_Ramp();
 	void InitializeTool_Mirror();
 	void InitializeTool_BPCustom();
-	void InitializeToolModes();
+	void UpdateToolModes();
 
 	/** Destructor */
 	virtual ~FEdModeLandscape();
+
+	/** ILandscapeEdModeInterface */
+	virtual ELandscapeToolTargetType::Type GetLandscapeToolTargetType() const override;
+	virtual const FLandscapeLayer* GetLandscapeSelectedLayer() const override;
+	virtual ULandscapeLayerInfoObject* GetSelectedLandscapeLayerInfo() const override;
+	virtual void OnCanHaveLayersContentChanged() override;
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
@@ -477,7 +486,9 @@ public:
 
 	int32 UpdateLandscapeList();
 	void UpdateTargetList();
-	
+	void SetTargetLandscape(const TWeakObjectPtr<ULandscapeInfo>& InLandscapeInfo);
+	bool CanEditCurrentTarget(FText* Reason = nullptr) const;
+
 	/** Update Display order list */
 	void UpdateTargetLayerDisplayOrder(ELandscapeLayerDisplayMode InTargetDisplayOrder);
 	void MoveTargetLayerDisplayOrder(int32 IndexToMove, int32 IndexToDestination);
@@ -489,42 +500,52 @@ public:
 	void OnLandscapeMaterialChangedDelegate();
 	void RefreshDetailPanel();
 
-	// Procedural Layers
-	int32 GetProceduralLayerCount() const;
-	void SetCurrentProceduralLayer(int32 InLayerIndex);
-	int32 GetCurrentProceduralLayerIndex() const;
+	// Layers
+	bool CanHaveLandscapeLayersContent() const;
+	bool HasLandscapeLayersContent() const;
+	int32 GetLayerCount() const;
+	void SetCurrentLayer(int32 InLayerIndex);
+	int32 GetCurrentLayerIndex() const;
 	ALandscape* GetLandscape() const;
-	struct FProceduralLayer* GetProceduralLayer(int32 InLayerIndex) const;
-	FName GetProceduralLayerName(int32 InLayerIndex) const;
-	void SetProceduralLayerName(int32 InLayerIndex, const FName& InName);
-	bool CanRenameProceduralLayerTo(int32 InLayerIndex, const FName& InNewName);
-	float GetProceduralLayerAlpha(int32 InLayerIndex) const;
-	void SetProceduralLayerAlpha(int32 InLayerIndex, float InAlpha);
-	void SetProceduralLayerVisibility(bool InVisible, int32 InLayerIndex);
-	bool IsProceduralLayerVisible(int32 InLayerIndex) const;
-	bool IsProceduralLayerLocked(int32 InLayerIndex) const;
-	void SetProceduralLayerLocked(int32 InLayerIndex, bool bInLocked);
-	struct FProceduralLayer* GetCurrentProceduralLayer() const;
-	FGuid GetCurrentProceduralLayerGuid() const;
-	bool IsCurrentProceduralLayerBlendSubstractive(const TWeakObjectPtr<ULandscapeLayerInfoObject>& InLayerInfoObj) const;
-	void SetCurrentProceduralLayerSubstractiveBlendStatus(bool InStatus, const TWeakObjectPtr<ULandscapeLayerInfoObject>& InLayerInfoObj);
+	struct FLandscapeLayer* GetLayer(int32 InLayerIndex) const;
+	FName GetLayerName(int32 InLayerIndex) const;
+	void SetLayerName(int32 InLayerIndex, const FName& InName);
+	bool CanRenameLayerTo(int32 InLayerIndex, const FName& InNewName);
+	void SetLayerAlpha(int32 InLayerIndex, float InAlpha);
+	float GetLayerAlpha(int32 InLayerIndex) const;
+	float GetClampedLayerAlpha(float InLayerAlpha) const;
+	void SetLayerVisibility(bool InVisible, int32 InLayerIndex);
+	bool IsLayerVisible(int32 InLayerIndex) const;
+	bool IsLayerLocked(int32 InLayerIndex) const;
+	bool IsLayerAlphaVisible(int32 InLayerIndex) const;
+	void SetLayerLocked(int32 InLayerIndex, bool bInLocked);
+	struct FLandscapeLayer* GetCurrentLayer() const;
+	FGuid GetCurrentLayerGuid() const;
+	bool IsCurrentLayerBlendSubstractive(const TWeakObjectPtr<ULandscapeLayerInfoObject>& InLayerInfoObj) const;
+	void SetCurrentLayerSubstractiveBlendStatus(bool InStatus, const TWeakObjectPtr<ULandscapeLayerInfoObject>& InLayerInfoObj);
+	void UpdateLandscapeSplines(bool bUpdateOnlySelected = false);
+	void AutoUpdateDirtyLandscapeSplines();
+	bool CanEditLayer(FText* Reason = nullptr, FLandscapeLayer* InLayer = nullptr);
 
-	void AddBrushToCurrentProceduralLayer(int32 InTargetType, class ALandscapeBlueprintCustomBrush* InBrush);
-	void RemoveBrushFromCurrentProceduralLayer(int32 InTargetType, class ALandscapeBlueprintCustomBrush* InBrush);
-	bool AreAllBrushesCommitedToCurrentProceduralLayer(int32 InTargetType);
-	void SetCurrentProceduralLayerBrushesCommitState(int32 InTargetType, bool InCommited);
-	TArray<int8>& GetBrushesOrderForCurrentProceduralLayer(int32 InTargetType) const;
-	class ALandscapeBlueprintCustomBrush* GetBrushForCurrentProceduralLayer(int32 InTargetType, int8 BrushIndex) const;
-	TArray<class ALandscapeBlueprintCustomBrush*> GetBrushesForCurrentProceduralLayer(int32 InTargetType);
+	void AddBrushToCurrentLayer(int32 InTargetType, class ALandscapeBlueprintCustomBrush* InBrush);
+	void RemoveBrushFromCurrentLayer(int32 InTargetType, class ALandscapeBlueprintCustomBrush* InBrush);
+	bool AreAllBrushesCommitedToCurrentLayer(int32 InTargetType);
+	void SetBrushesCommitStateForCurrentLayer(int32 InTargetType, bool InCommited);
+	TArray<int8>& GetBrushesOrderForCurrentLayer(int32 InTargetType) const;
+	class ALandscapeBlueprintCustomBrush* GetBrushForCurrentLayer(int32 InTargetType, int8 BrushIndex) const;
+	TArray<class ALandscapeBlueprintCustomBrush*> GetBrushesForCurrentLayer(int32 InTargetType);
 	
-	bool NeedToFillEmptyLayersForProcedural() const;
-	void RequestProceduralContentUpdate(bool InUpdateAllMaterials = false);
+	bool NeedToFillEmptyMaterialLayers() const;
+	void RequestLayersContentUpdate(ELandscapeLayerUpdateMode InUpdateMode);
+	void RequestLayersContentUpdateForceAll(ELandscapeLayerUpdateMode InUpdateMode = ELandscapeLayerUpdateMode::Update_All);
 
 	void OnLevelActorAdded(AActor* InActor);
 	void OnLevelActorRemoved(AActor* InActor);
 
 	DECLARE_EVENT(FEdModeLandscape, FTargetsListUpdated);
 	static FTargetsListUpdated TargetsListUpdated;
+
+	void OnPreSaveWorld(uint32 InSaveFlags, const class UWorld* InWorld);
 
 	/** Called when the user presses a button on their motion controller device */
 	void OnVRAction(FEditorViewportClient& ViewportClient, UViewportInteractor* Interactor, const FViewportActionKeyInput& Action, bool& bOutIsInputCaptured, bool& bWasHandled);
@@ -558,6 +579,8 @@ public:
 	{
 		return GetEditingState() == ELandscapeEditingState::Enabled;
 	}
+
+	void SetLandscapeInfo(ULandscapeInfo* InLandscapeInfo);
 	
 private:
 	TArray<TSharedRef<FLandscapeTargetListInfo>> LandscapeTargetList;
@@ -577,7 +600,7 @@ private:
 
 	FDelegateHandle OnLevelActorDeletedDelegateHandle;
 	FDelegateHandle OnLevelActorAddedDelegateHandle;
-
+	
 	/** Check if we are painting using the VREditor */
 	bool bIsPaintingInVR;
 

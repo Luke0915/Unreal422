@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Engine/EngineTypes.h"
+#include "FinalPostProcessSettings.h"
 #include "SceneTypes.h"
 #include "GameFramework/PlayerController.h"
 #include "DebugCameraController.generated.h"
@@ -35,6 +36,18 @@ class ENGINE_API ADebugCameraController
 	/** Whether to orbit selected actor. */
 	UPROPERTY()
 	uint32 bIsOrbitingSelectedActor : 1;
+
+	/** When orbiting, true if using actor center as pivot, false if using last selected hitpoint */
+	UPROPERTY()
+	uint32 bOrbitPivotUseCenter:1;
+
+	/** Whether set view mode to display GBuffer visualization */
+	UPROPERTY()
+	uint32 bEnableBufferVisualization : 1;
+
+	/** Whether set view mode to display GBuffer visualization */
+	UPROPERTY()
+	uint32 bEnableBufferVisualizationFullMode : 1;
 
 	/** Visualizes the frustum of the camera */
 	UPROPERTY()
@@ -72,17 +85,63 @@ class ENGINE_API ADebugCameraController
 	 */
 	virtual void ToggleFreezeRendering();
 
+	/** Method called prior to processing input */
+	virtual void PreProcessInput(const float DeltaTime, const bool bGamePaused);
+
 	/**
 	 * Updates the rotation of player, based on ControlRotation after RotationInput has been applied.
 	 * This may then be modified by the PlayerCamera, and is passed to Pawn->FaceRotation().
 	 */
 	virtual void UpdateRotation(float DeltaTime) override;
 
+	/** Pre process input when orbiting */
+	void PreProcessInputForOrbit(const float DeltaTime, const bool bGamePaused);
+
+	/** Updates the rotation and location of player when orbiting */
+	void UpdateRotationForOrbit(float DeltaTime);
+
 	/** Gets pivot to use when orbiting */
 	bool GetPivotForOrbit(FVector& PivotLocation) const;
 
-	/** Toggles camera orbit using current hit point as pivot */
-	virtual void ToggleOrbit();
+	/** Toggles camera orbit */
+	void ToggleOrbit(bool bOrbitCenter);
+
+	/** Toggles camera orbit center */
+	void ToggleOrbitCenter();
+
+	/** Toggles camera orbit hitpoint */
+	void ToggleOrbitHitPoint();
+
+	/** Cycle view mode */
+	void CycleViewMode();
+
+	/** Toggle buffer visualization overview */
+	void ToggleBufferVisualizationOverviewMode();
+
+	/** Buffer overview move up */
+	void BufferVisualizationMoveUp();
+
+	/** Buffer overview move down */
+	void BufferVisualizationMoveDown();
+
+	/** Buffer overview move right */
+	void BufferVisualizationMoveRight();
+
+	/** Buffer overview move left */
+	void BufferVisualizationMoveLeft();
+
+	/** Toggle buffer visualization full display */
+	void ToggleBufferVisualizationFullMode();
+
+	/** Set buffer visualization full mode */
+	void SetBufferVisualizationFullMode(bool bFullMode);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+	/** Update visualize buffer post processing settings */
+	void UpdateVisualizeBufferPostProcessing(FFinalPostProcessSettings& InOutPostProcessingSettings);
+
+#endif
 
 public:
 
@@ -97,6 +156,10 @@ public:
 	/** Currently selected component, may be invalid */
 	UPROPERTY()
 	class UPrimitiveComponent* SelectedComponent;
+
+	/** Selected hit point */
+	UPROPERTY()
+	FHitResult SelectedHitPoint;
 
 	/** Controller that was active before this was spawned */
 	UPROPERTY()	
@@ -194,6 +257,15 @@ protected:
 
 	virtual void SetSpectatorPawn(class ASpectatorPawn* NewSpectatorPawn) override;
 
+	/** Get buffer visualization overview targets based on console var */
+	TArray<FString> GetBufferVisualizationOverviewTargets();
+
+	/** Get next buffer */
+	void GetNextBuffer(const TArray<FString>& OverviewBuffers, int32 Step = 1);
+
+	/** Get next buffer */
+	void GetNextBuffer(int32 Step = 1);
+
 private:
 
 	/** The normalized screen location when a drag starts */
@@ -202,8 +274,20 @@ private:
 	/** Last position for orbit */
 	FVector LastOrbitPawnLocation;
 
-	/** Current orbit pivot, if pivot is enabled. */
+	/** Current orbit pivot, if orbit is enabled */
 	FVector OrbitPivot;
+
+	/** Current orbit radius, if orbit is enabled */
+	float OrbitRadius;
+
+	/** Last view mode index before buffer visualization overview was enabled, see enum EViewModeIndex for valid values */
+	int32 LastViewModeIndex;
+
+	/** Last index in settings array for cycle view modes */
+	int32 LastViewModeSettingsIndex;
+	
+	/** Last buffer selected in buffer visualization overview */
+	FString LastSelectedBuffer;
 
 	void OnTouchBegin(ETouchIndex::Type FingerIndex, FVector Location);
 	void OnTouchEnd(ETouchIndex::Type FingerIndex, FVector Location);

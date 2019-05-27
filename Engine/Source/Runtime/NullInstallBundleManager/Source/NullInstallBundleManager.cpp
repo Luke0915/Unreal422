@@ -64,6 +64,11 @@ class FNullInstallBundleManager : public IPlatformInstallBundleManager
 
 	}
 
+	virtual void CancelRequestRemoveBundleOnNextInit(FName BundleName) override
+	{
+
+	}
+
 	virtual void CancelBundle(FName BundleName, EInstallBundleCancelFlags Flags) override
 	{
 
@@ -74,9 +79,29 @@ class FNullInstallBundleManager : public IPlatformInstallBundleManager
 
 	}
 
+	virtual bool PauseBundle(FName BundleName) override
+	{
+		return false;
+	}
+
+	virtual void ResumeBundle(FName BundleName) override
+	{
+
+	}
+
+	virtual void RequestPausedBundleCallback() const override
+	{
+
+	}
+
 	virtual TOptional<FInstallBundleStatus> GetBundleProgress(FName BundleName) const override
 	{
 		return TOptional<FInstallBundleStatus>();
+	}
+
+	virtual void UpdateContentRequestFlags(FName BundleName, EInstallBundleRequestFlags AddFlags, EInstallBundleRequestFlags RemoveFlags) override
+	{
+
 	}
 
 	virtual bool IsNullInterface() const override

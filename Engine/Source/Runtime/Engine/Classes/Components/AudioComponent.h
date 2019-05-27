@@ -425,6 +425,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio")
 	void SetSubmixSend(USoundSubmix* Submix, float SendLevel);
 
+	/** Sets how much audio the sound should send to the given Source Bus (PRE Source Effects).
+		if the Bus Send doesn't already exist, it will be added to the overrides on the active sound */
+	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio")
+	void SetSourceBusSendPreEffect(USoundSourceBus* SoundSourceBus, float SourceBusSendLevel);
+
+	/** Sets how much audio the sound should send to the given Source Bus (POST Source Effects).
+		if the Bus Send doesn't already exist, it will be added to the overrides on the active sound */
+	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio")
+	void SetSourceBusSendPostEffect(USoundSourceBus* SoundSourceBus, float SourceBusSendLevel);
+
 	/** Sets whether or not the low pass filter is enabled on the audio component. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio")
 	void SetLowPassFilterEnabled(bool InLowPassFilterEnabled);
@@ -478,6 +488,9 @@ public:
 private:
 	/** Called by the ActiveSound to inform the component that playback is finished */
 	void PlaybackCompleted(bool bFailedToStart);
+
+	/** Whether or not the sound is audible. */
+	bool IsInAudibleRange(float* OutMaxDistance) const;
 
 public:
 
@@ -550,6 +563,9 @@ private:
 
 	uint64 AudioComponentID;
 
+	float RetriggerTimeSinceLastUpdate;
+	float RetriggerUpdateInterval;
+
 	/** Saved relative transform before auto attachement. Used during detachment to restore the transform if we had automatically attached. */
 	FVector SavedAutoAttachRelativeLocation;
 	FRotator SavedAutoAttachRelativeRotation;
@@ -589,7 +605,8 @@ protected:
 	void PlayInternal(const float StartTime = 0.f, const float FadeInDuration = 0.f, const float FadeVolumeLevel = 1.f);
 
 private:
-	
+	void StopInternal();
+
 #if WITH_EDITORONLY_DATA
 	/** Utility function that updates which texture is displayed on the sprite dependent on the properties of the Audio Component. */
 	void UpdateSpriteTexture();

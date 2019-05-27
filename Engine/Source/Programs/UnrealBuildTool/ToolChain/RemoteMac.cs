@@ -116,6 +116,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		private List<string> CommonRsyncArguments;
 
+		private string IniBundleIdentifier = "";
+
 		/// <summary>
 		/// Constructor
 		/// </summary>
@@ -191,6 +193,8 @@ namespace UnrealBuildTool
 					throw new BuildException("SSH private key specified in config file ({0}) does not exist.", SshPrivateKey);
 				}
 			}
+
+			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "BundleIdentifier", out IniBundleIdentifier);
 
 			// If it's not set, look in the standard locations. If that fails, spawn the batch file to generate one.
 			if (SshPrivateKey == null && !TryGetSshPrivateKey(out SshPrivateKey))
@@ -430,7 +434,7 @@ namespace UnrealBuildTool
 				RemoteArguments.Add("-NoUBTMakefiles");
 
 				// Get the provisioning data for this project
-				IOSProvisioningData ProvisioningData = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(TargetDesc.Platform)).ReadProvisioningData(TargetDesc.ProjectFile, TargetDesc.AdditionalArguments.HasOption("-distribution"));
+				IOSProvisioningData ProvisioningData = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(TargetDesc.Platform)).ReadProvisioningData(TargetDesc.ProjectFile, TargetDesc.AdditionalArguments.HasOption("-distribution"), IniBundleIdentifier);
 				if(ProvisioningData == null || ProvisioningData.MobileProvisionFile == null)
 				{
 					throw new BuildException("Unable to find mobile provision for {0}. See log for more information.", TargetDesc.Name);
@@ -538,9 +542,11 @@ namespace UnrealBuildTool
 			// Copy remote FrameworkAssets directory as it could contain resource bundles that must be packaged locally.
 			DirectoryReference BaseDir = DirectoryReference.FromFile(TargetDesc.ProjectFile) ?? UnrealBuildTool.EngineDirectory;
 			DirectoryReference FrameworkAssetsDir = DirectoryReference.Combine(BaseDir, "Intermediate", TargetDesc.Platform == UnrealTargetPlatform.IOS ? "IOS" : "TVOS", "FrameworkAssets");
-
-			Log.TraceInformation("[Remote] Downloading {0}", FrameworkAssetsDir);
-			DownloadDirectory(FrameworkAssetsDir);
+			if(RemoteDirectoryExists(FrameworkAssetsDir))
+			{
+				Log.TraceInformation("[Remote] Downloading {0}", FrameworkAssetsDir);
+				DownloadDirectory(FrameworkAssetsDir);
+			}
 
 			// Write out all the local manifests
 			foreach(FileReference LocalManifestFile in LocalManifestFiles)
@@ -580,7 +586,13 @@ namespace UnrealBuildTool
 			RemoteArguments.Add("-SkipRulesCompile"); // Use the rules assembly built locally
 			RemoteArguments.Add(String.Format("-XmlConfigCache={0}", GetRemotePath(XmlConfig.CacheFile))); // Use the XML config cache built locally, since the remote won't have it
 
-			if(TargetDesc.ProjectFile != null)
+			string RemoteIniPath = UnrealBuildTool.GetRemoteIniPath();
+			if(!String.IsNullOrEmpty(RemoteIniPath))
+			{
+				RemoteArguments.Add(String.Format("-remoteini={0}", GetRemotePath(RemoteIniPath)));
+			}
+
+			if (TargetDesc.ProjectFile != null)
 			{
 				RemoteArguments.Add(String.Format("-Project={0}", GetRemotePath(TargetDesc.ProjectFile)));
 			}
@@ -628,7 +640,7 @@ namespace UnrealBuildTool
 		/// <param name="Platform">The target platform</param>
 		/// <param name="InputDir">Input directory containing assets</param>
 		/// <param name="OutputFile">Path to the Assets.car file to produce</param>
-		public void RunAssetCatalogTool(CppPlatform Platform, DirectoryReference InputDir, FileReference OutputFile)
+		public void RunAssetCatalogTool(UnrealTargetPlatform Platform, DirectoryReference InputDir, FileReference OutputFile)
 		{
 			Log.TraceInformation("Running asset catalog tool for {0}: {1} -> {2}", Platform, InputDir, OutputFile);
 
@@ -870,11 +882,24 @@ namespace UnrealBuildTool
 			UploadDirectory(UnrealBuildTool.EngineDirectory, GetRemotePath(UnrealBuildTool.EngineDirectory), EngineFilters);
 
 			// Upload the project files
-			if(ProjectFile != null && !ProjectFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+			DirectoryReference ProjectDir = null;
+			if (ProjectFile != null && !ProjectFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+			{
+				ProjectDir = ProjectFile.Directory;
+			}
+			else if (!string.IsNullOrEmpty(UnrealBuildTool.GetRemoteIniPath()))
+			{
+				ProjectDir = new DirectoryReference(UnrealBuildTool.GetRemoteIniPath());
+				if (ProjectDir.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+				{
+					ProjectDir = null;
+				}
+			}
+			if (ProjectDir != null)
 			{
 				List<FileReference> ProjectFilters = new List<FileReference>();
 
-				FileReference CustomProjectFilter = FileReference.Combine(ProjectFile.Directory, "Build", "Rsync", "RsyncProject.txt");
+				FileReference CustomProjectFilter = FileReference.Combine(ProjectDir, "Build", "Rsync", "RsyncProject.txt");
 				if(FileReference.Exists(CustomProjectFilter))
 				{
 					ProjectFilters.Add(CustomProjectFilter);
@@ -882,8 +907,13 @@ namespace UnrealBuildTool
 				ProjectFilters.Add(FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Rsync", "RsyncProject.txt"));
 
 				Log.TraceInformation("[Remote] Uploading project files...");
-				UploadDirectory(ProjectFile.Directory, GetRemotePath(ProjectFile.Directory), ProjectFilters);
+				UploadDirectory(ProjectDir, GetRemotePath(ProjectDir), ProjectFilters);
 			}
+
+			Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(UnrealBuildTool.EngineDirectory)));
+			Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(ProjectFile.Directory)));
+			Execute("/", String.Format("rm -rf {0}/Intermediate/TVOS/*.plist", GetRemotePath(UnrealBuildTool.EngineDirectory)));
+			Execute("/", String.Format("rm -rf {0}/Intermediate/TVOS/*.plist", GetRemotePath(ProjectFile.Directory)));
 
 			// Fixup permissions on any shell scripts
 			Execute(RemoteBaseDir, String.Format("chmod +x {0}/Build/BatchFiles/Mac/*.sh", EscapeShellArgument(GetRemotePath(UnrealBuildTool.EngineDirectory))));
@@ -956,6 +986,17 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Checks whether a directory exists on the remote machine
+		/// </summary>
+		/// <param name="LocalDirectory">Path to the directory on the local machine</param>
+		/// <returns>True if the remote directory exists</returns>
+		private bool RemoteDirectoryExists(DirectoryReference LocalDirectory)
+		{
+			string RemoteDirectory = GetRemotePath(LocalDirectory);
+			return Execute(UnrealBuildTool.RootDirectory, String.Format("[ -d {0} ]", EscapeShellArgument(RemoteDirectory))) == 0;
+		}
+
+		/// <summary>
 		/// Download a directory from the remote Mac
 		/// </summary>
 		/// <param name="LocalDirectory">Directory to download</param>
@@ -966,7 +1007,6 @@ namespace UnrealBuildTool
 			string RemoteDirectory = GetRemotePath(LocalDirectory);
 
 			List<string> Arguments = new List<string>(CommonRsyncArguments);
-			Arguments.Add(String.Format("--rsync-path=\"[ ! -d {0} ] || rsync\"", EscapeShellArgument(RemoteDirectory)));
 			Arguments.Add(String.Format("\"{0}@{1}\":'{2}/'", UserName, ServerName, RemoteDirectory));
 			Arguments.Add(String.Format("\"{0}/\"", GetLocalCygwinPath(LocalDirectory)));
 

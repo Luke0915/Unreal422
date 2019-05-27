@@ -142,7 +142,6 @@ FRawStaticIndexBuffer::FRawStaticIndexBuffer(bool InNeedsCPUAccess)
 	: IndexStorage(InNeedsCPUAccess)
 	, CachedNumIndices(-1)
 	, b32Bit(false)
-	, bStreamed(false)
 {
 }
 
@@ -288,7 +287,7 @@ FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
 	const uint32 IndexStride = b32Bit ? sizeof(uint32) : sizeof(uint16);
 	const uint32 SizeInBytes = IndexStorage.Num();
 
-	if (SizeInBytes > 0)
+	if (GetNumIndices() > 0)
 	{
 		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
 		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
@@ -298,6 +297,7 @@ FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
 
 		// Create the index buffer.
 		FRHIResourceCreateInfo CreateInfo(&IndexStorage);
+		CreateInfo.bWithoutNativeResource = !SizeInBytes;
 		if (bRenderThread)
 		{
 			return RHICreateIndexBuffer(IndexStride, SizeInBytes, BufferFlags, CreateInfo);
@@ -320,18 +320,9 @@ FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Async()
 	return CreateRHIBuffer_Internal<false>();
 }
 
-void FRawStaticIndexBuffer::InitRHIForStreaming(FIndexBufferRHIParamRef IntermediateBuffer)
-{
-	check(!IndexBufferRHI);
-	IndexBufferRHI = IntermediateBuffer;
-}
-
 void FRawStaticIndexBuffer::InitRHI()
 {
-	if (!bStreamed)
-	{
-		IndexBufferRHI = CreateRHIBuffer_RenderThread();
-	}
+	IndexBufferRHI = CreateRHIBuffer_RenderThread();
 }
 
 void FRawStaticIndexBuffer::Serialize(FArchive& Ar, bool bNeedsCPUAccess)

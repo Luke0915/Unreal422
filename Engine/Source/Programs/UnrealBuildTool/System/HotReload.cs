@@ -728,7 +728,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ManifestFile">File to write to</param>
 		/// <param name="Actions">List of actions that are part of the graph</param>
-		public static void WriteLiveCodeManifest(FileReference ManifestFile, List<Action> Actions)
+		public static void WriteLiveCodingManifest(FileReference ManifestFile, List<Action> Actions)
 		{
 			// Find all the output object files
 			HashSet<FileItem> ObjectFiles = new HashSet<FileItem>();
@@ -741,7 +741,7 @@ namespace UnrealBuildTool
 			}
 
 			// Write the output manifest
-			using(JsonWriter Writer = new JsonWriter(ManifestFile))
+			using (JsonWriter Writer = new JsonWriter(ManifestFile))
 			{
 				Writer.WriteObjectStart();
 
@@ -750,6 +750,13 @@ namespace UnrealBuildTool
 				{
 					Writer.WriteValue("LinkerPath", LinkAction.CommandPath.FullName);
 				}
+
+				Writer.WriteObjectStart("LinkerEnvironment");
+				foreach (System.Collections.DictionaryEntry Entry in Environment.GetEnvironmentVariables())
+				{
+					Writer.WriteValue(Entry.Key.ToString(), Entry.Value.ToString());
+				}
+				Writer.WriteObjectEnd();
 
 				Writer.WriteArrayStart("Modules");
 				foreach(Action Action in Actions)

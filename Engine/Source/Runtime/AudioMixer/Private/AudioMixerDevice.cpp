@@ -8,6 +8,7 @@
 #include "UObject/UObjectHash.h"
 #include "AudioMixerEffectsManager.h"
 #include "SubmixEffects/AudioMixerSubmixEffectReverb.h"
+#include "SubmixEffects/AudioMixerSubmixEffectReverbFast.h"
 #include "SubmixEffects/AudioMixerSubmixEffectEQ.h"
 #include "SubmixEffects/AudioMixerSubmixEffectDynamicsProcessor.h"
 #include "DSP/Noise.h"
@@ -182,6 +183,7 @@ namespace Audio
 			{
 				// Get the platform device info we're using
 				PlatformInfo = AudioMixerPlatform->GetPlatformDeviceInfo();
+				UE_LOG(LogAudioMixer, Display, TEXT("Using Audio Device %s"), *PlatformInfo.Name);
 
 				// Initialize some data that depends on speaker configuration, etc.
 				InitializeChannelAzimuthMap(PlatformInfo.NumChannels);
@@ -266,6 +268,8 @@ namespace Audio
 
 	void FMixerDevice::TeardownHardware()
 	{
+		AUDIO_MIXER_CHECK_GAME_THREAD(this);
+
 		// Make sure all submixes are registered but not initialized
 		for (TObjectIterator<USoundSubmix> It; It; ++It)
 		{
@@ -510,14 +514,6 @@ namespace Audio
 	{
 		LLM_SCOPE(ELLMTag::AudioMixer);
 
-#if WITH_EDITOR
-		// Turn on to only hear PIE audio
-		bool bBypassMainAudioDevice = FParse::Param(FCommandLine::Get(), TEXT("AudioPIEOnly"));
-		if (bBypassMainAudioDevice && IsMainAudioDevice())
-		{
-			return true;
-		}
-#endif
 		// This function could be called in a task manager, which means the thread ID may change between calls.
 		ResetAudioRenderingThreadId();
 
@@ -671,9 +667,18 @@ namespace Audio
 			else if (MasterSubmixInstances[EMasterSubmixType::Reverb].IsValid())
 			{
 				// Setup the master reverb only if we don't have a reverb plugin
+				USoundEffectSubmixPreset* ReverbPreset = nullptr;
+				USoundSubmix* MasterReverbSoundSubmix = FMixerDevice::MasterSubmixes[EMasterSubmixType::Reverb];
 
-				USoundSubmix* MasterReverbSubix = FMixerDevice::MasterSubmixes[EMasterSubmixType::Reverb];
-				USubmixEffectReverbPreset* ReverbPreset = NewObject<USubmixEffectReverbPreset>(MasterReverbSubix, TEXT("Master Reverb Effect Preset"));
+				if (GetDefault<UAudioSettings>()->bEnableLegacyReverb)
+				{
+					ReverbPreset = NewObject<USubmixEffectReverbPreset>(MasterReverbSoundSubmix, TEXT("Master Reverb Effect Preset"));
+				}
+				else
+				{
+					ReverbPreset = NewObject<USubmixEffectReverbFastPreset>(MasterReverbSoundSubmix, TEXT("Master Reverb Effect Preset"));
+				}
+				
 				ReverbPreset->AddToRoot();
 
 				FSoundEffectSubmix* ReverbEffectSubmix = static_cast<FSoundEffectSubmix*>(ReverbPreset->CreateNewEffect());
@@ -924,11 +929,15 @@ namespace Audio
 		}
 	}
 
-	void FMixerDevice::FlushAudioRenderingCommands()
+	void FMixerDevice::FlushAudioRenderingCommands(bool bPumpSynchronously)
 	{
-		if (IsInitialized() && FPlatformProcess::SupportsMultithreading())
+		if (IsInitialized() && (FPlatformProcess::SupportsMultithreading() && !AudioMixerPlatform->IsNonRealtime()))
 		{
-			SourceManager.FlushCommandQueue();
+			SourceManager.FlushCommandQueue(bPumpSynchronously);
+		}
+		else if (AudioMixerPlatform->IsNonRealtime())
+		{
+			SourceManager.FlushCommandQueue(true);
 		}
 		else
 		{

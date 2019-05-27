@@ -779,6 +779,8 @@ public:
 	 */
 	void Unlock();
 	
+	void Swap(FMetalRHIBuffer& Other);
+	
 	/**
 	 * Whether to allocate the resource rom private memory or not.
 	 */
@@ -824,6 +826,8 @@ public:
 	FMetalIndexBuffer(uint32 InStride, uint32 InSize, uint32 InUsage);
 	virtual ~FMetalIndexBuffer();
 	
+	void Swap(FMetalIndexBuffer& Other);
+	
 	// 16- or 32-bit
 	mtlpp::IndexType IndexType;
 };
@@ -836,6 +840,8 @@ public:
 	/** Constructor */
 	FMetalVertexBuffer(uint32 InSize, uint32 InUsage);
 	virtual ~FMetalVertexBuffer();
+
+	void Swap(FMetalVertexBuffer& Other);
 };
 
 class FMetalUniformBuffer : public FRHIUniformBuffer, public FMetalRHIBuffer
@@ -852,7 +858,7 @@ public:
 
 	void InitIAB();
 
-	void Update(const void* Contents, EUniformBufferValidation Validation);
+	void Update(const void* Contents, TArray<TRefCountPtr<FRHIResource>>& Resources, EUniformBufferValidation Validation);
 	
 	/** Resource table containing RHI references. */
 	TArray<TRefCountPtr<FRHIResource> > ResourceTable;
@@ -885,6 +891,9 @@ public:
 	EUniformBufferUsage UniformUsage;
 	FMetalIndirectArgumentBuffer& GetIAB();
 	FMetalIndirectArgumentBuffer* IAB;
+	TArray<EUniformBufferBaseType> ResourceTypes;
+	uint32 NumResources;
+	uint32 ConstantSize;
 };
 
 

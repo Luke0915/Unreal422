@@ -6,10 +6,18 @@ class FContentEncryptionConfig
 {
 public:
 
+	enum class EAllowedReferences
+	{
+		None,
+		Soft,
+		All,
+	};
+
 	struct FGroup
 	{
 		TSet<FName> PackageNames;
 		bool bStageTimeOnly = false;
+		EAllowedReferences AllowedReferences = EAllowedReferences::None;
 	};
 
 	typedef TMap<FName, FGroup> TGroupMap;
@@ -22,6 +30,11 @@ public:
 	void SetGroupAsStageTimeOnly(FName InGroupName, bool bInStageTimeOnly)
 	{
 		PackageGroups.FindOrAdd(InGroupName).bStageTimeOnly = bInStageTimeOnly;
+	}
+
+	void SetAllowedReferences(FName InGroupName, EAllowedReferences InAllowedReferences)
+	{
+		PackageGroups.FindOrAdd(InGroupName).AllowedReferences = InAllowedReferences;
 	}
 
 	void AddReleasedKey(FGuid InKey)

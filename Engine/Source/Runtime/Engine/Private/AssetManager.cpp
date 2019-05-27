@@ -811,7 +811,21 @@ void UAssetManager::SetPrimaryAssetTypeRules(FPrimaryAssetType PrimaryAssetType,
 
 void UAssetManager::SetPrimaryAssetRules(FPrimaryAssetId PrimaryAssetId, const FPrimaryAssetRules& Rules)
 {
-	if (Rules.IsDefault())
+	static FPrimaryAssetRules DefaultRules;
+
+	FPrimaryAssetRulesExplicitOverride ExplicitRules;
+	ExplicitRules.Rules = Rules;
+	ExplicitRules.bOverridePriority = (Rules.Priority != DefaultRules.Priority);
+	ExplicitRules.bOverrideApplyRecursively = (Rules.bApplyRecursively != DefaultRules.bApplyRecursively);
+	ExplicitRules.bOverrideChunkId = (Rules.ChunkId != DefaultRules.ChunkId);
+	ExplicitRules.bOverrideCookRule = (Rules.CookRule != DefaultRules.CookRule);
+	
+	SetPrimaryAssetRulesExplicitly(PrimaryAssetId, ExplicitRules);
+}
+
+void UAssetManager::SetPrimaryAssetRulesExplicitly(FPrimaryAssetId PrimaryAssetId, const FPrimaryAssetRulesExplicitOverride& ExplicitRules)
+{
+	if (!ExplicitRules.HasAnyOverride())
 	{
 		AssetRuleOverrides.Remove(PrimaryAssetId);
 	}
@@ -822,7 +836,7 @@ void UAssetManager::SetPrimaryAssetRules(FPrimaryAssetId PrimaryAssetId, const F
 			UE_LOG(LogAssetManager, Error, TEXT("Duplicate Rule overrides found for asset %s!"), *PrimaryAssetId.ToString());
 		}
 
-		AssetRuleOverrides.Add(PrimaryAssetId, Rules);
+		AssetRuleOverrides.Add(PrimaryAssetId, ExplicitRules);
 	}
 
 	bIsManagementDatabaseCurrent = false;
@@ -840,11 +854,11 @@ FPrimaryAssetRules UAssetManager::GetPrimaryAssetRules(FPrimaryAssetId PrimaryAs
 		Result = (*FoundType)->Info.Rules;
 
 		// Selectively override
-		const FPrimaryAssetRules* FoundRules = AssetRuleOverrides.Find(PrimaryAssetId);
+		const FPrimaryAssetRulesExplicitOverride* FoundRulesOverride = AssetRuleOverrides.Find(PrimaryAssetId);
 
-		if (FoundRules)
+		if (FoundRulesOverride)
 		{
-			Result.OverrideRules(*FoundRules);
+			FoundRulesOverride->OverrideRulesExplicitly(Result);
 		}
 
 		if (Result.Priority < 0)
@@ -1201,6 +1215,14 @@ TSharedPtr<FStreamableHandle> UAssetManager::ChangeBundleStateForPrimaryAssets(c
 				}
 
 				DebugName += TEXT(")");
+			}
+
+			if (PathsToLoad.Num() == 0)
+			{
+				// New state has no assets to load. Set the CurrentState's bundles and clear the handle
+				NameData->CurrentState.BundleNames = NewBundleState;
+				NameData->CurrentState.Handle.Reset();
+				continue;
 			}
 
 			NewHandle = LoadAssetList(PathsToLoad.Array(), FStreamableDelegate(), Priority, DebugName);
@@ -2065,6 +2087,30 @@ void UAssetManager::LoadRedirectorMaps()
 	{
 		AssetPathRedirects.Add(FName(*Redirect.Old), FName(*Redirect.New));
 	}
+
+	// Collapse all redirects to resolve recursive relationships.
+	for (const TPair<FName, FName>& Pair : AssetPathRedirects)
+	{
+		const FName OldPath = Pair.Key;
+		FName NewPath = Pair.Value;
+		TSet<FName> CollapsedPaths;
+		CollapsedPaths.Add(OldPath);
+		CollapsedPaths.Add(NewPath);
+		while (FName* NewPathValue = AssetPathRedirects.Find(NewPath)) // Does the NewPath exist as a key?
+		{
+			NewPath = *NewPathValue;
+			if (CollapsedPaths.Contains(NewPath))
+			{
+				UE_LOG(LogAssetManager, Error, TEXT("AssetPathRedirect cycle detected when redirecting: %s to %s"), *OldPath.ToString(), *NewPath.ToString());
+				break;
+			}
+			else
+			{
+				CollapsedPaths.Add(NewPath);
+			}
+		}
+		AssetPathRedirects[OldPath] = NewPath;
+	}
 }
 
 FPrimaryAssetId UAssetManager::GetRedirectedPrimaryAssetId(const FPrimaryAssetId& OldId) const
@@ -2635,6 +2681,7 @@ bool UAssetManager::GetPackageManagers(FName PackageName, bool bRecurseToParents
 
 	bool bFoundAny = false;
 	TArray<FAssetIdentifier> ReferencingPrimaryAssets;
+	ReferencingPrimaryAssets.Reserve(128);
 
 	AssetRegistry.GetReferencers(PackageName, ReferencingPrimaryAssets, EAssetRegistryDependencyType::Manage);
 
@@ -3235,6 +3282,7 @@ bool UAssetManager::GetPackageChunkIds(FName PackageName, const ITargetPlatform*
 
 	// Add all chunk ids from the asset rules of managers. By default priority will not override other chunks
 	TSet<FPrimaryAssetId> Managers;
+	Managers.Reserve(128);
 
 	GetPackageManagers(PackageName, true, Managers);
 	return GetPrimaryAssetSetChunkIds(Managers, TargetPlatform, ExistingChunkList, OutChunkList);
@@ -3560,12 +3608,26 @@ void UAssetManager::RefreshAssetData(UObject* ChangedObject)
 
 void UAssetManager::InitializeAssetBundlesFromMetadata(const UStruct* Struct, const void* StructValue, FAssetBundleData& AssetBundle, FName DebugName) const
 {
+	TSet<const void*> AllVisitedStructValues;
+	InitializeAssetBundlesFromMetadata_Recursive(Struct, StructValue, AssetBundle, DebugName, AllVisitedStructValues);
+}
+
+void UAssetManager::InitializeAssetBundlesFromMetadata_Recursive(const UStruct* Struct, const void* StructValue, FAssetBundleData& AssetBundle, FName DebugName, TSet<const void*>& AllVisitedStructValues) const
+{
 	static FName AssetBundlesName = TEXT("AssetBundles");
+	static FName IncludeAssetBundlesName = TEXT("IncludeAssetBundles");
 
 	if (!ensure(Struct && StructValue))
 	{
 		return;
 	}
+
+	if (AllVisitedStructValues.Contains(StructValue))
+	{
+		return;
+	}
+
+	AllVisitedStructValues.Add(StructValue);
 
 	for (TPropertyValueIterator<const UProperty> It(Struct, StructValue); It; ++It)
 	{
@@ -3605,12 +3667,13 @@ void UAssetManager::InitializeAssetBundlesFromMetadata(const UStruct* Struct, co
 		}
 		else if (const UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Property))
 		{
-			if (ObjectProperty->PropertyFlags & CPF_InstancedReference)
+			if (ObjectProperty->PropertyFlags & CPF_InstancedReference || ObjectProperty->HasMetaData(IncludeAssetBundlesName))
 			{
 				UObject* const* ObjectPtr = reinterpret_cast<UObject* const*>(PropertyValue);
 				if (ObjectPtr && *ObjectPtr)
 				{
-					UAssetManager::Get().InitializeAssetBundlesFromMetadata(*ObjectPtr, AssetBundle);
+					const UObject* Object = *ObjectPtr;
+					InitializeAssetBundlesFromMetadata_Recursive(Object->GetClass(), Object, AssetBundle, Object->GetFName(), AllVisitedStructValues);
 				}
 			}
 		}

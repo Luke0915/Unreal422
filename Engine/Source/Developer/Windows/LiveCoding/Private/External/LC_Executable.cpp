@@ -26,14 +26,14 @@ namespace detail
 		void* base = image->base;
 
 		// PE image start with a DOS header
-		IMAGE_DOS_HEADER* dosHeader = static_cast<IMAGE_DOS_HEADER*>(base);
+		const IMAGE_DOS_HEADER* dosHeader = static_cast<IMAGE_DOS_HEADER*>(base);
 		if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
 		{
 			LC_ERROR_USER("Image has unknown file format");
 			return nullptr;
 		}
 
-		IMAGE_NT_HEADERS* ntHeader = pointer::Offset<IMAGE_NT_HEADERS*>(dosHeader, dosHeader->e_lfanew);
+		const IMAGE_NT_HEADERS* ntHeader = pointer::Offset<const IMAGE_NT_HEADERS*>(dosHeader, dosHeader->e_lfanew);
 		if (ntHeader->Signature != IMAGE_NT_SIGNATURE)
 		{
 			LC_ERROR_USER("Invalid .exe file");
@@ -89,7 +89,8 @@ executable::Header executable::GetHeader(const Image* image)
 		return executable::Header {};
 	}
 
-	return executable::Header { ntHeader->FileHeader, ntHeader->OptionalHeader.SizeOfImage };
+	const uint64_t sizeOnDisk = file::GetSizeOnDisk(image);
+	return executable::Header { sizeOnDisk, ntHeader->FileHeader, ntHeader->OptionalHeader };
 }
 
 
@@ -181,7 +182,7 @@ void executable::RebaseImage(Image* image, PreferredBase preferredBase)
 		return;
 	}
 
-	ImageSectionDB* database = GatherSections(image);
+	ImageSectionDB* database = GatherImageSectionDB(image);
 
 	// the image has been linked against a certain base address, namely ntHeader->OptionalHeader.ImageBase.
 	// work out by how much all relocations need to be shifted if basing the image against the new
@@ -208,7 +209,7 @@ void executable::RebaseImage(Image* image, PreferredBase preferredBase)
 
 			// PE spec: Block size: The total number of bytes in the base relocation block, *including* the Page RVA and
 			// Block Size fields and the Type/Offset fields that follow.
-			DWORD numberOfEntriesInThisBlock = (blockSize - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+			const DWORD numberOfEntriesInThisBlock = (blockSize - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
 			const WORD* entries = pointer::Offset<const WORD*>(baseRelocations, sizeof(IMAGE_BASE_RELOCATION));
 			for (DWORD i = 0u; i < numberOfEntriesInThisBlock; ++i)
 			{
@@ -257,7 +258,7 @@ void executable::RebaseImage(Image* image, PreferredBase preferredBase)
 }
 
 
-executable::ImageSectionDB* executable::GatherSections(const Image* image)
+executable::ImageSectionDB* executable::GatherImageSectionDB(const Image* image)
 {
 	const IMAGE_NT_HEADERS* ntHeader = detail::GetNtHeader(image);
 	if (!ntHeader)
@@ -288,6 +289,62 @@ executable::ImageSectionDB* executable::GatherSections(const Image* image)
 
 
 void executable::DestroyImageSectionDB(ImageSectionDB* database)
+{
+	delete database;
+}
+
+
+executable::ImportModuleDB* executable::GatherImportModuleDB(const Image* image, const ImageSectionDB* imageSections)
+{
+	const IMAGE_NT_HEADERS* ntHeader = detail::GetNtHeader(image);
+	if (!ntHeader)
+	{
+		return nullptr;
+	}
+
+	const IMAGE_SECTION_HEADER* sectionHeader = detail::GetSectionHeader(ntHeader);
+	if (!sectionHeader)
+	{
+		return nullptr;
+	}
+
+	ImportModuleDB* database = new ImportModuleDB;
+
+	// the import directory stores an array of IMAGE_IMPORT_DESCRIPTOR entries
+	const size_t count = ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+	if (count == 0u)
+	{
+		// no import modules
+		return database;
+	}
+
+	const DWORD baseImportModule = RvaToFileOffset(imageSections, ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+	if (baseImportModule == 0u)
+	{
+		// no import modules
+		return database;
+	}
+
+	database->modules.reserve(count);
+
+	const IMAGE_IMPORT_DESCRIPTOR* importModules = pointer::Offset<const IMAGE_IMPORT_DESCRIPTOR*>(image->base, baseImportModule);
+	while (importModules->Name != 0)
+	{
+		const DWORD fileOffset = RvaToFileOffset(imageSections, importModules->Name);
+		const char* importModuleName = pointer::Offset<const char*>(image->base, fileOffset);
+
+		ImportModule module;
+		strcpy_s(module.path, importModuleName);
+		database->modules.emplace_back(module);
+
+		++importModules;
+	}
+
+	return database;
+}
+
+
+void executable::DestroyImportModuleDB(ImportModuleDB* database)
 {
 	delete database;
 }

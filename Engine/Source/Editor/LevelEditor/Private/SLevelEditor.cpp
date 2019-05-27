@@ -162,7 +162,7 @@ void SLevelEditor::Construct( const SLevelEditor::FArguments& InArgs)
 
 	// Set the initial preview feature level.
 	UEditorEngine* Editor = (UEditorEngine*)GEngine;
-	World->ChangeFeatureLevel(Editor->PreviewFeatureLevel);
+	World->ChangeFeatureLevel(Editor->GetActiveFeatureLevelPreviewType());
 
 	// Patch into the OnPreviewFeatureLevelChanged() delegate to swap out the current feature level with a user selection.
 	PreviewFeatureLevelChangedHandle = Editor->OnPreviewFeatureLevelChanged().AddLambda([this](ERHIFeatureLevel::Type NewFeatureLevel)
@@ -289,8 +289,11 @@ SLevelEditor::~SLevelEditor()
 
 	FEditorDelegates::MapChange.RemoveAll(this);
 
-	CastChecked<UEditorEngine>(GEngine)->OnPreviewFeatureLevelChanged().Remove(PreviewFeatureLevelChangedHandle);
-	
+	if (GEngine)
+	{
+		CastChecked<UEditorEngine>(GEngine)->OnPreviewFeatureLevelChanged().Remove(PreviewFeatureLevelChangedHandle);
+	}
+
 	if (GEditor)
 	{
 		GEditor->GetEditorWorldContext(true).RemoveRef(World);
@@ -777,6 +780,17 @@ TSharedRef<SDockTab> SLevelEditor::SpawnLevelEditorTab( const FSpawnTabArgs& Arg
 				];
 		}
 	}
+	else if( TabIdentifier == TEXT("SequencerGraphEditor") )
+	{
+		const FSlateIcon SequencerGraphIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "GenericCurveEditor.TabIcon");
+		// @todo sequencer: remove when world-centric mode is added
+		return SNew(SDockTab)
+			.Icon(SequencerGraphIcon.GetIcon())
+			.Label(NSLOCTEXT("Sequencer", "SequencerMainGraphEditorTitle", "Sequencer Curves"))
+			[
+				SNullWidget::NullWidget
+			];
+	}
 	else if( TabIdentifier == LevelEditorStatsViewerTab )
 	{
 		FStatsViewerModule& StatsViewerModule = FModuleManager::Get().LoadModuleChecked<FStatsViewerModule>( "StatsViewer" );
@@ -1126,6 +1140,13 @@ TSharedRef<SWidget> SLevelEditor::RestoreContentArea( const TSharedRef<SDockTab>
 				.SetDisplayName(NSLOCTEXT("LevelEditorTabs", "Sequencer", "Sequencer"))
 				.SetGroup( MenuStructure.GetLevelEditorCategory() )
 				.SetIcon( SequencerIcon );
+		}
+
+		{
+			// @todo remove when world-centric mode is added
+			const FSlateIcon SequencerGraphIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "GenericCurveEditor.TabIcon");
+			LevelEditorTabManager->RegisterTabSpawner("SequencerGraphEditor", FOnSpawnTab::CreateSP<SLevelEditor, FName, FString>(this, &SLevelEditor::SpawnLevelEditorTab, FName("SequencerGraphEditor"), FString()))
+				.SetMenuType(ETabSpawnerMenuType::Type::Hidden);
 		}
 
 		{

@@ -124,10 +124,16 @@ bool FGameplayMediaEncoder::RegisterListener(IGameplayMediaEncoderListener* List
 void FGameplayMediaEncoder::UnregisterListener(IGameplayMediaEncoderListener* Listener)
 {
 	check(IsInGameThread());
-	FScopeLock Lock(&ListenersCS);
+
+	ListenersCS.Lock();
 
 	Listeners.Remove(Listener);
-	if (Listeners.Num() == 0)
+
+	bool bAnyListenersLeft = Listeners.Num() > 0;
+
+	ListenersCS.Unlock();
+
+	if (bAnyListenersLeft == false)
 	{
 		UE_LOG(GameplayMediaEncoder, Log, TEXT("Unregistered the last listener"));
 		Stop();
@@ -282,21 +288,24 @@ bool FGameplayMediaEncoder::Start()
 	//
 	// subscribe to engine delegates for audio output and back buffer
 	//
-	if (UGameEngine* GameEngine = Cast<UGameEngine>(GEngine))
+	if (UEngine* Engine = GEngine)
 	{
-		FAudioDevice* AudioDevice = GameEngine->GetMainAudioDevice();
+		FAudioDevice* AudioDevice = Engine->GetMainAudioDevice();
 		if (AudioDevice)
 		{
 			AudioDevice->RegisterSubmixBufferListener(this);
 		}
 
 		VideoEncoder->Start();
-		FSlateRenderer::FOnBackBufferReadyToPresent OnBackBufferReadyDelegate;
-		OnBackBufferReadyDelegate.AddRaw(this, &FGameplayMediaEncoder::OnBackBufferReady);
-		FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent() = OnBackBufferReadyDelegate;
-	}
+		FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().AddRaw(this, &FGameplayMediaEncoder::OnBackBufferReady);
 
-	return true;
+		return true;
+	}
+	else
+	{
+		UE_LOG(GameplayMediaEncoder, Error, TEXT("Failed to register audio and/or video callbacks"));
+		return false;
+	}
 }
 
 void FGameplayMediaEncoder::Stop()

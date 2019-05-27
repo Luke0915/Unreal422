@@ -246,6 +246,28 @@ public:
 						TStaticSamplerState<SF_Bilinear>::GetRHI(),
 						InputHistory.RT[i]->GetRenderTargetItem().ShaderResourceTexture);
 				}
+				else
+				{
+					// Bind black dummy if this texture is not valid.
+					SetTextureParameter(
+						RHICmdList, ShaderRHI,
+						HistoryBuffer[i], HistoryBufferSampler[i],
+						TStaticSamplerState<SF_Bilinear>::GetRHI(),
+						GSystemTextures.BlackDummy->GetRenderTargetItem().ShaderResourceTexture);
+				}
+			}
+		}
+		else
+		{
+			// Bind black dummy to any of the input history textures if history is not valid.
+			for (uint32 i = 0; i < FTemporalAAHistory::kRenderTargetCount; i++)
+			{
+				SetTextureParameter(
+					RHICmdList, ShaderRHI,
+					HistoryBuffer[i], HistoryBufferSampler[i],
+					TStaticSamplerState<SF_Bilinear>::GetRHI(),
+					GSystemTextures.BlackDummy->GetRenderTargetItem().ShaderResourceTexture);
+
 			}
 		}
 
@@ -590,9 +612,14 @@ class FPostProcessTemporalAACS : public FGlobalShader
 
 IMPLEMENT_GLOBAL_SHADER(FPostProcessTemporalAACS, "/Engine/Private/PostProcessTemporalAA.usf", "MainCS", SF_Compute);
 
+static FPostProcessTonemapVS::FPermutationDomain GetVertexShaderPermutationVector()
+{
+	return FPostProcessTonemapVS::BuildPermutationVector(true/*bDoEyeAdaptation*/, false/*bNeedsToSwitchVerticalAxis*/);
+}
+
 static inline void TransitionPixelPassResources(FRenderingCompositePassContext& Context)
 {
-	TShaderMapRef< FPostProcessTonemapVS > VertexShader(Context.GetShaderMap());
+	TShaderMapRef< FPostProcessTonemapVS > VertexShader(Context.GetShaderMap(), GetVertexShaderPermutationVector());
 	VertexShader->TransitionResources(Context);
 }
 
@@ -612,7 +639,8 @@ void DrawPixelPassTemplate(
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
 	GraphicsPSOInit.DepthStencilState = DepthStencilState;
 
-	TShaderMapRef< FPostProcessTonemapVS > VertexShader(Context.GetShaderMap());
+	auto VertexShaderPermutationVector = GetVertexShaderPermutationVector();
+	TShaderMapRef< FPostProcessTonemapVS > VertexShader(Context.GetShaderMap(), VertexShaderPermutationVector);
 	TShaderMapRef< FPostProcessTemporalAAPS > PixelShader(Context.GetShaderMap(), PermutationVector);
 
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
@@ -621,7 +649,7 @@ void DrawPixelPassTemplate(
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 	SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
-	VertexShader->SetVS(Context);
+	VertexShader->SetVS(Context, VertexShaderPermutationVector);
 	PixelShader->SetParameters(Context.RHICmdList, Context, InputHistory, PassParameters, bUseDither, SrcSize);
 
 	DrawRectangle(
@@ -794,9 +822,9 @@ void FRCPassPostProcessTemporalAA::Process(FRenderingCompositePassContext& Conte
 			}
 			// If screen percentage < 50% on X and Y axes, then use screen percentage range = 3 shader permutation.
 			else if (SrcRect.Width() * 100 < 50 * DestRect.Width() &&
-				SrcRect.Height() * 100 < 50 * DestRect.Height())
+				SrcRect.Height() * 100 < 50 * DestRect.Height() && 
+				Parameters.Pass == ETAAPassConfig::MainSuperSampling)
 			{
-				check(Parameters.Pass == ETAAPassConfig::MainSuperSampling);
 				PermutationVector.Set<FTAAScreenPercentageDim>(3);
 			}
 			// If screen percentage < 71% on X and Y axes, then use screen percentage range = 1 shader permutation to have smaller LDS caching.

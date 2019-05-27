@@ -775,6 +775,22 @@ void FBlueprintEditor::RefreshEditors(ERefreshBlueprintEditorReason::Type Reason
 	BroadcastRefresh();
 }
 
+void FBlueprintEditor::RefreshMyBlueprint()
+{
+	if (MyBlueprintWidget.IsValid())
+	{
+		MyBlueprintWidget->Refresh();
+	}
+}
+
+void FBlueprintEditor::RefreshInspector()
+{
+	if (Inspector.IsValid())
+	{
+		Inspector->GetPropertyView()->ForceRefresh();
+	}
+}
+
 void FBlueprintEditor::SetUISelectionState(FName SelectionOwner)
 {
 	if ( SelectionOwner != CurrentUISelection )
@@ -2600,13 +2616,11 @@ void FBlueprintEditor::CreateDefaultCommands()
 		FExecuteAction::CreateSP(this, &FBlueprintEditor::OnRepairCorruptedBlueprint),
 		FCanExecuteAction());
 
-	/*
-	ToolkitCommands->MapAction( FBlueprintEditorCommands::Get().AddNewAnimationGraph,
-		FExecuteAction::CreateSP(this, &FBlueprintEditor::NewDocument_OnClicked, CGT_NewAnimationGraph),
+	ToolkitCommands->MapAction( FBlueprintEditorCommands::Get().AddNewAnimationLayer,
+		FExecuteAction::CreateSP(this, &FBlueprintEditor::NewDocument_OnClicked, CGT_NewAnimationLayer),
 		FCanExecuteAction(),
 		FIsActionChecked(),
-		FIsActionButtonVisible::CreateSP(this, &FBlueprintEditor::NewDocument_IsVisibleForType, CGT_NewAnimationGraph));
-	*/
+		FIsActionButtonVisible::CreateSP(this, &FBlueprintEditor::NewDocument_IsVisibleForType, CGT_NewAnimationLayer));
 	
 	ToolkitCommands->MapAction(FBlueprintEditorCommands::Get().SaveIntermediateBuildProducts,
 		FExecuteAction::CreateSP(this, &FBlueprintEditor::ToggleSaveIntermediateBuildProducts),
@@ -7073,6 +7087,11 @@ bool FBlueprintEditor::CanAddNewLocalVariable() const
 
 void FBlueprintEditor::OnAddNewLocalVariable()
 {
+	if (!CanAddNewLocalVariable())
+	{
+		return;
+	}
+
 	// Find the top level graph to place the local variables into
 	UEdGraph* TargetGraph = FBlueprintEditorUtils::GetTopLevelGraph(FocusedGraphEdPtr.Pin()->GetCurrentGraph());
 	check(TargetGraph->GetSchema()->GetGraphType(TargetGraph) == GT_Function);
@@ -7163,8 +7182,8 @@ void FBlueprintEditor::NewDocument_OnClicked(ECreatedDocumentType GraphType)
 		DocumentNameText = LOCTEXT("NewDocMacroName", "NewMacro");
 		bResetMyBlueprintFilter = true;
 		break;
-	case CGT_NewAnimationGraph:
-		DocumentNameText = LOCTEXT("NewDocAnimationGraphName", "NewAnimationGraph");
+	case CGT_NewAnimationLayer:
+		DocumentNameText = LOCTEXT("NewDocAnimationLayerName", "NewAnimationLayer");
 		bResetMyBlueprintFilter = true;
 		break;
 	default:
@@ -7199,7 +7218,7 @@ void FBlueprintEditor::NewDocument_OnClicked(ECreatedDocumentType GraphType)
 		NewGraph = FBlueprintEditorUtils::CreateNewGraph(GetBlueprintObj(), DocumentName, UEdGraph::StaticClass(), GetDefaultSchemaClass());
 		FBlueprintEditorUtils::AddUbergraphPage(GetBlueprintObj(), NewGraph);
 	}
-	else if (GraphType == CGT_NewAnimationGraph)
+	else if (GraphType == CGT_NewAnimationLayer)
 	{
 		//@TODO: ANIMREFACTOR: This code belongs in Persona, not in BlueprintEditor
 		NewGraph = FBlueprintEditorUtils::CreateNewGraph(GetBlueprintObj(), DocumentName, UAnimationGraph::StaticClass(), UAnimationGraphSchema::StaticClass());
@@ -7232,11 +7251,30 @@ bool FBlueprintEditor::NewDocument_IsVisibleForType(ECreatedDocumentType GraphTy
 			&& (GetBlueprintObj()->BlueprintType != BPTYPE_Interface) 
 			&& (GetBlueprintObj()->BlueprintType != BPTYPE_MacroLibrary);
 	case CGT_NewFunctionGraph:
-		return (GetBlueprintObj()->BlueprintType != BPTYPE_MacroLibrary);
+		{
+			if(UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(GetBlueprintObj()))
+			{
+				return (GetBlueprintObj()->BlueprintType != BPTYPE_Interface);
+			}
+			else
+			{
+				return (GetBlueprintObj()->BlueprintType != BPTYPE_MacroLibrary);
+			}
+		}
 	case CGT_NewMacroGraph:
 		return (GetBlueprintObj()->BlueprintType == BPTYPE_MacroLibrary) || (GetBlueprintObj()->BlueprintType == BPTYPE_Normal) || (GetBlueprintObj()->BlueprintType == BPTYPE_LevelScript);
-	case CGT_NewAnimationGraph:
-		return GetBlueprintObj()->IsA(UAnimBlueprint::StaticClass());
+	case CGT_NewAnimationLayer:
+		{	
+			if(UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(GetBlueprintObj()))
+			{
+				UAnimBlueprint* RootBlueprint = UAnimBlueprint::FindRootAnimBlueprint(AnimBlueprint);
+				if(RootBlueprint == nullptr)
+				{
+					return true;
+				}
+			}
+		}
+		break;
 	case CGT_NewEventGraph:
 		return FBlueprintEditorUtils::DoesSupportEventGraphs(GetBlueprintObj());
 	case CGT_NewLocalVariable:
@@ -7942,17 +7980,6 @@ FReply FBlueprintEditor::OnSpawnGraphNodeByShortcut(FInputChord InChord, const F
 	}
 
 	return FReply::Handled();
-}
-
-void FBlueprintEditor::ToolkitBroughtToFront()
-{
-	UBlueprint* CurrentBlueprint = GetBlueprintObj();
-	if( CurrentBlueprint != NULL )
-	{
-		UObject* DebugInstance = CurrentBlueprint->GetObjectBeingDebugged();
-		CurrentBlueprint->SetObjectBeingDebugged( NULL );
-		CurrentBlueprint->SetObjectBeingDebugged( DebugInstance );
-	}
 }
 
 void FBlueprintEditor::OnNodeSpawnedByKeymap()

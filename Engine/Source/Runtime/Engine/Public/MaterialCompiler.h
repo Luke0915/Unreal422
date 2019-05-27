@@ -71,7 +71,7 @@ public:
 
 	virtual EShaderPlatform GetShaderPlatform() = 0;
 
-	virtual EMaterialShadingModel GetMaterialShadingModel() const = 0;
+	virtual FMaterialShadingModelField GetMaterialShadingModels() const = 0;
 
 	virtual EMaterialValueType GetParameterType(int32 Index) const = 0;
 
@@ -140,7 +140,7 @@ public:
 	virtual int32 ObjectWorldPosition() = 0;
 	virtual int32 ObjectRadius() = 0;
 	virtual int32 ObjectBounds() = 0;
-	virtual int32 PreSkinnedLocalBounds() = 0;
+	virtual int32 PreSkinnedLocalBounds(int32 OutputIndex) = 0;
 	virtual int32 DistanceCullFade() = 0;
 	virtual int32 ActorWorldPosition() = 0;
 	virtual int32 ParticleMacroUV() = 0;
@@ -293,6 +293,9 @@ public:
 	virtual int32 EyeAdaptation() = 0;
 	virtual int32 AtmosphericLightVector() = 0;
 	virtual int32 AtmosphericLightColor() = 0;
+	virtual int32 CustomPrimitiveData(int32 OutputIndex, EMaterialValueType Type) = 0;
+	virtual int32 ShadingModel(EMaterialShadingModel InSelectedShadingModel) = 0;
+
 	// The compiler can run in a different state and this affects caching of sub expression, Expressions are different (e.g. View.PrevWorldViewOrigin) when using previous frame's values
 	// If possible we should re-factor this to avoid having to deal with compiler state
 	virtual bool IsCurrentlyCompilingForPreviousFrame() const { return false; }
@@ -314,7 +317,7 @@ public:
 
 	// Simple pass through all other material operations unmodified.
 
-	virtual EMaterialShadingModel GetMaterialShadingModel() const { return Compiler->GetMaterialShadingModel();  }
+	virtual FMaterialShadingModelField GetMaterialShadingModels() const { return Compiler->GetMaterialShadingModels(); }
 	virtual EMaterialValueType GetParameterType(int32 Index) const { return Compiler->GetParameterType(Index); }
 	virtual FMaterialUniformExpression* GetParameterUniformExpression(int32 Index) const { return Compiler->GetParameterUniformExpression(Index); }
 	virtual void SetMaterialProperty(EMaterialProperty InProperty, EShaderFrequency OverrideShaderFrequency, bool bUsePreviousFrameTime) override { Compiler->SetMaterialProperty(InProperty, OverrideShaderFrequency, bUsePreviousFrameTime); }
@@ -392,7 +395,7 @@ public:
 	virtual int32 ObjectWorldPosition() override { return Compiler->ObjectWorldPosition(); }
 	virtual int32 ObjectRadius() override { return Compiler->ObjectRadius(); }
 	virtual int32 ObjectBounds() override { return Compiler->ObjectBounds(); }
-	virtual int32 PreSkinnedLocalBounds() override { return Compiler->PreSkinnedLocalBounds(); }
+	virtual int32 PreSkinnedLocalBounds(int32 OutputIndex) override { return Compiler->PreSkinnedLocalBounds(OutputIndex); }
 	virtual int32 DistanceCullFade() override { return Compiler->DistanceCullFade(); }
 	virtual int32 ActorWorldPosition() override { return Compiler->ActorWorldPosition(); }
 	virtual int32 ParticleMacroUV() override { return Compiler->ParticleMacroUV(); }
@@ -547,6 +550,16 @@ public:
 	virtual int32 AtmosphericLightColor() override
 	{
 		return Compiler->AtmosphericLightColor();
+	}
+	
+	virtual int32 CustomPrimitiveData(int32 OutputIndex, EMaterialValueType Type) override
+	{
+		return Compiler->CustomPrimitiveData(OutputIndex, Type);
+	}
+
+	virtual int32 ShadingModel(EMaterialShadingModel InSelectedShadingModel) override
+	{
+		return Compiler->ShadingModel(InSelectedShadingModel);
 	}
 
 	virtual int32 TextureCoordinateOffset() override

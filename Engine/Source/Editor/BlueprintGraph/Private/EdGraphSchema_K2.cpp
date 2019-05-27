@@ -178,6 +178,8 @@ const FName FBlueprintMetadata::MD_BitmaskEnum(TEXT("BitmaskEnum"));
 const FName FBlueprintMetadata::MD_Bitflags(TEXT("Bitflags"));
 const FName FBlueprintMetadata::MD_UseEnumValuesAsMaskValuesInEditor(TEXT("UseEnumValuesAsMaskValuesInEditor"));
 
+const FName FBlueprintMetadata::MD_AnimBlueprintFunction(TEXT("AnimBlueprintFunction"));
+
 //////////////////////////////////////////////////////////////////////////
 
 #define LOCTEXT_NAMESPACE "KismetSchema"
@@ -3581,6 +3583,21 @@ bool UEdGraphSchema_K2::ConvertPropertyToPinType(const UProperty* Property, /*ou
 	return true;
 }
 
+bool UEdGraphSchema_K2::HasWildcardParams(const UFunction* Function)
+{
+	bool bResult = false;
+	for (TFieldIterator<const UProperty> PropIt(Function); PropIt && (PropIt->PropertyFlags & CPF_Parm) && !bResult; ++PropIt)
+	{
+		const UProperty* FuncParamProperty = *PropIt;
+
+		if (IsWildcardProperty(FuncParamProperty))
+		{
+			bResult = true;
+		}
+	}
+	return bResult;
+}
+
 bool UEdGraphSchema_K2::IsWildcardProperty(const UProperty* Property)
 {
 	UFunction* Function = Cast<UFunction>(Property->GetOuter());
@@ -5350,13 +5367,6 @@ void UEdGraphSchema_K2::GetGraphDisplayInformation(const UEdGraph& Graph, /*out*
 
 		DisplayInfo.DocExcerptName = TEXT("MacroGraph");
 	}
-	else if (GraphType == GT_Animation)
-	{
-		DisplayInfo.PlainName = LOCTEXT("GraphDisplayName_AnimGraph", "AnimGraph");
-
-		DisplayInfo.Tooltip = LOCTEXT("GraphTooltip_AnimGraph", "Graph used to blend together different animations.");
-		DisplayInfo.DocExcerptName = TEXT("AnimGraph");
-	}
 	else if (GraphType == GT_StateMachine)
 	{
 		DisplayInfo.Tooltip = FText::FromString(Graph.GetName());
@@ -6233,6 +6243,9 @@ UEdGraphNode* UEdGraphSchema_K2::CreateSubstituteNode(UEdGraphNode* Node, const 
 			// Set grid position to match that of the target node
 			CustomEventNode->NodePosX = EventNode->NodePosX;
 			CustomEventNode->NodePosY = EventNode->NodePosY;
+
+			// Reuse the same GUID as the replaced node
+			CustomEventNode->NodeGuid = EventNode->NodeGuid;
 
 			// Build a function name that is appropriate for the event we're replacing
 			FString FunctionName;

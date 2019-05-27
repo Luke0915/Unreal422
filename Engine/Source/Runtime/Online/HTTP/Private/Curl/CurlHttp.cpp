@@ -266,12 +266,13 @@ FString FCurlHttpRequest::GetContentType() const
 
 int32 FCurlHttpRequest::GetContentLength() const
 {
-	return RequestPayload->GetContentLength();
+	return RequestPayload.IsValid() ? RequestPayload->GetContentLength() : 0;
 }
 
 const TArray<uint8>& FCurlHttpRequest::GetContent() const
 {
-	return RequestPayload->GetContent();
+	static const TArray<uint8> EmptyContent;
+	return RequestPayload.IsValid() ? RequestPayload->GetContent() : EmptyContent;
 }
 
 void FCurlHttpRequest::SetVerb(const FString& InVerb)
@@ -1040,6 +1041,13 @@ void FCurlHttpRequest::FinishedRequest()
 			if (CURLE_OK == curl_easy_getinfo(EasyHandle, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &ContentLengthDownload))
 			{
 				Response->ContentLength = static_cast< int32 >(ContentLengthDownload);
+			}
+
+			if (Response->HttpCode <= 0)
+			{
+				UE_LOG(LogHttp, Warning, TEXT("%p: invalid HTTP response code received. URL: %s, HTTP code: %d, content length: %d, actual payload size: %d"),
+					this, *GetURL(), Response->HttpCode, Response->ContentLength, Response->Payload.Num());
+				Response->bSucceeded = false;
 			}
 		}
 	}

@@ -72,7 +72,8 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	PropertyColor(FLinearColor::White)
 ,	
 #endif
-	TranslucencySortPriority(FMath::Clamp(InComponent->TranslucencySortPriority, SHRT_MIN, SHRT_MAX))
+	CustomPrimitiveData(InComponent->GetCustomPrimitiveData())
+,	TranslucencySortPriority(FMath::Clamp(InComponent->TranslucencySortPriority, SHRT_MIN, SHRT_MAX))
 ,	Mobility(InComponent->Mobility)
 ,	LightmapType(InComponent->LightmapType)
 ,	StatId()
@@ -266,8 +267,12 @@ void FPrimitiveSceneProxy::UpdateUniformBuffer()
 		bool bHasPrecomputedVolumetricLightmap;
 		FMatrix PreviousLocalToWorld;
 		int32 SingleCaptureIndex;
+		bool bOutputVelocity;
 
-		Scene->GetPrimitiveUniformShaderParameters_RenderThread(PrimitiveSceneInfo, bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex);
+		Scene->GetPrimitiveUniformShaderParameters_RenderThread(PrimitiveSceneInfo, bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
+
+		FBoxSphereBounds PreSkinnedLocalBounds;
+		GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
 
 		// Update the uniform shader parameters.
 		const FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters = 
@@ -277,7 +282,7 @@ void FPrimitiveSceneProxy::UpdateUniformBuffer()
 				ActorPosition, 
 				Bounds, 
 				LocalBounds, 
-				GetPreSkinnedLocalBounds(),
+				PreSkinnedLocalBounds,
 				bReceivesDecals, 
 				HasDistanceFieldRepresentation(), 
 				HasDynamicIndirectShadowCasterRepresentation(), 
@@ -287,7 +292,9 @@ void FPrimitiveSceneProxy::UpdateUniformBuffer()
 				GetLightingChannelMask(),
 				LpvBiasMultiplier,
 				PrimitiveSceneInfo ? PrimitiveSceneInfo->GetLightmapDataOffset() : 0,
-				SingleCaptureIndex);
+				SingleCaptureIndex, 
+				bOutputVelocity || AlwaysHasVelocity(),
+				GetCustomPrimitiveData());
 
 		if (UniformBuffer.GetReference())
 		{

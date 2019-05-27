@@ -364,9 +364,9 @@ private:
 	/** apply LOD changes if the user modified LOD reduction settings */
 	FReply OnApplyChanges();
 	/** regenerate one specific LOD Index no dependencies*/
-	void RegenerateOneLOD(int32 LODIndex);
+	void RegenerateOneLOD(int32 LODIndex, bool bReregisterComponent = true);
 	/** regenerate the specific all LODs dependent of InLODIndex. This is not regenerating the InLODIndex*/
-	void RegenerateDependentLODs(int32 LODIndex);
+	void RegenerateDependentLODs(int32 LODIndex, bool bReregisterComponent = true);
 	/** Apply specified LOD Index */
 	FReply RegenerateLOD(int32 LODIndex);
 	/** Removes the specified lod from the skeletal mesh */
@@ -434,6 +434,8 @@ private:
 	/** Gets the max LOD that can be set from the lod count slider (current num plus an interval) */
 	TOptional<int32> GetLodSliderMaxValue() const;
 
+	void CustomizeSkinWeightProfiles(IDetailLayoutBuilder& DetailLayout);
+	TSharedRef<SWidget> CreateSkinWeightProfileMenuContent();
 public:
 
 	bool IsApplyNeeded() const;

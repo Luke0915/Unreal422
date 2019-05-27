@@ -386,12 +386,10 @@ FText FEditorPropertyPath::GetDisplayText() const
 FDynamicPropertyPath FEditorPropertyPath::ToPropertyPath() const
 {
 	TArray<FString> PropertyChain;
-
-	for ( const FEditorPropertyPathSegment& Segment : Segments )
+	for (const FEditorPropertyPathSegment& Segment : Segments)
 	{
 		FName SegmentName = Segment.GetMemberName();
-
-		if ( SegmentName != NAME_None )
+		if (SegmentName != NAME_None)
 		{
 			PropertyChain.Add(SegmentName.ToString());
 		}
@@ -400,7 +398,6 @@ FDynamicPropertyPath FEditorPropertyPath::ToPropertyPath() const
 			return FDynamicPropertyPath();
 		}
 	}
-
 	return FDynamicPropertyPath(PropertyChain);
 }
 

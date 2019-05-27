@@ -321,6 +321,7 @@ public:
 		SharedPixelProperties[MP_Refraction] = true;
 		SharedPixelProperties[MP_PixelDepthOffset] = true;
 		SharedPixelProperties[MP_SubsurfaceColor] = true;
+		SharedPixelProperties[MP_ShadingModel] = true;
 
 		for (int32 Frequency = 0; Frequency < SF_NumFrequencies; ++Frequency)
 		{
@@ -591,7 +592,7 @@ public:
 			}
 
 			const EShaderFrequency NormalShaderFrequency = FMaterialAttributeDefinitionMap::GetShaderFrequency(MP_Normal);
-			const EMaterialShadingModel MaterialShadingModel = Material->GetShadingModel();
+			const FMaterialShadingModelField MaterialShadingModels = Material->GetShadingModels();
 			const EMaterialDomain Domain = Material->GetMaterialDomain();
 			const EBlendMode BlendMode = Material->GetBlendMode();
 
@@ -625,7 +626,7 @@ public:
 			Chunk[MP_WorldDisplacement]				= Material->CompilePropertyAndSetMaterialProperty(MP_WorldDisplacement		,this);
 			Chunk[MP_TessellationMultiplier]		= Material->CompilePropertyAndSetMaterialProperty(MP_TessellationMultiplier	,this);			
 
-			if (Domain == MD_Surface && IsSubsurfaceShadingModel(MaterialShadingModel))
+			if (Domain == MD_Surface && IsSubsurfaceShadingModel(MaterialShadingModels))
 			{
 				// Note we don't test for the blend mode as you can have a translucent material using the subsurface shading model
 
@@ -666,6 +667,8 @@ public:
 
 			Chunk[MP_PixelDepthOffset] = Material->CompilePropertyAndSetMaterialProperty(MP_PixelDepthOffset, this);
 
+			Chunk[MP_ShadingModel] = Material->CompilePropertyAndSetMaterialProperty(MP_ShadingModel, this);
+
 			// No more calls to non-vertex shader CompilePropertyAndSetMaterialProperty beyond this point
 			const uint32 SavedNumUserTexCoords = NumUserTexCoords;
 
@@ -681,7 +684,7 @@ public:
 			}
 
 			bUsesEmissiveColor = IsMaterialPropertyUsed(MP_EmissiveColor, Chunk[MP_EmissiveColor], FLinearColor(0, 0, 0, 0), 3);
-			bUsesPixelDepthOffset = IsMaterialPropertyUsed(MP_PixelDepthOffset, Chunk[MP_PixelDepthOffset], FLinearColor(0, 0, 0, 0), 1)
+			bUsesPixelDepthOffset = (AllowPixelDepthOffset(Platform) && IsMaterialPropertyUsed(MP_PixelDepthOffset, Chunk[MP_PixelDepthOffset], FLinearColor(0, 0, 0, 0), 1))
 				|| (Domain == MD_DeferredDecal && Material->GetDecalBlendMode() == DBM_Volumetric_DistanceFunction);
 
 			bUsesWorldPositionOffset = IsMaterialPropertyUsed(MP_WorldPositionOffset, Chunk[MP_WorldPositionOffset], FLinearColor(0, 0, 0, 0), 3);
@@ -692,7 +695,7 @@ public:
 			// Fully rough if we have a roughness code chunk and it's constant and evaluates to 1.
 			bIsFullyRough = Chunk[MP_Roughness] != INDEX_NONE && IsMaterialPropertyUsed(MP_Roughness, Chunk[MP_Roughness], FLinearColor(1, 0, 0, 0), 1) == false;
 
-			if (BlendMode == BLEND_Modulate && MaterialShadingModel != MSM_Unlit && !Material->IsDeferredDecal())
+			if (BlendMode == BLEND_Modulate && MaterialShadingModels.IsLit() && !Material->IsDeferredDecal())
 			{
 				Errorf(TEXT("Dynamically lit translucency is not supported for BLEND_Modulate materials."));
 			}
@@ -737,17 +740,17 @@ public:
 				Errorf(TEXT("Light function materials must be opaque."));
 			}
 
-			if (Material->IsLightFunction() && MaterialShadingModel != MSM_Unlit)
+			if (Material->IsLightFunction() && MaterialShadingModels.IsLit())
 			{
 				Errorf(TEXT("Light function materials must use unlit."));
 			}
 
-			if (Domain == MD_PostProcess && MaterialShadingModel != MSM_Unlit)
+			if (Domain == MD_PostProcess && MaterialShadingModels.IsLit())
 			{
 				Errorf(TEXT("Post process materials must use unlit."));
 			}
 
-			if (Material->AllowNegativeEmissiveColor() && MaterialShadingModel != MSM_Unlit)
+			if (Material->AllowNegativeEmissiveColor() && MaterialShadingModels.IsLit())
 			{
 				Errorf(TEXT("Only unlit materials can output negative emissive color."));
 			}
@@ -1429,6 +1432,7 @@ protected:
 		case MCT_StaticBool:	return TEXT("static bool");
 		case MCT_MaterialAttributes:	return TEXT("MaterialAttributes");
 		case MCT_TextureExternal:	return TEXT("TextureExternal");
+		case MCT_ShadingModel:	return TEXT("ShadingModel");
 		default:				return TEXT("unknown");
 		};
 	}
@@ -1449,6 +1453,7 @@ protected:
 		case MCT_StaticBool:	return TEXT("static bool");
 		case MCT_MaterialAttributes:	return TEXT("MaterialAttributes");
 		case MCT_TextureExternal:	return TEXT("TextureExternal");
+		case MCT_ShadingModel:	return TEXT("uint");
 		default:				return TEXT("unknown");
 		};
 	}
@@ -1521,8 +1526,8 @@ protected:
 			new(*CurrentScopeChunks) FShaderCodeChunk(FormattedCode,TEXT(""),Type,true);
 			return CodeIndex;
 		}
-		// Can only create temporaries for float and material attribute types.
-		else if (Type & (MCT_Float))
+		// Can only create temporaries for float and shading model types.
+		else if (Type & (MCT_Float) || Type == MCT_ShadingModel)
 		{
 			const int32 CodeIndex = CurrentScopeChunks->Num();
 			// Allocate a local variable name
@@ -1851,9 +1856,9 @@ protected:
 	}
 
 	// GetArithmeticResultType
-	EMaterialValueType GetArithmeticResultType(EMaterialValueType TypeA,EMaterialValueType TypeB)
+	EMaterialValueType GetArithmeticResultType(EMaterialValueType TypeA, EMaterialValueType TypeB)
 	{
-		if(!(TypeA & MCT_Float) || !(TypeB & MCT_Float))
+		if (!((TypeA & MCT_Float) || TypeA == MCT_ShadingModel) || !((TypeB & MCT_Float) || TypeB == MCT_ShadingModel))
 		{
 			Errorf(TEXT("Attempting to perform arithmetic on non-numeric types: %s %s"),DescribeType(TypeA),DescribeType(TypeB));
 			return MCT_Unknown;
@@ -1964,10 +1969,10 @@ protected:
 		return ShaderFrequency;
 	}
 
-	virtual EMaterialShadingModel GetMaterialShadingModel() const override
+	virtual FMaterialShadingModelField GetMaterialShadingModels() const override
 	{
 		check(Material);
-		return Material->GetShadingModel();
+		return Material->GetShadingModels();
 	}
 
 	virtual int32 Error(const TCHAR* Text) override
@@ -3179,9 +3184,23 @@ protected:
 		return GetPrimitiveProperty(MCT_Float3, TEXT("ObjectBounds"), TEXT("ObjectBounds.xyz"));
 	}
 
-	virtual int32 PreSkinnedLocalBounds() override
+	virtual int32 PreSkinnedLocalBounds(int32 OutputIndex) override
 	{
-		return GetPrimitiveProperty(MCT_Float3, TEXT("PreSkinnedLocalBounds"), TEXT("PreSkinnedLocalBounds.xyz"));
+		switch (OutputIndex)
+		{
+		case 0: // Half extents
+			return AddInlinedCodeChunk(MCT_Float3, TEXT("((GetPrimitiveData(Parameters.PrimitiveId).PreSkinnedLocalBoundsMax - GetPrimitiveData(Parameters.PrimitiveId).PreSkinnedLocalBoundsMin) / 2.0f)"));
+		case 1: // Full extents
+			return AddInlinedCodeChunk(MCT_Float3, TEXT("(GetPrimitiveData(Parameters.PrimitiveId).PreSkinnedLocalBoundsMax - GetPrimitiveData(Parameters.PrimitiveId).PreSkinnedLocalBoundsMin)"));
+		case 2: // Min point
+			return GetPrimitiveProperty(MCT_Float3, TEXT("PreSkinnedLocalBounds"), TEXT("PreSkinnedLocalBoundsMin"));
+		case 3: // Max point
+			return GetPrimitiveProperty(MCT_Float3, TEXT("PreSkinnedLocalBounds"), TEXT("PreSkinnedLocalBoundsMax"));
+		default:
+			check(false);
+		}
+
+		return INDEX_NONE; 
 	}
 
 	virtual int32 DistanceCullFade() override
@@ -3210,13 +3229,18 @@ protected:
 
 	virtual int32 If(int32 A,int32 B,int32 AGreaterThanB,int32 AEqualsB,int32 ALessThanB,int32 ThresholdArg) override
 	{
-		if(A == INDEX_NONE || B == INDEX_NONE || AGreaterThanB == INDEX_NONE || ALessThanB == INDEX_NONE || ThresholdArg == INDEX_NONE)
+		if(A == INDEX_NONE || B == INDEX_NONE || AGreaterThanB == INDEX_NONE || ALessThanB == INDEX_NONE)
 		{
 			return INDEX_NONE;
 		}
 
 		if (AEqualsB != INDEX_NONE)
 		{
+			if (ThresholdArg == INDEX_NONE)
+			{
+				return INDEX_NONE;
+			}
+
 			EMaterialValueType ResultType = GetArithmeticResultType(GetParameterType(AGreaterThanB),GetArithmeticResultType(AEqualsB,ALessThanB));
 
 			int32 CoercedAGreaterThanB = ForceCast(AGreaterThanB,ResultType);
@@ -3540,7 +3564,9 @@ protected:
 		switch( SamplerType )
 		{
 			case SAMPLERTYPE_External:
-				// fall through since should be treated same as SAMPLERTYPE_Color
+				SampleCode = FString::Printf(TEXT("ProcessMaterialExternalTextureLookup(%s)"), *SampleCode);
+				break;
+
 			case SAMPLERTYPE_Color:
 				SampleCode = FString::Printf( TEXT("ProcessMaterialColorTextureLookup(%s)"), *SampleCode );
 				break;
@@ -3728,6 +3754,12 @@ protected:
 
 	virtual int32 SceneDepth(int32 Offset, int32 ViewportUV, bool bUseOffset) override
 	{
+		if (ShaderFrequency == SF_Vertex && FeatureLevel <= ERHIFeatureLevel::ES3_1)
+		{
+			// mobile currently does not support this, we need to read a separate copy of the depth, we must disable framebuffer fetch and force scene texture reads.
+			return Errorf(TEXT("Cannot read scene depth from the vertex shader with feature level ES3.1 or below."));
+		}
+
 		if (Offset == INDEX_NONE && bUseOffset)
 		{
 			return INDEX_NONE;
@@ -5462,6 +5494,57 @@ protected:
 
 		return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionAtmosphericLightColor(Parameters)"));
 
+	}
+
+	virtual int32 CustomPrimitiveData(int32 OutputIndex, EMaterialValueType Type) override
+	{
+		check(OutputIndex < FCustomPrimitiveData::NumCustomPrimitiveDataFloats);
+
+		const int32 NumComponents = GetNumComponents(Type);
+
+		FString HlslCode;
+			
+		// Only float2, float3 and float4 need this
+		if (NumComponents > 1)
+		{
+			HlslCode.Append(FString::Printf(TEXT("float%d("), NumComponents));
+		}
+
+		for (int i = 0; i < NumComponents; i++)
+		{
+			const int32 CurrentOutputIndex = OutputIndex + i;
+
+			// Check if we are accessing inside the array, otherwise default to 0
+			if (CurrentOutputIndex < FCustomPrimitiveData::NumCustomPrimitiveDataFloats)
+			{
+				const int32 CustomDataIndex = CurrentOutputIndex / 4;
+				const int32 ElementIndex = CurrentOutputIndex % 4; // Index x, y, z or w
+
+				HlslCode.Append(FString::Printf(TEXT("GetPrimitiveData(Parameters.PrimitiveId).CustomPrimitiveData[%d][%d]"), CustomDataIndex, ElementIndex));
+			}
+			else
+			{
+				HlslCode.Append(TEXT("0.0f"));
+			}
+
+			if (i+1 < NumComponents)
+			{
+				HlslCode.Append(", ");
+			}
+		}
+
+		// This is the matching parenthesis to the first append
+		if (NumComponents > 1)
+		{
+			HlslCode.AppendChar(')');
+		}
+
+		return AddCodeChunk(Type, TEXT("%s"), *HlslCode);
+	}
+
+	virtual int32 ShadingModel(EMaterialShadingModel InSelectedShadingModel) override
+	{
+		return AddInlinedCodeChunk(MCT_ShadingModel, TEXT("%d"), InSelectedShadingModel);
 	}
 
 	virtual int32 CustomExpression( class UMaterialExpressionCustom* Custom, TArray<int32>& CompiledInputs ) override

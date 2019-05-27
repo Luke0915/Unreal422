@@ -88,6 +88,12 @@ SRetainerWidget::SRetainerWidget()
 
 SRetainerWidget::~SRetainerWidget()
 {
+	for ( int32 i = 0; i < NodePool.Num(); i++ )
+	{
+		delete NodePool[i];
+	}
+	NodePool.Empty();
+	
 	if( FSlateApplication::IsInitialized() )
 	{
 #if !UE_BUILD_SHIPPING
@@ -117,6 +123,10 @@ void SRetainerWidget::UpdateWidgetRenderer()
 	FWidgetRenderer* WidgetRenderer = RenderingResources->WidgetRenderer;
 
 	WidgetRenderer->SetUseGammaCorrection(bWriteContentInGammaSpace);
+
+	// This will be handled by the main slate rendering pass
+	WidgetRenderer->SetApplyColorDeficiencyCorrection(false);
+
 	WidgetRenderer->SetIsPrepassNeeded(false);
 	WidgetRenderer->SetClearHitTestGrid(false);
 

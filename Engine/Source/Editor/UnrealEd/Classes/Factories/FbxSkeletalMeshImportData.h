@@ -38,11 +38,11 @@ public:
 	TEnumAsByte<enum EFBXImportContentType> LastImportContentType;
 
 	/** Specify how vertex colors should be imported */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, config, Category = Mesh, meta = (OBJRestrict = "true", ImportType = "SkeletalMesh"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, config, Category = Mesh, meta = (OBJRestrict = "true", ImportType = "SkeletalMesh|GeoOnly"))
 	TEnumAsByte<EVertexColorImportOption::Type> VertexColorImportOption;
 
 	/** Specify override color in the case that VertexColorImportOption is set to Override */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, config, Category = Mesh, meta = (OBJRestrict = "true", ImportType = "SkeletalMesh"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, config, Category = Mesh, meta = (OBJRestrict = "true", ImportType = "SkeletalMesh|GeoOnly"))
 	FColor VertexOverrideColor;
 
 	/** Enable this option to update Skeleton (of the mesh)'s reference pose. Mesh's reference pose is always updated.  */
@@ -88,13 +88,24 @@ public:
 	virtual void AppendAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags);
 };
 
+
+namespace SkeletalMeshImportData
+{
+	struct FRawBoneInfluence;
+}
 class FSkeletalMeshImportData;
 struct ExistingSkelMeshData;
 class USkeleton;
 struct FReferenceSkeleton;
+namespace SkeletalMeshImportData
+{
+	struct FVertex;
+	struct FRawBoneInfluence;
+}
 
 extern UNREALED_API ExistingSkelMeshData* SaveExistingSkelMeshData(USkeletalMesh* ExistingSkelMesh, bool bSaveMaterials, int32 ReimportLODIndex);
 extern UNREALED_API void RestoreExistingSkelMeshData(ExistingSkelMeshData* MeshData, USkeletalMesh* SkeletalMesh, int32 ReimportLODIndex, bool bCanShowDialog, bool bImportSkinningOnly);
+extern UNREALED_API void ProcessImportMeshInfluences(const int32 WedgeCount, TArray <SkeletalMeshImportData::FRawBoneInfluence>& Influences);
 extern UNREALED_API void ProcessImportMeshInfluences(FSkeletalMeshImportData& ImportData);
 extern UNREALED_API void ProcessImportMeshMaterials(TArray<FSkeletalMaterial>& Materials, FSkeletalMeshImportData& ImportData);
 extern UNREALED_API bool ProcessImportMeshSkeleton(const USkeleton* SkeletonAsset, FReferenceSkeleton& RefSkeleton, int32& SkeletalDepth, FSkeletalMeshImportData& ImportData);

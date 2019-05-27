@@ -57,9 +57,13 @@ if not [%MSBUILD_EXE%] == [%MSBUILD_15_EXE_WITH_NUGET%] goto Error_RequireNugetP
 
 :NoVsWhere
 
+rem Find platform extension source files
+call "%~dp0FindPlatformExtensionSources.bat"
+
 rem Check to see if the files in the UBT directory have changed. We conditionally include platform files from the .csproj file, but MSBuild doesn't recognize the dependency when new files are added. 
 md ..\Intermediate\Build >nul 2>nul
 dir /s /b Programs\UnrealBuildTool\*.cs >..\Intermediate\Build\UnrealBuildToolFiles.txt
+if exist ..\..\Platforms dir /s /b ..\..\Platforms\*.cs >> ..\Intermediate\Build\UnrealBuildToolFiles.txt
 fc /b ..\Intermediate\Build\UnrealBuildToolFiles.txt ..\Intermediate\Build\UnrealBuildToolPrevFiles.txt >nul 2>nul
 if not errorlevel 1 goto SkipClean
 copy /y ..\Intermediate\Build\UnrealBuildToolFiles.txt ..\Intermediate\Build\UnrealBuildToolPrevFiles.txt >nul
@@ -76,7 +80,6 @@ if errorlevel 1 goto Error_ProjectGenerationFailed
 rem ## Success!
 popd
 exit /B 0
-
 
 :Error_BatchFileInWrongLocation
 echo.
@@ -96,7 +99,7 @@ goto Exit
 
 :Error_NoVisualStudioEnvironment
 echo.
-echo GenerateProjectFiles ERROR: We couldn't find a valid installation of Visual Studio.  This program requires Visual Studio 2017.  Please check that you have Visual Studio installed, then verify that the HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\VisualStudio\14.0\InstallDir (or HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\VisualStudio\14.0\InstallDir on 32-bit machines) registry value is set.  Visual Studio configures this value when it is installed, and this program expects it to be set to the '\Common7\IDE\' sub-folder under a valid Visual Studio installation directory.
+echo GenerateProjectFiles ERROR: Unable to find a valid installation of Visual Studio.  Please check that you have Visual Studio 2017 or Visual Studio 2019 installed, and the MSBuild component is selected as part of your installation.
 echo.
 pause
 goto Exit

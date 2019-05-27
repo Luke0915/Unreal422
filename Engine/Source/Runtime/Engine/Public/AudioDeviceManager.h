@@ -172,7 +172,7 @@ public:
 	bool IsPlayAllDeviceAudio() const { return bPlayAllDeviceAudio; }
 
 	/** Is debug visualization of 3d sounds enabled */
-	bool IsVisualizeDebug3dEnabled() const { return bVisualize3dDebug; }
+	bool IsVisualizeDebug3dEnabled() const;
 
 	/** Toggles 3d visualization of 3d sounds on/off */
 	void ToggleVisualize3dDebug();
@@ -320,6 +320,12 @@ private:
 
 	/** Whether or not 3d debug visualization is enabled. */
 	bool bVisualize3dDebug;
+
+	/** Whether or not we check to toggle audio mixer once. */
+	bool bOnlyToggleAudioMixerOnce;
+
+	/** Whether or not we've toggled the audio mixer. */
+	bool bToggledAudioMixer;
 
 	/** Audio Fence to ensure that we don't allow the audio thread to drift never endingly behind. */
 	FAudioCommandFence SyncFence;

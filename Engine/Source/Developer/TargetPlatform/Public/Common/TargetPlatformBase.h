@@ -35,6 +35,14 @@ public:
 
 	TARGETPLATFORM_API virtual bool UsesDBuffer() const override;
 
+	TARGETPLATFORM_API virtual bool UsesBasePassVelocity() const override;
+
+	TARGETPLATFORM_API virtual bool UsesSelectiveBasePassOutputs() const override;
+	
+	TARGETPLATFORM_API virtual bool UsesDistanceFields() const override;
+
+	TARGETPLATFORM_API virtual float GetDownSampleMeshDistanceFieldDivider() const override;
+
 #if WITH_ENGINE
 	virtual void GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const override
 	{

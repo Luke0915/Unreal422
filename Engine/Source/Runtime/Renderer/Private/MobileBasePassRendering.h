@@ -49,6 +49,12 @@ extern void SetupMobileDirectionalLightUniformParameters(
 	bool bDynamicShadows,
 	FMobileDirectionalLightShaderParameters& Parameters);
 
+extern void SetupMobileSkyReflectionUniformParameters(
+	class FSkyLightSceneProxy* SkyLight,
+	FMobileReflectionCaptureShaderParameters& Parameters);
+
+
+
 class FPlanarReflectionSceneProxy;
 class FScene;
 
@@ -223,22 +229,23 @@ public:
 	}
 
 	/** Initialization constructor. */
-	TMobileBasePassPSPolicyParamType(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer):
-		FMeshMaterialShader(Initializer)
+	TMobileBasePassPSPolicyParamType(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer)
+		: FMeshMaterialShader(Initializer)
 	{
 		LightMapPolicyType::PixelParametersType::Bind(Initializer.ParameterMap);
 		PassUniformBuffer.Bind(Initializer.ParameterMap, FMobileBasePassUniformParameters::StaticStructMetadata.GetShaderVariableName());
 		
 		MobileDirectionLightBufferParam.Bind(Initializer.ParameterMap, FMobileDirectionalLightShaderParameters::StaticStructMetadata.GetShaderVariableName());
+		ReflectionParameter.Bind(Initializer.ParameterMap, FMobileReflectionCaptureShaderParameters::StaticStructMetadata.GetShaderVariableName());
 
-		ReflectionCubemap.Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap"));
-		ReflectionSampler.Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler"));
-		ReflectionCubemap1.Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap1"));
-		ReflectionSampler1.Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler1"));
-		ReflectionCubemap2.Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap2"));
-		ReflectionSampler2.Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler2"));
-		MobileReflectionParams.Bind(Initializer.ParameterMap, TEXT("MobileReflectionParams"));
-		ReflectionPositionsAndRadii.Bind(Initializer.ParameterMap, TEXT("ReflectionPositionsAndRadii"));
+		HQReflectionCubemaps[0].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap0"));
+		HQReflectionSamplers[0].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler0"));
+		HQReflectionCubemaps[1].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap1"));
+		HQReflectionSamplers[1].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler1"));
+		HQReflectionCubemaps[2].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap2"));
+		HQReflectionSamplers[2].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler2"));
+		HQReflectionInvAverageBrigtnessParams.Bind(Initializer.ParameterMap, TEXT("ReflectionInvAverageBrigtness"));
+		HQReflectionPositionsAndRadii.Bind(Initializer.ParameterMap, TEXT("ReflectionPositionsAndRadii"));
 
 		LightPositionAndInvRadiusParameter.Bind(Initializer.ParameterMap, TEXT("LightPositionAndInvRadius"));
 		LightColorAndFalloffExponentParameter.Bind(Initializer.ParameterMap, TEXT("LightColorAndFalloffExponent"));
@@ -248,6 +255,7 @@ public:
 						
 		CSMDebugHintParams.Bind(Initializer.ParameterMap, TEXT("CSMDebugHint"));
 	}
+
 	TMobileBasePassPSPolicyParamType() {}
 
 	virtual bool Serialize(FArchive& Ar) override
@@ -256,15 +264,17 @@ public:
 		LightMapPolicyType::PixelParametersType::Serialize(Ar);
 
 		Ar << MobileDirectionLightBufferParam;
-		Ar << ReflectionCubemap;
-		Ar << ReflectionSampler;
-		Ar << ReflectionCubemap1;
-		Ar << ReflectionCubemap2;
-		Ar << ReflectionSampler1;
-		Ar << ReflectionSampler2;
-		Ar << MobileReflectionParams;
-		Ar << ReflectionPositionsAndRadii;
+		Ar << ReflectionParameter;
 
+		Ar << HQReflectionCubemaps[0];
+		Ar << HQReflectionCubemaps[1];
+		Ar << HQReflectionCubemaps[2];
+		Ar << HQReflectionSamplers[0];
+		Ar << HQReflectionSamplers[1];
+		Ar << HQReflectionSamplers[2];
+		Ar << HQReflectionInvAverageBrigtnessParams;
+		Ar << HQReflectionPositionsAndRadii;
+		
 		Ar << LightPositionAndInvRadiusParameter;
 		Ar << LightColorAndFalloffExponentParameter;
 		Ar << NumDynamicPointLightsParameter;
@@ -278,15 +288,13 @@ public:
 
 private:
 	FShaderUniformBufferParameter MobileDirectionLightBufferParam;
+	FShaderUniformBufferParameter ReflectionParameter;
 
-	FShaderResourceParameter ReflectionCubemap;
-	FShaderResourceParameter ReflectionSampler;
-	FShaderResourceParameter ReflectionCubemap1;
-	FShaderResourceParameter ReflectionSampler1;
-	FShaderResourceParameter ReflectionCubemap2;
-	FShaderResourceParameter ReflectionSampler2;
-	FShaderParameter MobileReflectionParams;
-	FShaderParameter ReflectionPositionsAndRadii;
+	// HQ reflection bound as loose params
+	FShaderResourceParameter HQReflectionCubemaps[3];
+	FShaderResourceParameter HQReflectionSamplers[3];
+	FShaderParameter HQReflectionInvAverageBrigtnessParams;
+	FShaderParameter HQReflectionPositionsAndRadii;
 	
 	FShaderParameter LightPositionAndInvRadiusParameter;
 	FShaderParameter LightColorAndFalloffExponentParameter;
@@ -343,7 +351,7 @@ namespace MobileBasePass
 		const FMeshBatch& MeshBatch, 
 		const FPrimitiveSceneProxy* PrimitiveSceneProxy, 
 		const FLightSceneInfo* MobileDirectionalLight, 
-		EMaterialShadingModel ShadingModel, 
+		FMaterialShadingModelField ShadingModels, 
 		bool bPrimReceivesCSM, 
 		ERHIFeatureLevel::Type FeatureLevel);
 
@@ -358,7 +366,7 @@ namespace MobileBasePass
 
 	const FLightSceneInfo* GetDirectionalLightInfo(const FScene* Scene, const FPrimitiveSceneProxy* PrimitiveSceneProxy);
 	int32 CalcNumMovablePointLights(const FMaterial& InMaterial, const FPrimitiveSceneProxy* InPrimitiveSceneProxy);
-		
+
 	bool StaticCanReceiveCSM(const FLightSceneInfo* LightSceneInfo, const FPrimitiveSceneProxy* PrimitiveSceneProxy);
 
 	void SetOpaqueRenderState(FMeshPassProcessorRenderState& DrawRenderState, const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FMaterial& Material, bool bEnableReceiveDecalOutput);
@@ -393,7 +401,7 @@ public:
 		const bool bMobileDynamicPointLightsUseStaticBranch = (MobileDynamicPointLightsUseStaticBranchCVar->GetValueOnAnyThread() == 1);
 		const int32 MobileNumDynamicPointLights = MobileNumDynamicPointLightsCVar->GetValueOnAnyThread();
 		const int32 MobileSkyLightPermutationOptions = MobileSkyLightPermutationCVar->GetValueOnAnyThread();
-		const bool bIsUnlit = Material->GetShadingModel() == MSM_Unlit;
+		const bool bIsUnlit = Material->GetShadingModels().IsUnlit();
 
 		// Only compile skylight version for lit materials on ES2 (Metal) or higher
 		const bool bShouldCacheBySkylight = !bEnableSkyLight || !bIsUnlit;
@@ -446,13 +454,24 @@ public:
 class FMobileBasePassMeshProcessor : public FMeshPassProcessor
 {
 public:
+	enum class EFlags
+	{
+		None = 0,
+
+		// Informs the processor whether a depth-stencil target is bound when processed draw commands are issued.
+		CanUseDepthStencil = (1 << 0),
+
+		// Informs the processor whether primitives can receive shadows from cascade shadow maps.
+		CanReceiveCSM = (1 << 1)
+	};
+
 	FMobileBasePassMeshProcessor(
-		const FScene* InScene, 
-		ERHIFeatureLevel::Type InFeatureLevel, 
-		const FSceneView* InViewIfDynamicMeshCommand, 
-		const FMeshPassProcessorRenderState& InDrawRenderState, 
+		const FScene* InScene,
+		ERHIFeatureLevel::Type InFeatureLevel,
+		const FSceneView* InViewIfDynamicMeshCommand,
+		const FMeshPassProcessorRenderState& InDrawRenderState,
 		FMeshPassDrawListContext* InDrawListContext,
-		bool bInCanReceiveCSM,
+		EFlags Flags,
 		ETranslucencyPass::Type InTranslucencyPassType = ETranslucencyPass::TPT_MAX);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
@@ -468,11 +487,14 @@ private:
 		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
 		const FMaterial& RESTRICT MaterialResource,
 		EBlendMode BlendMode,
-		EMaterialShadingModel ShadingModel,
+		FMaterialShadingModelField ShadingModels,
 		const ELightMapPolicyType LightMapPolicyType,
 		const FUniformLightMapPolicy::ElementDataType& RESTRICT LightMapElementData);
-			
+
 	const ETranslucencyPass::Type TranslucencyPassType;
 	const bool bTranslucentBasePass;
 	const bool bCanReceiveCSM;
+	const bool bEnableReceiveDecalOutput;
 };
+
+ENUM_CLASS_FLAGS(FMobileBasePassMeshProcessor::EFlags);

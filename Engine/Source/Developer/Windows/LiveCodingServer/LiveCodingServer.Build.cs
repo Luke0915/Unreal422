@@ -7,11 +7,13 @@ public class LiveCodingServer : ModuleRules
 {
 	public LiveCodingServer(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateDependencyModuleNames.Add("Core");
-		PrivateDependencyModuleNames.Add("Distorm");
-		PrivateDependencyModuleNames.Add("LiveCoding");
+        PrivateDependencyModuleNames.Add("Core");
+        PrivateDependencyModuleNames.Add("Json");
+        PrivateDependencyModuleNames.Add("LiveCoding");
 
-		if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+        AddEngineThirdPartyPrivateStaticDependencies(Target, "Distorm");
+
+        if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PrivateIncludePaths.Add("Developer/Windows/LiveCoding/Private");
 			PrivateIncludePaths.Add("Developer/Windows/LiveCoding/Private/External");

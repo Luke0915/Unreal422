@@ -10,6 +10,7 @@
 #include "Serialization/JsonSerializerMacros.h"
 
 class FNetworkReplayVersion;
+class IAnalyticsProvider;
 
 class FReplayEventListItem : public FJsonSerializable
 {
@@ -371,6 +372,16 @@ static FORCEINLINE FRequestEventDataCallback UpgradeRequestEventDelegate(const F
 }
 /** End RequestEventData Types */
 
+/** Start RequestEventGroupData Types */
+struct FRequestEventGroupDataResult : public FStreamingResultBase
+{
+	TArray<FReplayEventListItem> ReplayEventListItems;
+	TArray<FRequestEventDataResult> ReplayEventListResults;
+};
+
+DECLARE_DELEGATE_OneParam(FRequestEventGroupDataCallback, const FRequestEventGroupDataResult&);
+/** End RequestEventGroupData Types */
+
 /** Start DownloadHeader Types */
 struct FDownloadHeaderResult : public FStreamingResultBase
 {
@@ -484,6 +495,8 @@ public:
 	virtual bool IsCheckpointTypeSupported(EReplayCheckpointType CheckpointType) const = 0;
 
 	virtual void UpdateTotalDemoTime(uint32 TimeInMS) = 0;
+	virtual void UpdatePlaybackTime(uint32 TimeInMS) = 0;
+
 	virtual uint32 GetTotalDemoTime() const = 0;
 	virtual bool IsDataAvailable() const = 0;
 	virtual void SetHighPriorityTimeRange(const uint32 StartTimeInMS, const uint32 EndTimeInMS) = 0;
@@ -500,6 +513,10 @@ public:
 	virtual void RequestEventData(const FString& EventID, const FRequestEventDataCallback& Delegate) = 0;
 	virtual void RequestEventData(const FString& ReplayName, const FString& EventID, const FRequestEventDataCallback& Delegate) = 0;
 	virtual void RequestEventData(const FString& ReplayName, const FString& EventId, const int32 UserIndex, const FRequestEventDataCallback& Delegate) = 0;
+
+	virtual void RequestEventGroupData(const FString& Group, const FRequestEventGroupDataCallback& Delegate) = 0;
+	virtual void RequestEventGroupData(const FString& ReplayName, const FString& Group, const FRequestEventGroupDataCallback& Delegate) = 0;
+	virtual void RequestEventGroupData(const FString& ReplayName, const FString& Group, const int32 UserIndex, const FRequestEventGroupDataCallback& Delegate) = 0;
 
 	virtual void SearchEvents(const FString& EventGroup, const FSearchEventsCallback& Delegate) = 0;
 	virtual void RefreshHeader() = 0;
@@ -603,23 +620,33 @@ public:
 	 * Note, this will always fail for streamers that don't support replays stored on disk.
 	 */
 	virtual EStreamingOperationResult GetDemoPath(FString& DemoPath) const = 0;
+
+	virtual void SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider>& InProvider) {}
+
+	virtual void Exec(const TCHAR* Cmd, FOutputDevice& Ar) {}
 };
 
 /** Replay streamer factory */
 class INetworkReplayStreamingFactory : public IModuleInterface
 {
 public:
-	virtual TSharedPtr< INetworkReplayStreamer > CreateReplayStreamer() = 0;
+	virtual TSharedPtr<INetworkReplayStreamer> CreateReplayStreamer() = 0;
+	virtual void Flush() {}
 };
 
 /** Replay streaming factory manager */
-class FNetworkReplayStreaming : public IModuleInterface
+class FNetworkReplayStreaming : public IModuleInterface, public FSelfRegisteringExec
 {
 public:
+	FNetworkReplayStreaming() {}
+	virtual ~FNetworkReplayStreaming() {}
+
 	static inline FNetworkReplayStreaming& Get()
 	{
-		return FModuleManager::LoadModuleChecked< FNetworkReplayStreaming >( "NetworkReplayStreaming" );
+		return FModuleManager::LoadModuleChecked<FNetworkReplayStreaming>("NetworkReplayStreaming");
 	}
+
+	NETWORKREPLAYSTREAMING_API void Flush();
 
 	virtual INetworkReplayStreamingFactory& GetFactory(const TCHAR* FactoryNameOverride = nullptr);
 
@@ -638,4 +665,10 @@ public:
 	// Gets the configured value for whether or not we should use FDateTime::Now as the automatic replay postfix.
 	// If false, it's up to the streamer to determine a proper postfix.
 	static NETWORKREPLAYSTREAMING_API bool UseDateTimeAsAutomaticReplayPostfix();
+
+	// FSelfRegisteringExec interface
+	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
+
+private:
+	TSet<FName> LoadedFactories;
 };

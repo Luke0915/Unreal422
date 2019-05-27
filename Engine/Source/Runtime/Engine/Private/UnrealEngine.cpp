@@ -1730,6 +1730,7 @@ void UEngine::TickDeferredCommands()
 	const int32 DeferredCommandsCount = DeferredCommands.Num();
 	for( int32 DeferredCommandsIndex=0; DeferredCommandsIndex<DeferredCommandsCount; DeferredCommandsIndex++ )
 	{
+		CSV_EVENT_GLOBAL(TEXT("Cmd: %s"), *DeferredCommands[DeferredCommandsIndex]);
 		// Use LocalPlayer if available...
 		ULocalPlayer* LocalPlayer = GetDebugLocalPlayer();
 		if( LocalPlayer )
@@ -1829,6 +1830,18 @@ static FAutoConsoleCommand SetTimedMemReport(TEXT("TimedMemReport.Delay"), TEXT(
 
 #endif
 
+double UEngine::CorrectNegativeTimeDelta(double DeltaRealTime)
+{
+#if PLATFORM_ANDROID
+	UE_LOG(LogEngine, Warning, TEXT("Detected negative delta time - ignoring"));
+#else
+	// AMD dual-core systems are a known issue that require AMD CPU drivers to be installed. Installer will take care of this for shipping.
+	UE_LOG(LogEngine, Fatal, TEXT("Detected negative delta time - on AMD systems please install http://files.aoaforums.com/I3199-setup.zip.html - DeltaTime:%f"),
+		DeltaRealTime);
+#endif
+	return 0.01;
+}
+
 void UEngine::UpdateTimeAndHandleMaxTickRate()
 {
 	PumpABTest();
@@ -1887,14 +1900,7 @@ void UEngine::UpdateTimeAndHandleMaxTickRate()
 		// Negative delta time means something is wrong with the system. Error out so user can address issue.
 		if(DeltaRealTime < 0 )
 		{
-#if PLATFORM_ANDROID
-			UE_LOG(LogEngine, Warning, TEXT("Detected negative delta time - ignoring"));
-#else
-			// AMD dual-core systems are a known issue that require AMD CPU drivers to be installed. Installer will take care of this for shipping.
-			UE_LOG(LogEngine, Fatal,TEXT("Detected negative delta time - on AMD systems please install http://files.aoaforums.com/I3199-setup.zip.html - DeltaTime:%f, bUseFixedFrameRate:%d, bTimeWasManipulatedDebug:%d, FixedFrameRate:%f"), 
-				DeltaRealTime, bUseFixedFrameRate, bTimeWasManipulatedDebug, FixedFrameRate);
-#endif
-			DeltaRealTime = 0.01;
+			DeltaRealTime = CorrectNegativeTimeDelta(DeltaRealTime);
 		}
 
 		// Give engine chance to update frame rate smoothing
@@ -3246,9 +3252,14 @@ struct FCompareFSortedTexture
 	FCompareFSortedTexture( bool InAlphaSort )
 		: bAlphaSort( InAlphaSort )
 	{}
-	FORCEINLINE bool operator()( const FSortedTexture& A, const FSortedTexture& B ) const
+	FORCEINLINE bool operator()(const FSortedTexture& A, const FSortedTexture& B) const
 	{
-		return bAlphaSort ? ( A.Name < B.Name ) : ( B.CurrentSize < A.CurrentSize );
+		if (bAlphaSort || A.CurrentSize == B.CurrentSize)
+		{
+			return A.Name < B.Name;
+		}
+
+		return B.CurrentSize < A.CurrentSize;
 	}
 };
 
@@ -3310,7 +3321,13 @@ struct FCompareFSortedStaticMesh
 		{
 			return ((B.VertexCountTotalMobile) < (A.VertexCountTotalMobile));
 		}
-		return bAlphaSort ? (A.Name < B.Name) : ((B.NumKB + B.ResKBExc) < (A.NumKB + A.ResKBExc));
+
+		if (bAlphaSort || (B.NumKB + B.ResKBExc) == (A.NumKB + A.ResKBExc))
+		{
+			return A.Name < B.Name;
+		}
+
+		return (B.NumKB + B.ResKBExc) < (A.NumKB + A.ResKBExc);
 	}
 };
 
@@ -3369,7 +3386,13 @@ struct FCompareFSortedSkeletalMesh
 		{
 			return ((B.VertexCountTotalMobile) < (A.VertexCountTotalMobile));
 		}
-		return bAlphaSort ? (A.Name < B.Name) : ((B.NumKB + B.ResKBExc) < (A.NumKB + A.ResKBExc));
+
+		if (bAlphaSort || (B.NumKB + B.ResKBExc) == (A.NumKB + A.ResKBExc))
+		{
+			return A.Name < B.Name;
+		}
+
+		return (B.NumKB + B.ResKBExc) < (A.NumKB + A.ResKBExc);
 	}
 };
 
@@ -3416,7 +3439,12 @@ struct FCompareFSortedAnimAsset
 	{}
 	FORCEINLINE bool operator()(const FSortedAnimAsset& A, const FSortedAnimAsset& B) const
 	{
-		return bAlphaSort ? (A.Name < B.Name) : ((B.NumKB + B.ResKBExc) < (A.NumKB + A.ResKBExc));
+		if (bAlphaSort || (B.NumKB + B.ResKBExc) == (A.NumKB + A.ResKBExc))
+		{
+			return A.Name < B.Name;
+		}
+
+		return (B.NumKB + B.ResKBExc) < (A.NumKB + A.ResKBExc);
 	}
 };
 
@@ -3440,7 +3468,12 @@ struct FCompareFSortedSet
 	{}
 	FORCEINLINE bool operator()( const FSortedSet& A, const FSortedSet& B ) const
 	{
-		return bAlphaSort ? ( A.Name < B.Name ) : ( B.Size < A.Size );
+		if (bAlphaSort || A.Size == B.Size)
+		{
+			return A.Name < B.Name;
+		}
+
+		return B.Size < A.Size;
 	}
 };
 
@@ -3507,7 +3540,12 @@ struct FCompareFSortedParticleSet
 	{}
 	FORCEINLINE bool operator()( const FSortedParticleSet& A, const FSortedParticleSet& B ) const
 	{
-		return bAlphaSort ? ( A.Name < B.Name ) : ( B.Size < A.Size );
+		if (bAlphaSort || A.Size == B.Size)
+		{
+			return A.Name < B.Name;
+		}
+
+		return B.Size < A.Size;
 	}
 };
 
@@ -4743,27 +4781,55 @@ bool UEngine::HandleKismetEventCommand(UWorld* InWorld, const TCHAR* Cmd, FOutpu
 	if (ObjectName == TEXT("*"))
 	{
 		// Send the command to everything in the world we're dealing with...
+		int32 NumInstanceCallsSucceeded = 0;
 		for (TObjectIterator<UObject> It; It; ++It)
 		{
 			UObject* const Obj = *It;
 			UWorld const* const ObjWorld = Obj->GetWorld();
 			if (ObjWorld == InWorld)
 			{
-				Obj->CallFunctionByNameWithArguments(Cmd, Ar, NULL, true);
+				const bool bSucceeded = Obj->CallFunctionByNameWithArguments(Cmd, Ar, nullptr, true);
+				NumInstanceCallsSucceeded += bSucceeded ? 1 : 0;
 			}
 		}
+
+		Ar.Logf(TEXT("Called '%s' on everything in the world and %d instances succeeded"), Cmd, NumInstanceCallsSucceeded);
 	}
 	else
 	{
 		UObject* ObjectToMatch = FindObject<UObject>(ANY_PACKAGE, *ObjectName);
 
-		if (ObjectToMatch == NULL)
+		if (ObjectToMatch == nullptr)
 		{
-			Ar.Logf(TEXT("Failed to find object named '%s'.  Specify a valid name or *"), *ObjectName);
+			Ar.Logf(TEXT("Failed to find an object named '%s'.  Specify a valid object name, class name, or * (if using a class name for a BP, don't forget the _C)"), *ObjectName);
 		}
 		else
 		{
-			ObjectToMatch->CallFunctionByNameWithArguments(Cmd, Ar, NULL, true);
+			if (UClass* ClassToMatch = Cast<UClass>(ObjectToMatch))
+			{
+				// Call it on all instances of the class
+				int32 NumInstancesFound = 0;
+				int32 NumInstanceCallsSucceeded = 0;
+				for (FObjectIterator It(ClassToMatch); It; ++It)
+				{
+					UObject* const Obj = *It;
+					UWorld const* const ObjWorld = Obj->GetWorld();
+					if (ObjWorld == InWorld)
+					{
+						const bool bSucceeded = Obj->CallFunctionByNameWithArguments(Cmd, Ar, nullptr, true);
+						++NumInstancesFound;
+						NumInstanceCallsSucceeded += bSucceeded ? 1 : 0;
+					}
+				}
+
+				Ar.Logf(TEXT("Called '%s' on %d instance(s) of class '%s' (%d succeeded)"), Cmd, NumInstancesFound, *ClassToMatch->GetPathName(), NumInstanceCallsSucceeded);
+			}
+			else
+			{
+				// Call it on the specific instance specified
+				const bool bSucceeded = ObjectToMatch->CallFunctionByNameWithArguments(Cmd, Ar, nullptr, true);
+				Ar.Logf(TEXT("Called '%s' on instance '%s' (call %s)"), Cmd, *ObjectToMatch->GetPathName(), bSucceeded ? TEXT("succeeded") : TEXT("failed"));
+			}
 		}
 	}
 
@@ -5128,10 +5194,10 @@ bool UEngine::HandleListStaticMeshesCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 				SortedMesh.VertexCountTotal,
 				SortedMesh.VertexCountCollision,
 				SortedMesh.ShapeCountCollision,
-				SortedMesh.ResKBIncMobile,
-				SortedMesh.MobileMinLOD,
-				SortedMesh.VertexCountTotalMobile,
 				SortedMesh.UsageCount,
+				SortedMesh.ResKBIncMobile,
+				SortedMesh.VertexCountTotalMobile,
+				SortedMesh.MobileMinLOD,
 				*SortedMesh.Name);
 		}
 		else
@@ -7238,7 +7304,12 @@ bool UEngine::HandleObjCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 
 				FORCEINLINE bool operator()( const FSubItem& A, const FSubItem& B ) const
 				{
-					return bAlphaSort ? (A.Object->GetPathName() < B.Object->GetPathName()) : (B.Max < A.Max);
+					if (bAlphaSort || A.Max == B.Max)
+					{
+						return A.Object->GetPathName() < B.Object->GetPathName();
+					}
+
+					return B.Max < A.Max;
 				}
 			};
 			Objects.Sort( FCompareFSubItem( bAlphaSort ) );
@@ -9581,7 +9652,7 @@ float DrawMapWarnings(UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanv
 			GUnbuiltHLODCount = 0;
 			for (TActorIterator<ALODActor> HLODIt(World); HLODIt; ++HLODIt)
 			{
-				if (!HLODIt->IsBuilt())
+				if (!HLODIt->IsBuilt() && HLODIt->HasValidLODChildren())
 				{
 					++GUnbuiltHLODCount;
 				}
@@ -9616,7 +9687,6 @@ float DrawMapWarnings(UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanv
 			Canvas->DrawItem(SmallTextItem, FVector2D(MessageX, MessageY));
 			MessageY += FontSizeY;
 		}
-
 	}
 
 	if (World->bKismetScriptError)
@@ -9629,8 +9699,19 @@ float DrawMapWarnings(UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanv
 
 	SmallTextItem.SetColor(FLinearColor::White);
 
+	extern double GViewModeShaderMissingTime;
+	extern int32 GNumViewModeShaderMissing;
+	if (FApp::GetCurrentTime() - GViewModeShaderMissingTime < 1 && GNumViewModeShaderMissing > 0)
+	{
+		SmallTextItem.SetColor(FLinearColor::Yellow);
+		SmallTextItem.Text = FText::Format(LOCTEXT("ViewModeShadersCompilingFmt", "View Mode Shaders Compiling ({0})"), GNumViewModeShaderMissing);
+		Canvas->DrawItem(SmallTextItem, FVector2D(MessageX, MessageY));
+		MessageY += FontSizeY;
+	}
+
 	if (GShaderCompilingManager && GShaderCompilingManager->IsCompiling())
 	{
+		SmallTextItem.SetColor(FLinearColor::White);
 		SmallTextItem.Text = FText::Format(LOCTEXT("ShadersCompilingFmt", "Shaders Compiling ({0})"), GShaderCompilingManager->GetNumRemainingJobs());
 		Canvas->DrawItem(SmallTextItem, FVector2D(MessageX, MessageY));
 		MessageY += FontSizeY;
@@ -10575,6 +10656,14 @@ void UEngine::WorldAdded( UWorld* InWorld )
 void UEngine::WorldDestroyed( UWorld* InWorld )
 {
 	WorldDestroyedEvent.Broadcast( InWorld );
+}
+
+void UEngine::BroadcastNetworkFailure(UWorld * World, UNetDriver *NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString /* = TEXT("") */)
+{
+	UE_LOG(LogNet, Error, TEXT("UEngine::BroadcastNetworkFailure: FailureType = %s, ErrorString = %s, Driver = %s"),
+		ENetworkFailure::ToString(FailureType), *ErrorString, (NetDriver ? *NetDriver->GetDescription() : TEXT("NONE")));
+
+	NetworkFailureEvent.Broadcast(World, NetDriver, FailureType, ErrorString);
 }
 
 UWorld* UEngine::GetWorldFromContextObject(const UObject* Object, EGetWorldErrorMode ErrorMode) const
@@ -16054,7 +16143,7 @@ int32 UEngine::RenderStatAI(UWorld* World, FViewport* Viewport, FCanvas* Canvas,
 		if (Controller && !Cast<APlayerController>(Controller))
 		{
 			++NumAI;
-			if (Controller->GetPawn() != NULL && World->GetTimeSeconds() - Controller->GetPawn()->GetLastRenderTime() < 0.08f)
+			if (Controller->GetPawn() && Controller->GetPawn()->WasRecentlyRendered(0.08f))
 			{
 				++NumAIRendered;
 			}

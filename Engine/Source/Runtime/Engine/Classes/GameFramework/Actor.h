@@ -494,8 +494,14 @@ public:
 	float NetPriority;
 
 private:
-	/** Caches the most recent last render time we've looked at for this actor */
-	mutable float CachedLastRenderTime;
+	/**
+	 * The value of WorldSettings->TimeSeconds for the frame when one of this actor's components was last rendered.  This is written
+	 * from the render thread, which is up to a frame behind the game thread, so you should allow this time to
+	 * be at least a frame behind the game thread's world time before you consider the actor non-visible.
+	 */
+	float LastRenderTime;
+
+	friend struct FActorLastRenderTime;
 
 public:
 	/**
@@ -1490,7 +1496,7 @@ public:
 	virtual void PostInitProperties() override;
 	virtual bool Modify( bool bAlwaysMarkDirty=true ) override;
 	virtual void ProcessEvent( UFunction* Function, void* Parameters ) override;
-	virtual int32 GetFunctionCallspace( UFunction* Function, void* Parameters, FFrame* Stack ) override;
+	virtual int32 GetFunctionCallspace( UFunction* Function, FFrame* Stack ) override;
 	virtual bool CallRemoteFunction( UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack ) override;
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
@@ -2989,6 +2995,9 @@ private:
 	friend struct FMarkActorIsBeingDestroyed;
 	friend struct FActorParentComponentSetter;
 	friend struct FSetActorWantsDestroyDuringBeginPlay;
+#if WITH_EDITOR
+	friend struct FSetActorHiddenInSceneOutliner;
+#endif
 
 	// Static helpers for accessing functions on SceneComponent.
 	// These are templates for no other reason than to delay compilation until USceneComponent is defined.
@@ -3066,6 +3075,37 @@ private:
 
 	friend UWorld;
 };
+
+/** Helper struct that allows UPrimitiveComponent and FPrimitiveSceneInfo write to the Actor's LastRenderTime member */
+struct FActorLastRenderTime
+{
+private:
+	static void Set(AActor* InActor, float LastRenderTime)
+	{
+		InActor->LastRenderTime = LastRenderTime;
+	}
+
+	static float* GetPtr(AActor* InActor)
+	{
+		return (InActor ? &InActor->LastRenderTime : nullptr);
+	}
+
+	friend class UPrimitiveComponent;
+	friend class FPrimitiveSceneInfo;
+};
+
+#if WITH_EDITOR
+struct FSetActorHiddenInSceneOutliner
+{
+private:
+	FSetActorHiddenInSceneOutliner(AActor* InActor)
+	{
+		InActor->bListedInSceneOutliner = false;
+	}
+
+	friend UWorld;
+};
+#endif
 
 /**
  * TInlineComponentArray is simply a TArray that reserves a fixed amount of space on the stack

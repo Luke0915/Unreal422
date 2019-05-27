@@ -244,11 +244,25 @@ public:
 	FIndexBufferRHIRef CreateRHIBuffer_RenderThread();
 	FIndexBufferRHIRef CreateRHIBuffer_Async();
 
-	/** Set whether this buffer is managed by the streamer. Must set before InitRHI is called */
-	void SetIsStreamed(bool bValue) { bStreamed = bValue; }
-
 	/** Take over ownership of IntermediateBuffer */
-	void InitRHIForStreaming(FIndexBufferRHIParamRef IntermediateBuffer);
+	template <uint32 MaxNumUpdates>
+	void InitRHIForStreaming(FIndexBufferRHIParamRef IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (IndexBufferRHI && IntermediateBuffer)
+		{
+			Batcher.QueueUpdateRequest(IndexBufferRHI, IntermediateBuffer);
+		}
+	}
+
+	/** Release any GPU resource owned by the RHI object */
+	template <uint32 MaxNumUpdates>
+	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (IndexBufferRHI)
+		{
+			Batcher.QueueUpdateRequest(IndexBufferRHI, nullptr);
+		}
+	}
 
 	/**
 	 * Serialization.
@@ -283,8 +297,6 @@ private:
 
 	/** 32bit or 16bit? */
 	bool b32Bit;
-
-	bool bStreamed;
 };
 
 /**
@@ -341,11 +353,11 @@ public:
 	virtual void InitRHI() override
 	{
 		uint32 Size = Indices.Num() * sizeof(INDEX_TYPE);
-		if(Indices.Num())
+		if (Indices.Num())
 		{
 			// Create the index buffer.
 			FRHIResourceCreateInfo CreateInfo(&Indices);
-			
+
 			extern ENGINE_API bool DoSkeletalMeshIndexBuffersNeedSRV();
 			bool bSRV = DoSkeletalMeshIndexBuffersNeedSRV();
 			// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
@@ -355,7 +367,7 @@ public:
 
 			EBufferUsageFlags Flags = BUF_Static;
 
-			if(bSRV)
+			if (bSRV)
 			{
 				// BUF_ShaderResource is needed for SkinCache RecomputeSkinTangents
 				Flags = (EBufferUsageFlags)(Flags | BUF_ShaderResource);
@@ -363,11 +375,11 @@ public:
 
 			IndexBufferRHI = RHICreateIndexBuffer(sizeof(INDEX_TYPE), Size, Flags, CreateInfo);
 
-			if(bSRV)
+			if (bSRV)
 			{
 				SRVValue = RHICreateShaderResourceView(IndexBufferRHI);
 			}
-		}    
+		}
 	}
 	
 	virtual void ReleaseRHI() override
@@ -384,7 +396,7 @@ public:
 	*/
 	virtual void Serialize( FArchive& Ar ) override
 	{
-			Indices.BulkSerialize( Ar );
+		Indices.BulkSerialize(Ar);
 	}
 
 	/**

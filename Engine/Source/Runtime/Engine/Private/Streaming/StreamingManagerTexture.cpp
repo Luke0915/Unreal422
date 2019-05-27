@@ -23,9 +23,16 @@
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Interfaces/ITargetPlatform.h"
-#include "Streaming/RenderAssetUpdate.h"
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
+
+CSV_DEFINE_CATEGORY(TextureStreaming, true);
+
+static TAutoConsoleVariable<int32> CVarStreamingOverlapAssetAndLevelTicks(
+	TEXT("r.Streaming.OverlapAssetAndLevelTicks"),
+	!WITH_EDITOR && (PLATFORM_PS4 || PLATFORM_XBOXONE),
+	TEXT("Ticks render asset streaming info on a high priority task thread while ticking levels on GT"),
+	ECVF_Default);
 
 bool TrackRenderAsset( const FString& AssetName );
 bool UntrackRenderAsset( const FString& AssetName );
@@ -143,6 +150,8 @@ FRenderAssetStreamingManager::~FRenderAssetStreamingManager()
 void FRenderAssetStreamingManager::OnPreGarbageCollect()
 {
 	FScopeLock ScopeLock(&CriticalSection);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_OnPreGarbageCollect);
+
 	FRemovedRenderAssetArray RemovedRenderAssets;
 
 	// Check all levels for pending kills.
@@ -1252,6 +1261,11 @@ void FRenderAssetStreamingManager::UpdateStats()
 	MaxEverRequired = FMath::Max<int64>(MaxEverRequired, DisplayedStats.RequiredPool);
 }
 
+void FRenderAssetStreamingManager::UpdateCSVOnlyStats()
+{
+	DisplayedStats = GatheredStats;
+}
+
 void FRenderAssetStreamingManager::LogViewLocationChange()
 {
 #if STREAMING_LOG_VIEWCHANGES
@@ -1333,11 +1347,18 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 
 	SCOPE_CYCLE_COUNTER(STAT_RenderAssetStreaming_GameThreadUpdateTime);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderAssetStreaming);
+	CSV_SCOPED_SET_WAIT_STAT(RenderAssetStreaming);
 
 	const bool bUseThreadingForPerf = FApp::ShouldUseThreadingForPerformance();
 
 	LogViewLocationChange();
 	STAT(DisplayedStats.Apply();)
+
+	CSV_CUSTOM_STAT(TextureStreaming, StreamingPool, ((float)(DisplayedStats.RequiredPool + (GPoolSizeVRAMPercentage > 0 ? 0 : DisplayedStats.NonStreamingMips))) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(TextureStreaming, SafetyPool, ((float)DisplayedStats.SafetyPool) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(TextureStreaming, TemporaryPool, ((float)DisplayedStats.TemporaryPool) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(TextureStreaming, CachedMips, ((float)DisplayedStats.CachedMips) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(TextureStreaming, WantedMips, ((float)DisplayedStats.WantedMips) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
 
 	RenderAssetInstanceAsyncWork->EnsureCompletion();
 
@@ -1365,7 +1386,11 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 		STAT(GatheredStats.UpdateStreamingDataCycles = 0);
 		STAT(GatheredStats.StreamTexturesCycles = 0);
 		STAT(GatheredStats.CallbacksCycles = 0);
-		STAT(UpdateStats();)
+#if STATS
+		UpdateStats();
+#elif UE_BUILD_TEST
+		UpdateCSVOnlyStats();
+#endif // STATS
 	}
 	else if (ProcessingStage == 0)
 	{
@@ -1395,12 +1420,13 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 			SetLastUpdateTime();
 		}
 
-		FEvent* SyncEvent;
+		FEvent* SyncEvent = nullptr;
 		// Optimization: overlapping UpdateStreamingRenderAssets() and IncrementalUpdate();
 		// Restrict this optimization to platforms tested to have a win;
 		// Platforms tested and results (ave exec time of UpdateResourceStreaming):
 		//   PS4 Pro - from ~0.55 ms/frame to ~0.15 ms/frame
-		const bool bOverlappedExecution = !!(PLATFORM_PS4) && !(WITH_EDITOR) && bUseThreadingForPerf;
+		//   XB1 X - from ~0.45 ms/frame to ~0.17 ms/frame
+		const bool bOverlappedExecution = bUseThreadingForPerf && CVarStreamingOverlapAssetAndLevelTicks.GetValueOnGameThread();
 		if (bOverlappedExecution)
 		{
 			SyncEvent = FPlatformProcess::GetSynchEventFromPool(false);
@@ -1442,7 +1468,11 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 		ProcessingStage = 0;
 
 		STAT(GatheredStats.StreamTexturesCycles += FPlatformTime::Cycles();)
-		STAT(UpdateStats();)
+#if STATS
+			UpdateStats();
+#elif UE_BUILD_TEST
+			UpdateCSVOnlyStats();
+#endif // STATS
 	}
 
 	if (!bProcessEverything)
@@ -1470,6 +1500,8 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 int32 FRenderAssetStreamingManager::BlockTillAllRequestsFinished( float TimeLimit /*= 0.0f*/, bool bLogResults /*= false*/ )
 {
 	FScopeLock ScopeLock(&CriticalSection);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_BlockTillAllRequestsFinished);
+
 	double StartTime = FPlatformTime::Seconds();
 
 	while (ensure(!IsAssetStreamingSuspended()))
@@ -1506,6 +1538,7 @@ int32 FRenderAssetStreamingManager::BlockTillAllRequestsFinished( float TimeLimi
 void FRenderAssetStreamingManager::GetObjectReferenceBounds(const UObject* RefObject, TArray<FBox>& AssetBoxes)
 {
 	FScopeLock ScopeLock(&CriticalSection);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_GetObjectReferenceBounds);
 
 	const UStreamableRenderAsset* RenderAsset = Cast<const UStreamableRenderAsset>(RefObject);
 	if (RenderAsset)
@@ -1541,6 +1574,7 @@ void FRenderAssetStreamingManager::GetObjectReferenceBounds(const UObject* RefOb
 void FRenderAssetStreamingManager::PropagateLightingScenarioChange()
 {
 	FScopeLock ScopeLock(&CriticalSection);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_PropagateLightingScenarioChange);
 
 	// Note that dynamic components don't need to be handled because their renderstates are updated, which triggers and update.
 	

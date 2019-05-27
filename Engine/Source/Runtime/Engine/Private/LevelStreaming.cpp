@@ -1001,6 +1001,7 @@ bool ULevelStreaming::RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoad
 		if (FPackageName::DoesPackageExist(PackageNameToLoadFrom))
 		{
 			CurrentState = ECurrentState::Loading;
+			FWorldNotifyStreamingLevelLoading::Started(PersistentWorld);
 			
 			ULevel::StreamedLevelsOwningWorld.Add(DesiredPackageName, PersistentWorld);
 			UWorld::WorldTypePreLoadMap.FindOrAdd(DesiredPackageName) = PersistentWorld->WorldType;
@@ -1036,6 +1037,13 @@ bool ULevelStreaming::RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoad
 void ULevelStreaming::AsyncLevelLoadComplete(const FName& InPackageName, UPackage* InLoadedPackage, EAsyncLoadingResult::Type Result)
 {
 	CurrentState = ECurrentState::LoadedNotVisible;
+	if (UWorld* World = GetWorld())
+	{
+		if (World->GetStreamingLevels().Contains(this))
+		{
+			FWorldNotifyStreamingLevelLoading::Finished(World);
+		}
+	}
 
 	if (InLoadedPackage)
 	{
@@ -1584,14 +1592,10 @@ ALevelScriptActor* ULevelStreaming::GetLevelScriptActor()
 }
 
 #if WITH_EDITOR
-void ULevelStreaming::PreEditUndo()
-{
-	FLevelUtils::RemoveEditorTransform(this, false);
-}
-
 void ULevelStreaming::PostEditUndo()
 {
-	FLevelUtils::ApplyEditorTransform(this, false);
+	Super::PostEditUndo();
+
 	if (UWorld* World = GetWorld())
 	{
 		World->UpdateStreamingLevelShouldBeConsidered(this);

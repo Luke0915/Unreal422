@@ -326,8 +326,8 @@ void FNiagaraRendererRibbons::GetDynamicMeshElements(const TArray<const FSceneVi
 			SceneProxy->GetLightingChannelMask(),
 			0,
 			INDEX_NONE,
-			INDEX_NONE
-			// SceneProxy->AlwaysHasVelocity() // HACK!!! Add this with full integration 
+			INDEX_NONE,
+			SceneProxy->AlwaysHasVelocity()
 			);
 		WorldSpacePrimitiveUniformBuffer.SetContents(PrimitiveUniformShaderParameters);
 		WorldSpacePrimitiveUniformBuffer.InitResource();

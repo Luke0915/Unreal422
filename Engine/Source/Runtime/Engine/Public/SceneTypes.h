@@ -19,6 +19,19 @@ typedef TRefCountPtr<FLightMap> FLightMapRef;
 /** A reference to a shadow-map. */
 typedef TRefCountPtr<FShadowMap> FShadowMapRef;
 
+/** Custom primitive data payload. */
+USTRUCT()
+struct FCustomPrimitiveData
+{
+	GENERATED_USTRUCT_BODY()
+
+	static constexpr int32 NumCustomPrimitiveDataFloat4s = 8; // Must match NUM_CUSTOM_PRIMITIVE_DATA in SceneData.ush
+	static constexpr int32 NumCustomPrimitiveDataFloats = NumCustomPrimitiveDataFloat4s * 4;
+
+	UPROPERTY(EditAnywhere, Category=Rendering)
+	TArray<float> Data;
+};
+
 /** 
  * Class used to identify UPrimitiveComponents on the rendering thread without having to pass the pointer around, 
  * Which would make it easy for people to access game thread variables from the rendering thread.
@@ -162,6 +175,7 @@ enum EMaterialProperty
 	MP_CustomizedUVs6 UMETA(Hidden),
 	MP_CustomizedUVs7 UMETA(Hidden),
 	MP_PixelDepthOffset UMETA(Hidden),
+	MP_ShadingModel UMETA(Hidden),
 
 	//^^^ New material properties go above here ^^^^
 	MP_MaterialAttributes UMETA(Hidden),

@@ -15,10 +15,15 @@
 #include "HAL/ExceptionHandling.h"
 #include "Stats/Stats.h"
 #include "Async/TaskGraphInterfaces.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "Misc/App.h"
 
+#if PLATFORM_SWITCH
+#include "Switch/SwitchPlatformCrashContext.h"
+#endif
 // When enabled, the heart beat thread will call abort() when a hang
 // is detected, rather than performing stack back-traces and logging.
-#define MINIMAL_FATAL_HANG_DETECTION	((PLATFORM_PS4 || PLATFORM_XBOXONE || PLATFORM_SWITCH) && 1)
+#define MINIMAL_FATAL_HANG_DETECTION	(PLATFORM_USE_MINIMAL_HANG_DETECTION && 1)
 
 #ifndef UE_ASSERT_ON_HANG
 	#define UE_ASSERT_ON_HANG 0
@@ -67,7 +72,8 @@ FThreadHeartBeat::FThreadHeartBeat()
 	, CurrentPresentDuration(0)
 	, HangDurationMultiplier(1.0)
 	, LastHangCallstackCRC(0)
-	, LastHungThreadId(0)
+	, LastHungThreadId(InvalidThreadId)
+	, bHangsAreFatal(false)
 	, Clock(HangDetectorClock_MaxTimeStep_MS / 1000)
 {
 	// Start with the frame-present based hang detection disabled. This will be automatically enabled on
@@ -149,7 +155,9 @@ void FORCENOINLINE FThreadHeartBeat::OnPresentHang(double HangDuration)
 #if MINIMAL_FATAL_HANG_DETECTION
 
 	LastHungThreadId = FThreadHeartBeat::PresentThreadId;
-
+#if PLATFORM_SWITCH
+	FPlatformCrashContext::UpdateDynamicData();
+#endif
 	// We want to avoid all memory allocations if a hang is detected.
 	// Force a crash in a way that will generate a crash report.
 
@@ -171,7 +179,9 @@ void FORCENOINLINE FThreadHeartBeat::OnHang(double HangDuration, uint32 ThreadTh
 #if MINIMAL_FATAL_HANG_DETECTION
 
 	LastHungThreadId = ThreadThatHung;
-
+#if PLATFORM_SWITCH
+	FPlatformCrashContext::UpdateDynamicData();
+#endif
 	// We want to avoid all memory allocations if a hang is detected.
 	// Force a crash in a way that will generate a crash report.
 
@@ -227,19 +237,35 @@ void FORCENOINLINE FThreadHeartBeat::OnHang(double HangDuration, uint32 ThreadTh
 		}
 
 		const FString ErrorMessage = FString::Printf(TEXT("Hang detected on %s:%s%s%sCheck log for full callstack."), *ThreadName, LINE_TERMINATOR, *StackTrimmed, LINE_TERMINATOR);
-#if UE_ASSERT_ON_HANG
-		UE_LOG(LogCore, Fatal, TEXT("%s"), *ErrorMessage);
-#else
-		UE_LOG(LogCore, Error, TEXT("%s"), *ErrorMessage);
 
 #if PLATFORM_DESKTOP
+		UE_LOG(LogCore, Error, TEXT("%s"), *ErrorMessage);
 		GLog->PanicFlushThreadedLogs();
 
 		// Skip macros and FDebug, we always want this to fire
 		ReportHang(*ErrorMessage, StackFrames, NumStackFrames, ThreadThatHung);
-#endif // PLATFORM_DESKTOP
 
-#endif // UE_ASSERT_ON_HANG == 0
+		if (bHangsAreFatal)
+		{
+			if (FApp::CanEverRender())
+			{
+				FPlatformMisc::MessageBoxExt(EAppMsgType::Ok,
+					*NSLOCTEXT("MessageDialog", "ReportHangError_Body", "The application has hung and will now close. We apologize for the inconvenience.").ToString(),
+					*NSLOCTEXT("MessageDialog", "ReportHangError_Title", "Application Hang Detected").ToString());
+			}
+
+			FPlatformMisc::RequestExit(true);
+		}
+#else
+		if (bHangsAreFatal)
+		{
+			UE_LOG(LogCore, Fatal, TEXT("%s"), *ErrorMessage);
+		}
+		else
+		{
+			UE_LOG(LogCore, Error, TEXT("%s"), *ErrorMessage);
+		}
+#endif
 	}
 #endif // MINIMAL_FATAL_HANG_DETECTION == 0
 }
@@ -301,11 +327,13 @@ void FThreadHeartBeat::InitSettings()
 	// Default to 25 seconds if not overridden in config.
 	double NewHangDuration = 25.0;
 	double NewPresentDuration = 0.0;
+	bool bNewHangsAreFatal = !!(UE_ASSERT_ON_HANG);
 
 	if (GConfig)
 	{
 		GConfig->GetDouble(TEXT("Core.System"), TEXT("HangDuration"), NewHangDuration, GEngineIni);
 		GConfig->GetDouble(TEXT("Core.System"), TEXT("PresentHangDuration"), NewPresentDuration, GEngineIni);
+		GConfig->GetBool(TEXT("Core.System"), TEXT("HangsAreFatal"), bNewHangsAreFatal, GEngineIni);
 
 		const double MinHangDuration = 5.0;
 		if (NewHangDuration > 0.0 && NewHangDuration < MinHangDuration)
@@ -327,6 +355,8 @@ void FThreadHeartBeat::InitSettings()
 
 	CurrentHangDuration = ConfigHangDuration * HangDurationMultiplier;
 	CurrentPresentDuration = ConfigPresentDuration * HangDurationMultiplier;
+
+	bHangsAreFatal = bNewHangsAreFatal;
 }
 
 void FThreadHeartBeat::HeartBeat(bool bReadConfig)
@@ -609,6 +639,26 @@ void FGameThreadHitchHeartBeatThreaded::InitSettings()
 	{
 		bHasCmdLine = FParse::Value(FCommandLine::Get(), TEXT("hitchdetection="), CmdLine_HangDuration);
 		CmdLine_StackWalk = FParse::Param(FCommandLine::Get(), TEXT("hitchdetectionstackwalk"));
+
+		// Determine whether to start suspended
+		bool bStartSuspended = false;
+		if (GConfig)
+		{
+			GConfig->GetBool(TEXT("Core.System"), TEXT("GameThreadHeartBeatStartSuspended"), bStartSuspended, GEngineIni);
+		}
+		if (FParse::Param(FCommandLine::Get(), TEXT("hitchdetectionstartsuspended")))
+		{
+			bStartSuspended = true;
+		}
+		else if (FParse::Param(FCommandLine::Get(), TEXT("hitchdetectionstartrunning")))
+		{
+			bStartSuspended = false;
+		}
+		if (bStartSuspended)
+		{
+			UE_LOG(LogCore, Display, TEXT("Starting with HitchHeartbeat suspended"));
+			SuspendedCount = 1;
+		}
 		bFirst = false;
 	}
 
@@ -643,7 +693,7 @@ void FGameThreadHitchHeartBeatThreaded::InitSettings()
 			bWalkStackOnHitch = false;
 		}
 	}
-
+	
 	// Start the heart beat thread if it hasn't already been started.
 	if (Thread == nullptr && FPlatformProcess::SupportsMultithreading() && HangDuration > 0)
 	{
@@ -688,7 +738,7 @@ uint32 FGameThreadHitchHeartBeatThreaded::Run()
 					{
 						GHitchDetected = true;
 						UE_LOG(LogCore, Error, TEXT("Hitch detected on gamethread (frame hasn't finished for %8.2fms):"), float(CurrentTime - LocalFrameStartTime) * 1000.0f);
-						//FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Hitch detected on GameThread (frame hasn't finished for %8.2fms):"), float(CurrentTime - LocalFrameStartTime) * 1000.0f);
+						CSV_EVENT_GLOBAL(TEXT("HitchDetector"));
 
 #if WALK_STACK_ON_HITCH_DETECTED
 						if (bWalkStackOnHitch)
@@ -783,6 +833,7 @@ void FGameThreadHitchHeartBeatThreaded::SuspendHeartBeat()
 		return;
 
 	FPlatformAtomics::InterlockedIncrement(&SuspendedCount);
+	UE_LOG(LogCore, Log, TEXT("HitchHeartBeat Suspend called (count %d) - State: %s"), SuspendedCount, SuspendedCount==0 ? TEXT("Running") : TEXT("Suspended") );
 #endif
 }
 void FGameThreadHitchHeartBeatThreaded::ResumeHeartBeat()
@@ -791,11 +842,19 @@ void FGameThreadHitchHeartBeatThreaded::ResumeHeartBeat()
 	if (!IsInGameThread())
 		return;
 
-	check(SuspendedCount > 0);
+	// Temporary workaround for suspend/resume issue
+	//check(SuspendedCount > 0);
+	if (SuspendedCount == 0)
+	{
+		UE_LOG(LogCore, Warning, TEXT("HitchHeartBeat Resume called when SuspendedCount was already 0! Ignoring"));
+		return;
+	}
+
 	if (FPlatformAtomics::InterlockedDecrement(&SuspendedCount) == 0)
 	{
 		FrameStart(true);
 	}
+	UE_LOG(LogCore, Log, TEXT("HitchHeartBeat Resume called (count %d) - State: %s"), SuspendedCount, SuspendedCount == 0 ? TEXT("Running") : TEXT("Suspended"));
 #endif
 }
 

@@ -425,7 +425,7 @@ public:
 	inline bool IsLocalToWorldDeterminantNegative() const { return bIsLocalToWorldDeterminantNegative; }
 	inline const FBoxSphereBounds& GetBounds() const { return Bounds; }
 	inline const FBoxSphereBounds& GetLocalBounds() const { return LocalBounds; }
-	virtual FBoxSphereBounds GetPreSkinnedLocalBounds() const { return LocalBounds; }
+	virtual void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const { OutBounds = LocalBounds; }
 	inline FName GetOwnerName() const { return OwnerName; }
 	inline FName GetResourceName() const { return ResourceName; }
 	inline FName GetLevelName() const { return LevelName; }
@@ -728,6 +728,12 @@ public:
 
 	virtual uint8 GetCurrentFirstLODIdx_RenderThread() const { return 0; }
 
+	/** 
+	 * Get the custom primitive data for this scene proxy.
+	 * @return The payload of custom data that will be set on the primitive and accessible in the material through a material expression.
+	 */
+	ENGINE_API const FCustomPrimitiveData* GetCustomPrimitiveData() const { return &CustomPrimitiveData; }
+
 protected:
 
 	/** Allow subclasses to override the primitive name. Used primarily by BSP. */
@@ -748,6 +754,9 @@ private:
 #endif
 
 	friend class FScene;
+
+	/** Custom primitive data */
+	FCustomPrimitiveData CustomPrimitiveData;
 
 	/** The translucency sort priority */
 	int16 TranslucencySortPriority;

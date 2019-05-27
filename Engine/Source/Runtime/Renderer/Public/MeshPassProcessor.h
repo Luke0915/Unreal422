@@ -131,6 +131,9 @@ struct RefCountedGraphicsMinimalPipelineStateInitializerKeyFuncs : DefaultKeyFun
 	}
 };
 
+/** Set of FGraphicsMinimalPipelineStateInitializer unique per MeshDrawCommandsPassContext */
+typedef TSet< FGraphicsMinimalPipelineStateInitializer > FGraphicsMinimalPipelineStateSet;
+
 /** Uniquely represents a FGraphicsMinimalPipelineStateInitializer for fast compares. */
 class FGraphicsMinimalPipelineStateId
 {
@@ -156,13 +159,13 @@ public:
 		return !(*this == rhs);
 	}
 	
-	inline const FGraphicsMinimalPipelineStateInitializer& GetPipelineState() const
+	inline const FGraphicsMinimalPipelineStateInitializer& GetPipelineState(const FGraphicsMinimalPipelineStateSet& InPipelineSet) const
 	{
 		const FSetElementId SetElementId = FSetElementId::FromInteger(SetElementIndex);
 
-		if (bOneFrameId)
+		if (bComesFromLocalPipelineStateSet)
 		{
-			return OneFrameIdTable[SetElementId];
+			return InPipelineSet[SetElementId];
 		}
 
 		return PersistentIdTable[SetElementId].StateInitializer;
@@ -177,16 +180,18 @@ public:
 	 * Removes a persistent pipeline Id from the global persistent Id table.
 	 */
 	static void RemovePersistentId(FGraphicsMinimalPipelineStateId Id);
-
+	
 	/**
-	 * Get a pipeline id, which is valid only for a single frame and doesn't need to be released manually.
+	 * Get a pipeline state id in this order: global persistent Id table. If not found, will lookup in PassSet argument. If not found in PassSet argument, create a blank pipeline set id and add it PassSet argument
 	 */
-	RENDERER_API static FGraphicsMinimalPipelineStateId GetOneFrameId(const FGraphicsMinimalPipelineStateInitializer& InPipelineState);
+	RENDERER_API static FGraphicsMinimalPipelineStateId GetPipelineStateId(const FGraphicsMinimalPipelineStateInitializer& InPipelineState, FGraphicsMinimalPipelineStateSet& InOutPassSet);
 
-	static void ResetOneFrameIdTable();
+	static int32 GetLocalPipelineIdTableSize() { return LocalPipelineIdTableSize; }
+	static void ResetLocalPipelineIdTableSize();
+	static void AddSizeToLocalPipelineIdTableSize(SIZE_T Size);
+
 	static SIZE_T GetPersistentIdTableSize() { return PersistentIdTable.GetAllocatedSize(); }
 	static int32 GetPersistentIdNum() { return PersistentIdTable.Num(); }
-	static SIZE_T GetOneFrameIdTableSize() { return OneFrameIdTable.GetAllocatedSize(); }
 
 private:
 	union
@@ -195,15 +200,16 @@ private:
 
 		struct
 		{
-			uint32 SetElementIndex	: 30;
-			uint32 bOneFrameId		: 1;
-			uint32 bValid			: 1;
+			uint32 SetElementIndex				   : 30;
+			uint32 bComesFromLocalPipelineStateSet : 1;
+			uint32 bValid						   : 1;
 		};
 	};
 
 	static TSet<FRefCountedGraphicsMinimalPipelineStateInitializer, RefCountedGraphicsMinimalPipelineStateInitializerKeyFuncs> PersistentIdTable;
-	static TSet<FGraphicsMinimalPipelineStateInitializer> OneFrameIdTable;
-	static FCriticalSection OneFrameIdTableCriticalSection;
+	
+	static int32 LocalPipelineIdTableSize;
+	static int32 CurrentLocalPipelineIdTableSize;
 };
 
 struct FMeshProcessorShaders
@@ -269,11 +275,12 @@ const int32 NumInlineShaderBindings = 10;
 struct FMeshDrawCommandDebugData
 {
 #if MESH_DRAW_COMMAND_DEBUG_DATA
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy;
+	const FPrimitiveSceneProxy* PrimitiveSceneProxyIfNotUsingStateBuckets;
 	const FMaterial* Material;
 	const FMaterialRenderProxy* MaterialRenderProxy;
 	FMeshMaterialShader* VertexShader;
 	FMeshMaterialShader* PixelShader;
+	FName ResourceName;
 #endif
 };
 
@@ -333,6 +340,8 @@ public:
 
 	/** Returns whether this set of shader bindings can be merged into an instanced draw call with another. */
 	bool MatchesForDynamicInstancing(const FMeshDrawShaderBindings& Rhs) const;
+
+	uint32 GetDynamicInstancingHash() const;
 
 	SIZE_T GetAllocatedSize() const
 	{
@@ -483,6 +492,41 @@ public:
 				|| (NumPrimitives == 0 && IndirectArgsBuffer == Rhs.IndirectArgsBuffer));
 	}
 
+	uint32 GetDynamicInstancingHash() const
+	{
+		uint32 Hash = FCrc::TypeCrc32(CachedPipelineId.GetId(), 0);
+		Hash = FCrc::TypeCrc32(StencilRef, Hash);
+		Hash = HashCombine(ShaderBindings.GetDynamicInstancingHash(), Hash);
+
+		for (const FVertexInputStream& VertexInputStream: VertexStreams)
+		{
+			const uint32 StreamIndex = VertexInputStream.StreamIndex;
+			const uint32 Offset = VertexInputStream.Offset;
+
+			Hash = FCrc::TypeCrc32(StreamIndex, Hash);
+			Hash = FCrc::TypeCrc32(Offset, Hash);
+			Hash = PointerHash(VertexInputStream.VertexBuffer, Hash);
+		}
+
+		Hash = FCrc::TypeCrc32(PrimitiveIdStreamIndex, Hash);
+		Hash = PointerHash(IndexBuffer, Hash);
+		Hash = FCrc::TypeCrc32(FirstIndex, Hash);
+		Hash = FCrc::TypeCrc32(NumPrimitives, Hash);
+		Hash = FCrc::TypeCrc32(NumInstances, Hash);
+
+		if (NumPrimitives > 0)
+		{
+			Hash = FCrc::TypeCrc32(VertexParams.BaseVertexIndex, Hash);
+			Hash = FCrc::TypeCrc32(VertexParams.NumVertices, Hash);
+		}
+		else
+		{
+			Hash = PointerHash(IndirectArgsBuffer, Hash);
+		}		
+
+		return Hash;
+	}
+
 	/** Sets shaders on the mesh draw command and allocates room for the shader bindings. */
 	RENDERER_API void SetShaders(FVertexDeclarationRHIParamRef VertexDeclaration, const FMeshProcessorShaders& Shaders, FGraphicsMinimalPipelineStateInitializer& PipelineState);
 
@@ -509,7 +553,8 @@ public:
 	/** Submits commands to the RHI Commandlist to draw the MeshDrawCommand. */
 	static void SubmitDraw(
 		const FMeshDrawCommand& RESTRICT MeshDrawCommand, 
-		FVertexBufferRHIParamRef ScenePrimitiveIdsBuffer, 
+		const FGraphicsMinimalPipelineStateSet& GraphicsMinimalPipelineStateSet,
+		FVertexBufferRHIParamRef ScenePrimitiveIdsBuffer,
 		int32 PrimitiveIdOffset,
 		uint32 InstanceFactor,
 		FRHICommandList& CommandList, 
@@ -519,17 +564,11 @@ public:
 	{
 		return Other.CachedPipelineId.GetId();
 	}
-
-	void SetDebugData(const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FMaterial* Material, const FMaterialRenderProxy* MaterialRenderProxy, const FMeshProcessorShaders& UntypedShaders)
-	{
 #if MESH_DRAW_COMMAND_DEBUG_DATA
-		DebugData.PrimitiveSceneProxy = PrimitiveSceneProxy;
-		DebugData.Material = Material;
-		DebugData.MaterialRenderProxy = MaterialRenderProxy;
-		DebugData.VertexShader = UntypedShaders.VertexShader;
-		DebugData.PixelShader = UntypedShaders.PixelShader;
+	RENDERER_API void SetDebugData(const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FMaterial* Material, const FMaterialRenderProxy* MaterialRenderProxy, const FMeshProcessorShaders& UntypedShaders);
+#else
+	void SetDebugData(const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FMaterial* Material, const FMaterialRenderProxy* MaterialRenderProxy, const FMeshProcessorShaders& UntypedShaders){}
 #endif
-	}
 
 	SIZE_T GetAllocatedSize() const
 	{
@@ -545,6 +584,10 @@ public:
 	}
 
 #if MESH_DRAW_COMMAND_DEBUG_DATA
+	void ClearDebugPrimitiveSceneProxy()
+	{
+		DebugData.PrimitiveSceneProxyIfNotUsingStateBuckets = nullptr;
+	}
 private:
 	FMeshDrawCommandDebugData DebugData;
 #endif
@@ -682,10 +725,12 @@ public:
 	FDynamicPassMeshDrawListContext
 	(
 		FDynamicMeshDrawCommandStorage& InDrawListStorage, 
-		FMeshCommandOneFrameArray& InDrawList
+		FMeshCommandOneFrameArray& InDrawList,
+		FGraphicsMinimalPipelineStateSet& InPipelineStateSet
 	) :
 		DrawListStorage(InDrawListStorage),
-		DrawList(InDrawList)
+		DrawList(InDrawList),
+		GraphicsMinimalPipelineStateSet(InPipelineStateSet)
 	{}
 
 	virtual FMeshDrawCommand& AddCommand(const FMeshDrawCommand& Initializer) override final
@@ -706,8 +751,7 @@ public:
 		const FMeshProcessorShaders* ShadersForDebugging,
 		FMeshDrawCommand& MeshDrawCommand) override final
 	{
-		FGraphicsMinimalPipelineStateId PipelineId;
-		PipelineId = FGraphicsMinimalPipelineStateId::GetOneFrameId(PipelineState);
+		FGraphicsMinimalPipelineStateId PipelineId = FGraphicsMinimalPipelineStateId::GetPipelineStateId(PipelineState, GraphicsMinimalPipelineStateSet);
 
 		MeshDrawCommand.SetDrawParametersAndFinalize(MeshBatch, BatchElementIndex, PipelineId, ShadersForDebugging);
 
@@ -721,6 +765,7 @@ public:
 private:
 	FDynamicMeshDrawCommandStorage& DrawListStorage;
 	FMeshCommandOneFrameArray& DrawList;
+	FGraphicsMinimalPipelineStateSet& GraphicsMinimalPipelineStateSet;
 };
 
 #if PLATFORM_SUPPORTS_PRAGMA_PACK
@@ -1050,6 +1095,7 @@ class FPassProcessorManager
 public:
 	static PassProcessorCreateFunction GetCreateFunction(EShadingPath ShadingPath, EMeshPass::Type PassType)
 	{
+		check(ShadingPath < EShadingPath::Num && PassType < EMeshPass::Num);
 		uint32 ShadingPathIdx = (uint32)ShadingPath;
 		checkf(JumpTable[ShadingPathIdx][PassType], TEXT("Pass type %u create function was never registered for shading path %u.  Use a FRegisterPassProcessorCreateFunction to register a create function for this enum value."), (uint32)PassType, ShadingPathIdx);
 		return JumpTable[ShadingPathIdx][PassType];
@@ -1057,6 +1103,7 @@ public:
 
 	static EMeshPassFlags GetPassFlags(EShadingPath ShadingPath, EMeshPass::Type PassType)
 	{
+		check(ShadingPath < EShadingPath::Num && PassType < EMeshPass::Num);
 		uint32 ShadingPathIdx = (uint32)ShadingPath;
 		return Flags[ShadingPathIdx][PassType];
 	}
@@ -1093,6 +1140,7 @@ private:
 
 extern void SubmitMeshDrawCommands(
 	const FMeshCommandOneFrameArray& VisibleMeshDrawCommands,
+	const FGraphicsMinimalPipelineStateSet& GraphicsMinimalPipelineStateSet, 
 	FVertexBufferRHIParamRef PrimitiveIdsBuffer,
 	int32 BasePrimitiveIdsOffset,
 	bool bDynamicInstancing,
@@ -1101,6 +1149,7 @@ extern void SubmitMeshDrawCommands(
 
 extern void SubmitMeshDrawCommandsRange(
 	const FMeshCommandOneFrameArray& VisibleMeshDrawCommands,
+	const FGraphicsMinimalPipelineStateSet& GraphicsMinimalPipelineStateSet,
 	FVertexBufferRHIParamRef PrimitiveIdsBuffer,
 	int32 BasePrimitiveIdsOffset,
 	bool bDynamicInstancing,
@@ -1114,6 +1163,7 @@ RENDERER_API extern void DrawDynamicMeshPassPrivate(
 	FRHICommandList& RHICmdList,
 	FMeshCommandOneFrameArray& VisibleMeshDrawCommands,
 	FDynamicMeshDrawCommandStorage& DynamicMeshDrawCommandStorage,
+	FGraphicsMinimalPipelineStateSet& GraphicsMinimalPipelineStateSet,
 	uint32 InstanceFactor);
 
 RENDERER_API extern FMeshDrawCommandSortKey CalculateMeshStaticSortKey(const FMeshMaterialShader* VertexShader, const FMeshMaterialShader* PixelShader);

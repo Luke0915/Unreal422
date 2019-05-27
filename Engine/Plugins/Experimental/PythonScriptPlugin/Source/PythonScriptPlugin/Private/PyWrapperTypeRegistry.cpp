@@ -370,8 +370,11 @@ void FPyWrapperTypeReinstancer::ProcessPending()
 	{
 		for (const auto& ClassToReinstancePair : ClassesToReinstance)
 		{
-			// Assume the classes have changed
-			FCoreUObjectDelegates::RegisterClassForHotReloadReinstancingDelegate.Broadcast(ClassToReinstancePair.Key, ClassToReinstancePair.Value, EHotReloadedClassFlags::Changed);
+			if (ClassToReinstancePair.Key && ClassToReinstancePair.Value)
+			{
+				// Assume the classes have changed
+				FCoreUObjectDelegates::RegisterClassForHotReloadReinstancingDelegate.Broadcast(ClassToReinstancePair.Key, ClassToReinstancePair.Value, EHotReloadedClassFlags::Changed);
+			}
 		}
 		FCoreUObjectDelegates::ReinstanceHotReloadedClassesDelegate.Broadcast();
 
@@ -379,6 +382,22 @@ void FPyWrapperTypeReinstancer::ProcessPending()
 	}
 
 	// todo: need support for re-instancing structs
+	StructsToReinstance.Reset();
+}
+
+void FPyWrapperTypeReinstancer::AddReferencedObjects(FReferenceCollector& InCollector)
+{
+	for (auto& ClassToReinstancePair : ClassesToReinstance)
+	{
+		InCollector.AddReferencedObject(ClassToReinstancePair.Key);
+		InCollector.AddReferencedObject(ClassToReinstancePair.Value);
+	}
+
+	for (auto& StructToReinstancePair : StructsToReinstance)
+	{
+		InCollector.AddReferencedObject(StructToReinstancePair.Key);
+		InCollector.AddReferencedObject(StructToReinstancePair.Value);
+	}
 }
 
 
@@ -1776,8 +1795,14 @@ PyTypeObject* FPyWrapperTypeRegistry::GenerateWrappedDelegateType(const UFunctio
 	// Generate the proxy class needed to wrap Python callables in Unreal delegates
 	UClass* PythonCallableForDelegateClass = nullptr;
 	{
-		PythonCallableForDelegateClass = NewObject<UClass>(GetPythonTypeContainer(), *FString::Printf(TEXT("%s__PythonCallable"), *DelegateBaseTypename), RF_Public);
-		UFunction* PythonCallableForDelegateFunc = (UFunction*)StaticDuplicateObject(InDelegateSignature, PythonCallableForDelegateClass, UPythonCallableForDelegate::GeneratedFuncName);
+		PythonCallableForDelegateClass = NewObject<UClass>(GetPythonTypeContainer(), *FString::Printf(TEXT("%s__PythonCallable"), *DelegateBaseTypename), RF_Public | RF_Standalone | RF_Transient);
+		UFunction* PythonCallableForDelegateFunc = nullptr;
+		{
+			FObjectDuplicationParameters FuncDuplicationParams(const_cast<UFunction*>(InDelegateSignature), PythonCallableForDelegateClass);
+			FuncDuplicationParams.DestName = UPythonCallableForDelegate::GeneratedFuncName;
+			FuncDuplicationParams.InternalFlagMask &= ~EInternalObjectFlags::Native;
+			PythonCallableForDelegateFunc = CastChecked<UFunction>(StaticDuplicateObjectEx(FuncDuplicationParams));
+		}
 		PythonCallableForDelegateFunc->FunctionFlags = (PythonCallableForDelegateFunc->FunctionFlags | FUNC_Native) & ~(FUNC_Delegate | FUNC_MulticastDelegate);
 		PythonCallableForDelegateFunc->SetNativeFunc(&UPythonCallableForDelegate::CallPythonNative);
 		PythonCallableForDelegateFunc->StaticLink(true);

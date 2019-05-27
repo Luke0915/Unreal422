@@ -319,6 +319,17 @@ FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FStructu
 FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FVertexBufferRHIParamRef VertexBufferRHI, uint32 Stride, uint8 Format)
 {
 	@autoreleasepool {
+	if (!VertexBufferRHI)
+	{
+		FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Format = Format;
+		SRV->Stride = 0;
+		return SRV;
+	}
 	FMetalVertexBuffer* VertexBuffer = ResourceCast(VertexBufferRHI);
 		
 	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
@@ -344,6 +355,18 @@ FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FVertexB
 FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FIndexBufferRHIParamRef BufferRHI)
 {
 	@autoreleasepool {
+	if (!BufferRHI)
+	{
+		FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Format = PF_R16_UINT;
+		SRV->Stride = 0;
+		return SRV;
+	}
+
 	FMetalIndexBuffer* Buffer = ResourceCast(BufferRHI);
 		
 	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
@@ -489,6 +512,56 @@ FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FTexture
 	}
 	
 	return SRV;
+	}
+}
+
+void FMetalDynamicRHI::RHIUpdateShaderResourceView(FShaderResourceViewRHIParamRef SRVRHI, FVertexBufferRHIParamRef VertexBufferRHI, uint32 Stride, uint8 Format)
+{
+	check(SRVRHI);
+	FMetalShaderResourceView* SRV = ResourceCast(SRVRHI);
+	if (!VertexBufferRHI)
+	{
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Format = Format;
+		SRV->Stride = Stride;
+	}
+	else if (SRV->SourceVertexBuffer != VertexBufferRHI)
+	{
+		FMetalVertexBuffer* VertexBuffer = ResourceCast(VertexBufferRHI);
+		SRV->SourceVertexBuffer = VertexBuffer;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Format = Format;
+		SRV->Stride = Stride;
+	}
+}
+
+void FMetalDynamicRHI::RHIUpdateShaderResourceView(FShaderResourceViewRHIParamRef SRVRHI, FIndexBufferRHIParamRef IndexBufferRHI)
+{
+	check(SRVRHI);
+	FMetalShaderResourceView* SRV = ResourceCast(SRVRHI);
+	if (!IndexBufferRHI)
+	{
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Format = PF_R16_UINT;
+		SRV->Stride = 0;
+	}
+	else if (SRV->SourceIndexBuffer != IndexBufferRHI)
+	{
+		FMetalIndexBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = IndexBuffer;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Format = (IndexBuffer->IndexType == mtlpp::IndexType::UInt16) ? PF_R16_UINT : PF_R32_UINT;
+		SRV->Stride = 0;
 	}
 }
 
@@ -663,7 +736,7 @@ void FMetalRHICommandContext::RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef Un
 				case PF_FloatRGB:
 				case PF_FloatRGBA:
 				{
-					UE_LOG(LogMetal, Fatal, TEXT("No UAV pattern fill for format: %d"), Format);
+					METAL_FATAL_ERROR(TEXT("No UAV pattern fill for format: %d"), Format);
 					break;
 				}
 				case PF_DepthStencil:
@@ -695,7 +768,7 @@ void FMetalRHICommandContext::RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef Un
 				case PF_MAX:
 				default:
 				{
-					UE_LOG(LogMetal, Fatal, TEXT("No UAV support for format: %d"), Format);
+					METAL_FATAL_ERROR(TEXT("No UAV support for format: %d"), Format);
 					break;
 				}
 			}
@@ -734,7 +807,7 @@ void FMetalRHICommandContext::RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef Un
 				}
 				default:
 				{
-					UE_LOG(LogMetal, Fatal, TEXT("Invalid UAV pattern fill size (%d) for: %d"), NumBytes, Format);
+					METAL_FATAL_ERROR(TEXT("Invalid UAV pattern fill size (%d) for: %d"), NumBytes, Format);
 					break;
 				}
 			}

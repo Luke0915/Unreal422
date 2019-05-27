@@ -75,6 +75,7 @@
 #include "PropertyEditorDelegates.h"
 #include "IEditableSkeleton.h"
 #include "IMeshReductionManagerModule.h"
+#include "SkinWeightProfileHelpers.h"
 
 #define LOCTEXT_NAMESPACE "PersonaMeshDetails"
 
@@ -1205,6 +1206,147 @@ TOptional<int32> FPersonaMeshDetails::GetLodSliderMaxValue() const
 	return 0;
 }
 
+void FPersonaMeshDetails::CustomizeSkinWeightProfiles(IDetailLayoutBuilder& DetailLayout)
+{
+	TSharedRef<IPropertyHandle> SkinWeightProfilesProperty = DetailLayout.GetProperty(FName("SkinWeightProfiles"), USkeletalMesh::StaticClass());
+	IDetailCategoryBuilder& SkinWeightCategory = DetailLayout.EditCategory("SkinWeights", LOCTEXT("SkinWeightsCategory", "Skin Weights"));
+
+	IDetailPropertyRow& Row = DetailLayout.AddPropertyToCategory(SkinWeightProfilesProperty);	
+	Row.CustomWidget(true)
+	.NameContent()
+	[
+		SkinWeightProfilesProperty->CreatePropertyNameWidget()
+	]	
+	.ValueContent()
+	[		
+		SNew(SHorizontalBox)		
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+		[
+			SkinWeightProfilesProperty->CreatePropertyValueWidget()
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+		[
+			SNew(SComboButton)
+			.VAlign(EVerticalAlignment::VAlign_Bottom)
+			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ContentPadding(4.0f)
+			.ForegroundColor(FSlateColor::UseForeground())
+			.HasDownArrow(false)
+			.ButtonContent()
+			[
+				SNew(SImage)
+				.Image(FEditorStyle::GetBrush("PropertyWindow.Button_AddToArray"))
+			]
+			.OnGetMenuContent(this, &FPersonaMeshDetails::CreateSkinWeightProfileMenuContent)
+			.ToolTipText(LOCTEXT("ImportSkinWeightButtonToolTip", "Import a new Skin Weight Profile, or copy Skin Weights from another Skeletal Mesh"))
+		]		
+	];	
+}
+
+TSharedRef<SWidget> FPersonaMeshDetails::CreateSkinWeightProfileMenuContent()
+{
+	bool bAddedMenuItem = false;
+	FMenuBuilder AddProfileMenuBuilder(true, nullptr, nullptr, true);
+
+	// Menu entry for importing skin weights from an FBX file
+	AddProfileMenuBuilder.AddMenuEntry(LOCTEXT("ImportOverrideLabel", "Import Skin Weight Profile"), LOCTEXT("ImportOverrideToolTip", "Import a new Skin Weight Profile"),
+		FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([this, WeakSkeletalMeshPtr = SkeletalMeshPtr]()
+	{
+		if (USkeletalMesh* SkeletalMesh = WeakSkeletalMeshPtr.Get())
+		{
+			FScopedTransaction ScopedTransaction(LOCTEXT("ImportSkinWeightProfile", "Import Skin Weight Profile from FBX"));
+			SkeletalMesh->Modify();
+
+			FSkinWeightProfileHelpers::ImportSkinWeightProfile(SkeletalMesh);
+			MeshDetailLayout->ForceRefreshDetails();
+		}
+	})));
+
+	// Menu entry for copying skin weights from another Skeletal Mesh
+	AddProfileMenuBuilder.AddMenuEntry(LOCTEXT("CopyOverrideLabel", "Copy Skin Weights"), LOCTEXT("CopyOverrideToolTip", "Copy Skin Weights from another Skeletal Mesh"),
+		FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([this, WeakSkeletalMeshPtr = SkeletalMeshPtr]()
+	{
+		if (USkeletalMesh* SkeletalMesh = WeakSkeletalMeshPtr.Get())
+		{
+			FScopedTransaction ScopedTransaction(LOCTEXT("CopySkinWeightProfile", "Create Skin Weight Profile with Skin Weights from another Skeletal Mesh"));
+			SkeletalMesh->Modify();
+
+			FSkinWeightProfileHelpers::CopySkinWeightProfile(SkeletalMesh);
+			MeshDetailLayout->ForceRefreshDetails();
+		}
+	})));
+
+	// Add extra (sub)-menus for previously added Skin Weight Profiles
+	if (USkeletalMesh* Mesh = SkeletalMeshPtr.Get())
+	{
+		const int32 NumLODs = Mesh->GetLODNum();
+		const int32 NumProfiles = Mesh->GetNumSkinWeightProfiles();
+
+		// In case there are already profiles stored and the current mesh has more than one LOD
+		if (NumProfiles > 0 && NumLODs > 1)
+		{
+			// Delay adding of a separator, otherwise it'll be a random/lost separator if no submenus are generated
+			bool bSeparatorAdded = false;
+			
+			// Add a sub menu for each profile allowing for importing skin weights for a specific (imported) LOD
+			const TArray<FSkinWeightProfileInfo>& ProfilesInfo = Mesh->GetSkinWeightProfiles();
+			for (int32 Index = 0; Index < NumProfiles; ++Index)
+			{
+				if (ProfilesInfo[Index].PerLODSourceFiles.Num() < NumLODs)
+				{
+					// Only add menu if there is any imported LOD beside LOD0
+					const TArray<FSkeletalMeshLODInfo>& LODInfoArray = Mesh->GetLODInfoArray();
+					if (LODInfoArray.FindLastByPredicate([](FSkeletalMeshLODInfo Info) { return !Info.bHasBeenSimplified; }) > 0)
+					{						
+						if (!bSeparatorAdded)
+						{
+							AddProfileMenuBuilder.AddMenuSeparator();
+							bSeparatorAdded = true;
+						}
+
+						AddProfileMenuBuilder.AddSubMenu(FText::FromName(ProfilesInfo[Index].Name), LOCTEXT("ProfileOptions", "Skin Weight Profile specific options"), 
+							FNewMenuDelegate::CreateLambda([this, NumLODs](FMenuBuilder& MenuBuilder, const FSkinWeightProfileInfo& Info)
+							{	
+								for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
+								{
+									USkeletalMesh* SkeletalMesh = SkeletalMeshPtr.Get();
+
+									// If we have not yet imported weights for this LOD, and if the Mesh LOD is imported (not generated)
+									const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo(LODIndex);
+
+									if (!Info.PerLODSourceFiles.Contains(LODIndex) && (SkeletalMesh && LODInfo && !LODInfo->bHasBeenSimplified))
+									{
+										const FText Label = FText::Format(LOCTEXT("ImportOverrideText", "Import Weights for LOD {0}"), FText::AsNumber(LODIndex));
+										MenuBuilder.AddMenuEntry(Label, Label,
+											FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([this, WeakSkeletalMeshPtr = SkeletalMeshPtr, ProfileName = Info.Name, LODIndex]()
+										{
+											if (USkeletalMesh* SkeletalMesh = WeakSkeletalMeshPtr.Get())
+											{
+												FScopedTransaction ScopedTransaction(LOCTEXT("ImportSkinWeightProfileLOD", "Import Skin Weight Profile LOD from FBX"));
+												SkeletalMesh->Modify();
+
+												FSkinWeightProfileHelpers::ImportSkinWeightProfileLOD(SkeletalMesh, ProfileName, LODIndex);
+												MeshDetailLayout->ForceRefreshDetails();
+											}
+										})));
+									}
+								}
+							}, ProfilesInfo[Index]));
+					}
+				}
+			}
+		}
+	}
+
+	return AddProfileMenuBuilder.MakeWidget();
+}
+
 void FPersonaMeshDetails::CustomizeLODSettingsCategories(IDetailLayoutBuilder& DetailLayout)
 {
 	USkeletalMesh* SkelMesh = GetPersonaToolkit()->GetMesh();
@@ -1446,7 +1588,7 @@ FReply FPersonaMeshDetails::OnApplyChanges()
 	return FReply::Handled();
 }
 
-void FPersonaMeshDetails::RegenerateOneLOD(int32 LODIndex)
+void FPersonaMeshDetails::RegenerateOneLOD(int32 LODIndex, bool bReregisterComponent /*= true*/)
 {
 	USkeletalMesh* SkelMesh = GetPersonaToolkit()->GetMesh();
 	check(SkelMesh);
@@ -1462,7 +1604,7 @@ void FPersonaMeshDetails::RegenerateOneLOD(int32 LODIndex)
 		{
 			//Restore the base LOD data
 			CurrentLODInfo.bHasBeenSimplified = false;
-			FLODUtilities::RestoreSkeletalMeshLODImportedData(SkelMesh, LODIndex, true);
+			FLODUtilities::RestoreSkeletalMeshLODImportedData(SkelMesh, LODIndex, bReregisterComponent);
 			return;
 		}
 		else if (!CurrentLODInfo.bHasBeenSimplified
@@ -1489,14 +1631,14 @@ void FPersonaMeshDetails::RegenerateOneLOD(int32 LODIndex)
 		UpdateContext.SkeletalMesh = SkelMesh;
 		UpdateContext.AssociatedComponents.Push(GetPersonaToolkit()->GetPreviewMeshComponent());
 
-		FLODUtilities::SimplifySkeletalMeshLOD(UpdateContext, LODIndex);
+		FLODUtilities::SimplifySkeletalMeshLOD(UpdateContext, LODIndex, bReregisterComponent);
 	}
 	return;
 }
 
 //Regenerate dependent LODs if we re-import LOD X any LOD Z using X has source must be regenerated
 //Also just generate already simplified mesh
-void FPersonaMeshDetails::RegenerateDependentLODs(int32 LODIndex)
+void FPersonaMeshDetails::RegenerateDependentLODs(int32 LODIndex, bool bReregisterComponent /*= true*/)
 {
 	USkeletalMesh* SkelMesh = GetPersonaToolkit()->GetMesh();
 	check(SkelMesh);
@@ -1516,7 +1658,7 @@ void FPersonaMeshDetails::RegenerateDependentLODs(int32 LODIndex)
 			{
 				DependentLODs[CurrentLODIndex] = true;
 				//Regenerate this LOD
-				RegenerateOneLOD(CurrentLODIndex);
+				RegenerateOneLOD(CurrentLODIndex, bReregisterComponent);
 			}
 		}
 	}
@@ -1554,9 +1696,41 @@ FReply FPersonaMeshDetails::RegenerateLOD(int32 LODIndex)
 			}
 		}
 	}
+	
+	//Reregister scope
+	{
+		TComponentReregisterContext<USkinnedMeshComponent> ReregisterContext;
+		SkelMesh->ReleaseResources();
+		SkelMesh->ReleaseResourcesFence.Wait();
+		SkelMesh->PreEditChange(nullptr);
+		SkelMesh->Modify();
 
-	RegenerateOneLOD(LODIndex);
-	RegenerateDependentLODs(LODIndex);
+		// Unbind any existing clothing assets before we regenerate all LODs
+		TArray<ClothingAssetUtils::FClothingAssetMeshBinding> ClothingBindings;
+		ClothingAssetUtils::GetMeshClothingAssetBindings(SkelMesh, ClothingBindings);
+
+		for (ClothingAssetUtils::FClothingAssetMeshBinding& Binding : ClothingBindings)
+		{
+			Binding.Asset->UnbindFromSkeletalMesh(SkelMesh, Binding.LODIndex);
+		}
+
+		RegenerateOneLOD(LODIndex, false);
+		RegenerateDependentLODs(LODIndex, false);
+
+		//Restore all clothing we can
+		for (ClothingAssetUtils::FClothingAssetMeshBinding& Binding : ClothingBindings)
+		{
+			if (SkelMesh->GetImportedModel()->LODModels.IsValidIndex(Binding.LODIndex) &&
+				SkelMesh->GetImportedModel()->LODModels[Binding.LODIndex].Sections.IsValidIndex(Binding.SectionIndex))
+			{
+				Binding.Asset->BindToSkeletalMesh(SkelMesh, Binding.LODIndex, Binding.SectionIndex, Binding.AssetInternalLodIndex);
+			}
+		}
+
+		SkelMesh->PostEditChange();
+		SkelMesh->InitResources();
+	}
+
 	return FReply::Handled();
 }
 
@@ -1819,6 +1993,9 @@ void FPersonaMeshDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout )
 		[
 			AssetImportProperty->CreatePropertyNameWidget()
 		];
+
+
+	CustomizeSkinWeightProfiles(DetailLayout);
 
 	HideUnnecessaryProperties(DetailLayout);
 }

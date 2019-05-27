@@ -87,6 +87,7 @@ struct RENDERCORE_API FStableShaderKeyAndValue
 
 	void ComputeKeyHash();
 	void ParseFromString(const FString& Src);
+	void ParseFromStringCached(const FString& Src, class TMap<uint32, FName>& NameCache);
 	FString ToString() const;
 	void ToString(FString& OutResult) const;
 	static FString HeaderLine();
@@ -144,7 +145,7 @@ struct RENDERCORE_API FShaderCodeLibrary
 	// Open a named library.
 	// For cooking this will place all added shaders & pipelines into the library file with this name.
 	// At runtime this will open the shader library with this name.
-	static void OpenLibrary(FString const& Name, FString const& Directory);
+	static bool OpenLibrary(FString const& Name, FString const& Directory);
     
 	// Close a named library.
 	// For cooking, after this point any AddShaderCode/AddShaderPipeline calls will be invalid until OpenLibrary is called again.
@@ -211,14 +212,17 @@ struct RENDERCORE_API FShaderCodeLibrary
 	// Clean the cook directories
 	static void CleanDirectories(TArray<FName> const& ShaderFormats);
     
-    // Specify the shader formats to cook
-    static void CookShaderFormats(TArray<FName> const& ShaderFormats);
+    // Specify the shader formats to cook and which ones needs stable keys. Provide an array of tuples
+	// with names and whether the format needs stable keys.
+    static void CookShaderFormats(TArray<TTuple<FName,bool>> const& ShaderFormats);
 	
 	// At cook time, add shader code to collection
 	static bool AddShaderCode(EShaderPlatform ShaderPlatform, EShaderFrequency Frequency, const FSHAHash& Hash, const TArray<uint8>& InCode, uint32 const UncompressedSize);
 
-	// We check this early in the callstack to avoid creating a bunch of FName and keys and things we will never save anyway
-	static bool NeedsShaderStableKeys();
+	// We check this early in the callstack to avoid creating a bunch of FName and keys and things we will never save anyway. 
+	// Pass the shader platform to check or EShaderPlatform::SP_NumPlatforms to check if any of the registered types require
+	// stable keys.
+	static bool NeedsShaderStableKeys(EShaderPlatform ShaderPlatform);
 
 	// At cook time, add the human readable key value information
 	static void AddShaderStableKeyValue(EShaderPlatform ShaderPlatform, FStableShaderKeyAndValue& StableKeyValue);
@@ -237,6 +241,9 @@ struct RENDERCORE_API FShaderCodeLibrary
 	
 	// Dump collected stats for each shader platform
 	static void DumpShaderCodeStats();
+	
+	// Create a smaller 'patch' library that only contains data from 'NewMetaDataDir' not contained in any of 'OldMetaDataDirs'
+	static bool CreatePatchLibrary(TArray<FString> const& OldMetaDataDirs, FString const& NewMetaDataDir, FString const& OutDir, bool bNativeFormat);
 #endif
 	
 	// Safely assign the hash to a shader object

@@ -51,6 +51,7 @@
 #include "AnimationRuntime.h"
 #include "Animation/AnimSequence.h"
 #include "UObject/NiagaraObjectVersion.h"
+#include "Animation/SkinWeightProfile.h"
 
 #if WITH_EDITOR
 #include "Rendering/SkeletalMeshModel.h"
@@ -1331,7 +1332,7 @@ void USkeletalMesh::CalculateInvRefMatrices()
 				ZAxis.IsNearlyZero(SMALL_NUMBER))
 			{
 				// this is not allowed, warn them 
-				UE_LOG(LogSkeletalMesh, Warning, TEXT("Reference Pose for joint (%s) includes NIL matrix. Zero scale isn't allowed on ref pose. "), *RefSkeleton.GetBoneName(b).ToString());
+				UE_LOG(LogSkeletalMesh, Warning, TEXT("Reference Pose for asset %s for joint (%s) includes NIL matrix. Zero scale isn't allowed on ref pose. "), *GetPathName(), *RefSkeleton.GetBoneName(b).ToString());
 			}
 
 			// Precompute inverse so we can use from-refpose-skin vertices.
@@ -1348,6 +1349,42 @@ void USkeletalMesh::CalculateInvRefMatrices()
 }
 
 #if WITH_EDITOR
+void USkeletalMesh::ReallocateRetargetBasePose()
+{
+	// if you're adding other things here, please note that this function is called during postLoad
+	// fix up retarget base pose if VB has changed
+	// if we have virtual joints, we make sure Retarget Base Pose matches
+	const int32 VBNum = RefSkeleton.GetVirtualBoneRefData().Num();
+	if (VBNum > 0)
+	{
+		if (ensure(RefSkeleton.GetRawBoneNum() + VBNum == RefSkeleton.GetNum()))
+		{
+			// we're expecting current RetargetBasePose matches raw bone count
+			if (ensure(RetargetBasePose.Num() == RefSkeleton.GetRawBoneNum()))
+			{
+				// attach VB transform, we don't want to destroy the current retarget base pose
+				RetargetBasePose.AddUninitialized(VBNum);
+				const int32 RawBoneNum = RefSkeleton.GetRawBoneNum();
+				const TArray<FTransform>& RawBonePose = RefSkeleton.GetRefBonePose();
+				check(RetargetBasePose.GetTypeSize() == RawBonePose.GetTypeSize());
+				const int32 ElementSize = RetargetBasePose.GetTypeSize();
+				FMemory::Memcpy(RetargetBasePose.GetData() + RawBoneNum, RawBonePose.GetData() + RawBoneNum, ElementSize*VBNum);
+			}
+			else
+			{
+				// we override current RetargetBasePose
+				ensureMsgf(false, TEXT("The retarget base pose size doesn't match as expected with virtual bone. This will be overriden."));
+				RetargetBasePose = RefSkeleton.GetRefBonePose();
+			}
+		}
+		else // this is odd, this shouldn't happen
+		{
+			ensureMsgf(false, TEXT("The retarget base pose size doesn't match as expected with virtual bone. This will be overriden."));
+			RetargetBasePose = RefSkeleton.GetRefBonePose();
+		}
+	}
+}
+
 void USkeletalMesh::CalculateRequiredBones(FSkeletalMeshLODModel& LODModel, const struct FReferenceSkeleton& RefSkeleton, const TMap<FBoneIndexType, FBoneIndexType> * BonesToRemove)
 {
 	// RequiredBones for base model includes all raw bones.
@@ -1658,6 +1695,36 @@ void USkeletalMesh::PostLoad()
 		{
 			CacheDerivedData();
 		}
+
+		//Make sure unused cloth are unbind
+		if (MeshClothingAssets.Num() > 0)
+		{
+			TArray<UClothingAssetBase *> InUsedClothingAssets;
+			GetClothingAssetsInUse(InUsedClothingAssets);
+			//Look if we have some cloth binding to unbind
+			for (UClothingAssetBase* MeshClothingAsset : MeshClothingAssets)
+			{
+				if (MeshClothingAsset == nullptr)
+				{
+					continue;
+				}
+				bool bFound = false;
+				for (UClothingAssetBase* UsedMeshClothingAsset : InUsedClothingAssets)
+				{
+					if (UsedMeshClothingAsset->GetAssetGuid() == MeshClothingAsset->GetAssetGuid())
+					{
+						bFound = true;
+						break;
+					}
+				}
+				if (!bFound)
+				{
+					//Make sure the asset is unbind, some old code path was allowing to have bind cloth asset not present in the imported model.
+					//The old inline reduction code was not rebinding the cloth asset nor unbind it.
+					MeshClothingAsset->UnbindFromSkeletalMesh(this);
+				}
+			}
+		}
 	}
 #endif // WITH_EDITOR
 
@@ -1693,36 +1760,7 @@ void USkeletalMesh::PostLoad()
 
 	if (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::SupportVirtualBoneInRetargeting)
 	{
-		// if we have virtual joints, we make sure Retarget Base Pose matches
-		const int32 VBNum = RefSkeleton.GetVirtualBoneRefData().Num();
-		if (VBNum > 0)
-		{
-			if (ensure(RefSkeleton.GetRawBoneNum() + VBNum == RefSkeleton.GetNum()))
-			{
-				// we're expecting current RetargetBasePose matches raw bone count
-				if (ensure(RetargetBasePose.Num() == RefSkeleton.GetRawBoneNum()))
-				{
-					// attach VB transform, we don't want to destroy the current retarget base pose
-					RetargetBasePose.AddUninitialized(VBNum);
-					const int32 RawBoneNum = RefSkeleton.GetRawBoneNum();
-					const TArray<FTransform>& RawBonePose = RefSkeleton.GetRefBonePose();
-					check(RetargetBasePose.GetTypeSize() == RawBonePose.GetTypeSize());
-					const int32 ElementSize = RetargetBasePose.GetTypeSize();
-					FMemory::Memcpy(RetargetBasePose.GetData() + RawBoneNum, RawBonePose.GetData() + RawBoneNum, ElementSize*VBNum);
-				}
-				else
-				{
-					// we override current RetargetBasePose
-					ensureMsgf(false, TEXT("The retarget base pose size doesn't match as expected with virtual bone. This will be overriden."));
-					RetargetBasePose = RefSkeleton.GetRefBonePose();
-				}
-			}
-			else // this is odd, this shouldn't happen
-			{
-				ensureMsgf(false, TEXT("The retarget base pose size doesn't match as expected with virtual bone. This will be overriden."));
-				RetargetBasePose = RefSkeleton.GetRefBonePose();
-			}
-		}
+		ReallocateRetargetBasePose();
 	}
 #endif
 
@@ -2148,10 +2186,11 @@ USkeletalMeshSocket* USkeletalMesh::GetSocketByIndex(int32 Index) const
 	return nullptr;
 }
 
-#if !WITH_EDITOR
 
 void USkeletalMesh::RebuildSocketMap()
 {
+#if !WITH_EDITOR
+
 	check(IsInGameThread());
 
 	SocketMap.Reset();
@@ -2176,9 +2215,10 @@ void USkeletalMesh::RebuildSocketMap()
 			}
 		}
 	}
+
+#endif // !WITH_EDITOR
 }
 
-#endif
 
 /**
  * This will return detail info about this specific object. (e.g. AudioComponent will return the name of the cue,
@@ -3067,6 +3107,18 @@ const USkeletalMeshLODSettings* USkeletalMesh::GetDefaultLODSetting() const
 	return GetDefault<USkeletalMeshLODSettings>();
 }
 
+void USkeletalMesh::ReleaseSkinWeightProfileResources()
+{
+	// This assumes that skin weights buffers are not used anywhere
+	if (FSkeletalMeshRenderData* RenderData = GetResourceForRendering())
+	{
+		for (FSkeletalMeshLODRenderData& LODData : RenderData->LODRenderData)
+		{
+			LODData.SkinWeightProfilesData.ReleaseResources();
+		}
+	}
+}
+
 FSkeletalMeshLODInfo& USkeletalMesh::AddLODInfo()
 {
 	int32 NewIndex = LODInfo.AddDefaulted(1);
@@ -3410,7 +3462,7 @@ FSkeletalMeshSceneProxy::FSkeletalMeshSceneProxy(const USkinnedMeshComponent* Co
 	bCastInsetShadow = bCastInsetShadow || bCastCapsuleDirectShadow;
 
 	// Get the pre-skinned local bounds
-	PreSkinnedLocalBounds = Component->GetPreSkinnedLocalBounds();
+	Component->GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
 
 	const USkinnedMeshComponent* SkinnedMeshComponent = Cast<const USkinnedMeshComponent>(Component);
 	if(SkinnedMeshComponent && SkinnedMeshComponent->bPerBoneMotionBlur)

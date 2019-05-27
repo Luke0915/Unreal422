@@ -402,6 +402,7 @@ UMaterialInstance::UMaterialInstance(const FObjectInitializer& ObjectInitializer
 	bHasStaticPermutationResource = false;
 	ReentrantFlag[0] = false;
 	ReentrantFlag[1] = false;
+	ShadingModels = MSM_Unlit;
 }
 
 void UMaterialInstance::PostInitProperties()	
@@ -1537,13 +1538,19 @@ bool UMaterialInstanceDynamic::IsMasked() const
 	return Parent ? Parent->IsMasked() : false;
 }
 
-EMaterialShadingModel UMaterialInstanceDynamic::GetShadingModel() const
+FMaterialShadingModelField UMaterialInstanceDynamic::GetShadingModels() const
 {
-	return Parent ? Parent->GetShadingModel() : MSM_DefaultLit;
+	return Parent ? Parent->GetShadingModels() : MSM_DefaultLit;
+}
+
+bool UMaterialInstanceDynamic::IsShadingModelFromMaterialExpression() const
+{
+	return Parent ? Parent->IsShadingModelFromMaterialExpression() : false;
 }
 
 void UMaterialInstance::CopyMaterialInstanceParameters(UMaterialInterface* Source)
 {
+	LLM_SCOPE(ELLMTag::MaterialInstance);
 	SCOPE_CYCLE_COUNTER(STAT_MaterialInstance_CopyMatInstParams);
 
 	if ((Source != nullptr) && (Source != this))
@@ -2389,9 +2396,10 @@ void UMaterialInstance::UpdateOverridableBaseProperties()
 	{
 		OpacityMaskClipValue = 0.0f;
 		BlendMode = BLEND_Opaque;
-		ShadingModel = MSM_DefaultLit;
+		ShadingModels = MSM_DefaultLit;
 		TwoSided = 0;
 		DitheredLODTransition = 0;
+		bIsShadingModelFromMaterialExpression = 0;
 		return;
 	}
 
@@ -2427,12 +2435,33 @@ void UMaterialInstance::UpdateOverridableBaseProperties()
 
 	if (BasePropertyOverrides.bOverride_ShadingModel)
 	{
-		ShadingModel = BasePropertyOverrides.ShadingModel;
+		if (BasePropertyOverrides.ShadingModel == MSM_FromMaterialExpression)
+		{
+			// Can't override using MSM_FromMaterialExpression, simply fall back to parent
+			ShadingModels = Parent->GetShadingModels();
+			bIsShadingModelFromMaterialExpression = Parent->IsShadingModelFromMaterialExpression();
+		}
+		else
+		{
+			// It's only possible to override using a single shading model
+			ShadingModels = FMaterialShadingModelField(BasePropertyOverrides.ShadingModel);
+			bIsShadingModelFromMaterialExpression = 0;
+		}
 	}
 	else
 	{
-		ShadingModel = Parent->GetShadingModel();
-		BasePropertyOverrides.ShadingModel = ShadingModel;
+		ShadingModels = Parent->GetShadingModels();
+		bIsShadingModelFromMaterialExpression = Parent->IsShadingModelFromMaterialExpression();
+
+		if (bIsShadingModelFromMaterialExpression)
+		{
+			BasePropertyOverrides.ShadingModel = MSM_FromMaterialExpression; 
+		}
+		else
+		{
+			ensure(ShadingModels.CountShadingModels() == 1);
+			BasePropertyOverrides.ShadingModel = ShadingModels.GetFirstShadingModel(); 
+		}
 	}
 
 	if (BasePropertyOverrides.bOverride_TwoSided)
@@ -2585,6 +2614,8 @@ void UMaterialInstance::CacheResourceShadersForRendering()
 		}
 	}
 
+	RecacheUniformExpressions(true);
+
 	InitResources();
 
 	if (ResourcesToFree.Num())
@@ -2669,7 +2700,7 @@ void UMaterialInstance::CacheShadersForResources(EShaderPlatform ShaderPlatform,
 			const TArray<FString>& CompileErrors = CurrentResource->GetCompileErrors();
 			for (int32 ErrorIndex = 0; ErrorIndex < CompileErrors.Num(); ErrorIndex++)
 			{
-				UE_LOG(LogMaterial, Log, TEXT("	%s"), *CompileErrors[ErrorIndex]);
+				UE_LOG(LogMaterial, Display, TEXT("	%s"), *CompileErrors[ErrorIndex]);
 			}
 #endif // WITH_EDITOR
 		}
@@ -3101,7 +3132,7 @@ void UMaterialInstance::Serialize(FArchive& Ar)
 #endif
 	}
 #if WITH_EDITOR
-	if (Ar.IsSaving() && Ar.IsCooking() && Ar.IsPersistent() && !Ar.IsObjectReferenceCollector() && FShaderCodeLibrary::NeedsShaderStableKeys())
+	if (Ar.IsSaving() && Ar.IsCooking() && Ar.IsPersistent() && !Ar.IsObjectReferenceCollector() && FShaderCodeLibrary::NeedsShaderStableKeys(EShaderPlatform::SP_NumPlatforms))
 	{
 		SaveShaderStableKeys(Ar.CookingTarget());
 	}
@@ -3238,7 +3269,13 @@ void UMaterialInstance::BeginDestroy()
 
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
-		BeginReleaseResource(Resource);
+		FMaterialRenderProxy* LocalResource = Resource;
+		ENQUEUE_RENDER_COMMAND(BeginDestroyCommand)(
+		[LocalResource](FRHICommandList& RHICmdList)
+		{
+			LocalResource->MarkForGarbageCollection();
+			LocalResource->ReleaseResource();
+		});		
 	}
 
 	ReleaseFence.BeginFence();
@@ -3367,6 +3404,8 @@ bool UMaterialInstance::SetVectorParameterByIndexInternal(int32 ParameterIndex, 
 
 void UMaterialInstance::SetVectorParameterValueInternal(const FMaterialParameterInfo& ParameterInfo, FLinearColor Value)
 {
+	LLM_SCOPE(ELLMTag::MaterialInstance);
+
 	FVectorParameterValue* ParameterValue = GameThread_FindParameterByName(VectorParameterValues, ParameterInfo);
 
 	if(!ParameterValue)
@@ -3410,6 +3449,8 @@ bool UMaterialInstance::SetScalarParameterByIndexInternal(int32 ParameterIndex, 
 
 void UMaterialInstance::SetScalarParameterValueInternal(const FMaterialParameterInfo& ParameterInfo, float Value)
 {
+	LLM_SCOPE(ELLMTag::MaterialInstance);
+
 	FScalarParameterValue* ParameterValue = GameThread_FindParameterByName(ScalarParameterValues, ParameterInfo);
 
 	if(!ParameterValue)
@@ -3468,6 +3509,8 @@ void UMaterialInstance::SetScalarParameterAtlasInternal(const FMaterialParameter
 
 void UMaterialInstance::SetTextureParameterValueInternal(const FMaterialParameterInfo& ParameterInfo, UTexture* Value)
 {
+	LLM_SCOPE(ELLMTag::MaterialInstance);
+
 	FTextureParameterValue* ParameterValue = GameThread_FindParameterByName(TextureParameterValues, ParameterInfo);
 
 	if(!ParameterValue)
@@ -3496,6 +3539,8 @@ void UMaterialInstance::SetTextureParameterValueInternal(const FMaterialParamete
 
 void UMaterialInstance::SetFontParameterValueInternal(const FMaterialParameterInfo& ParameterInfo,class UFont* FontValue,int32 FontPage)
 {
+	LLM_SCOPE(ELLMTag::MaterialInstance);
+
 	FFontParameterValue* ParameterValue = GameThread_FindParameterByName(FontParameterValues, ParameterInfo);
 
 	if(!ParameterValue)
@@ -3964,12 +4009,12 @@ void UMaterialInstance::GetBasePropertyOverridesHash(FSHAHash& OutHash)const
 		bHasOverrides = true;
 	}
 	
-	EMaterialShadingModel UsedShadingModel = GetShadingModel();
-	if (UsedShadingModel != Mat->GetShadingModel())
+	FMaterialShadingModelField UsedShadingModels = GetShadingModels();
+	if (UsedShadingModels != Mat->GetShadingModels())
 	{
 		const FString HashString = TEXT("bOverride_ShadingModel");
 		Hash.UpdateWithString(*HashString, HashString.Len());
-		Hash.Update((const uint8*)&UsedShadingModel, sizeof(UsedShadingModel));
+		Hash.Update((const uint8*)&UsedShadingModels, sizeof(UsedShadingModels));
 		bHasOverrides = true;
 	}
 
@@ -4005,7 +4050,7 @@ bool UMaterialInstance::HasOverridenBaseProperties()const
 	if (Parent && Material && Material->bUsedAsSpecialEngineMaterial == false &&
 		((FMath::Abs(GetOpacityMaskClipValue() - Parent->GetOpacityMaskClipValue()) > SMALL_NUMBER) ||
 		(GetBlendMode() != Parent->GetBlendMode()) ||
-		(GetShadingModel() != Parent->GetShadingModel()) ||
+		(GetShadingModels() != Parent->GetShadingModels()) ||
 		(IsTwoSided() != Parent->IsTwoSided()) ||
 		(IsDitheredLODTransition() != Parent->IsDitheredLODTransition()) ||
 		(GetCastDynamicShadowAsMasked() != Parent->GetCastDynamicShadowAsMasked())
@@ -4027,9 +4072,14 @@ EBlendMode UMaterialInstance::GetBlendMode() const
 	return BlendMode;
 }
 
-EMaterialShadingModel UMaterialInstance::GetShadingModel() const
+FMaterialShadingModelField UMaterialInstance::GetShadingModels() const
 {
-	return ShadingModel;
+	return ShadingModels;
+}
+
+bool UMaterialInstance::IsShadingModelFromMaterialExpression() const
+{
+	return bIsShadingModelFromMaterialExpression;
 }
 
 bool UMaterialInstance::IsTwoSided() const
@@ -4256,6 +4306,7 @@ void UMaterialInstance::SaveShaderStableKeysInner(const class ITargetPlatform* T
 
 void UMaterialInstance::CopyMaterialUniformParametersInternal(UMaterialInterface* Source)
 {
+	LLM_SCOPE(ELLMTag::MaterialInstance);
 	SCOPE_CYCLE_COUNTER(STAT_MaterialInstance_CopyUniformParamsInternal)
 
 	if ((Source == nullptr) || (Source == this))

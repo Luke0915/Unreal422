@@ -11,6 +11,7 @@
 #include "Stats/Stats.h"
 #include "Misc/MemStack.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
@@ -392,6 +393,7 @@ void UNetDriver::AssertValid()
 
 void UNetDriver::AddNetworkActor(AActor* Actor)
 {
+	LLM_SCOPE(ELLMTag::Networking);
 	GetNetworkObjectList().FindOrAdd(Actor, this);
 	if (ReplicationDriver)
 	{
@@ -1835,7 +1837,7 @@ void UNetDriver::InternalProcessRemoteFunction
 		}
 		if (IsServer)
 		{
-			Ch->SetChannelActor(Actor);
+			Ch->SetChannelActor(Actor, ESetChannelActorFlags::None);
 		}	
 	}
 
@@ -2023,6 +2025,8 @@ void UNetDriver::ProcessRemoteFunctionForChannel(UActorChannel* Ch, const FClass
 		}
 		else
 		{
+			Ch->PrepareForRemoteFunction(TargetObj);
+
 			FNetBitWriter TempBlockWriter( Bunch.PackageMap, 0 );
 			Ch->WriteFieldHeaderAndPayload( TempBlockWriter, ClassCache, FieldCache, NetFieldExportGroup, TempWriter );
 			ParameterBits = TempBlockWriter.GetNumBits();
@@ -3169,6 +3173,11 @@ void UNetDriver::AddReferencedObjects(UObject* InThis, FReferenceCollector& Coll
 	{
 		Collector.AddReferencedObject(It.Value(), This);
 	}
+
+	if (This->GuidCache.IsValid())
+	{
+		This->GuidCache->CollectReferences(Collector);
+	}
 }
 
 
@@ -3766,7 +3775,6 @@ int32 UNetDriver::ServerReplicateActors_PrioritizeActors( UNetConnection* Connec
 	// Get list of visible/relevant actors.
 
 	NetTag++;
-	Connection->TickCount++;
 
 	// Set up to skip all sent temporary actors
 	for ( int32 j = 0; j < Connection->SentTemporaries.Num(); j++ )
@@ -4007,7 +4015,7 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 						Channel = (UActorChannel*)Connection->CreateChannelByName( NAME_Actor, EChannelCreateFlags::OpenedLocally );
 						if ( Channel )
 						{
-							Channel->SetChannelActor( Actor );
+							Channel->SetChannelActor(Actor, ESetChannelActorFlags::None);
 						}
 					}
 					// if we couldn't replicate it for a reason that should be temporary, and this Actor is updated very infrequently, make sure we update it again soon
@@ -4357,6 +4365,9 @@ int32 UNetDriver::ServerReplicateActors(float DeltaSeconds)
 		}
 		else if (Connection->ViewTarget)
 		{		
+
+			const int32 LocalNumSaturated = GNumSaturatedConnections;
+
 			// Make a list of viewers this connection should consider (this connection and children of this connection)
 			TArray<FNetViewer>& ConnectionViewers = WorldSettings->ReplicationViewers;
 
@@ -4429,6 +4440,9 @@ int32 UNetDriver::ServerReplicateActors(float DeltaSeconds)
 			RelevantActorMark.Pop();
 
 			ConnectionViewers.Reset();
+
+			const bool bWasSaturated = GNumSaturatedConnections > LocalNumSaturated;
+			Connection->TrackReplicationForAnalytics(bWasSaturated);
 		}
 	}
 
@@ -5448,6 +5462,38 @@ bool UNetDriver::ShouldCallRemoteFunction(UObject* Object, UFunction* Function, 
 bool UNetDriver::ShouldClientDestroyActor(AActor* Actor) const
 {
 	return (Actor && !Actor->IsA(ALevelScriptActor::StaticClass()));
+}
+
+void UNetDriver::ConsumeAsyncLoadDelinquencyAnalytics(FNetAsyncLoadDelinquencyAnalytics& Out)
+{
+	if (FNetGUIDCache* LocalGuidCache = GuidCache.Get())
+	{
+		LocalGuidCache->ConsumeAsyncLoadDelinquencyAnalytics(Out);
+	}
+	else
+	{
+		Out.Reset();
+	}
+}
+
+const FNetAsyncLoadDelinquencyAnalytics& UNetDriver::GetAsyncLoadDelinquencyAnalytics() const
+{
+	static const FNetAsyncLoadDelinquencyAnalytics Empty(0);
+
+	if (FNetGUIDCache const * const LocalGuidCache = GuidCache.Get())
+	{
+		return LocalGuidCache->GetAsyncLoadDelinquencyAnalytics();
+	}
+
+	return Empty;
+}
+
+void UNetDriver::ResetAsyncLoadDelinquencyAnalytics()
+{
+	if (FNetGUIDCache* LocalGuidCache = GuidCache.Get())
+	{
+		LocalGuidCache->ResetAsyncLoadDelinquencyAnalytics();
+	}
 }
 
 FAutoConsoleCommandWithWorld	DumpRelevantActorsCommand(

@@ -16,6 +16,7 @@
 #include "ShaderCore.h"
 #include "RenderUtils.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ScopeLock.h"
 #include "UObject/RenderingObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "Misc/ScopeLock.h"
@@ -936,6 +937,8 @@ void FShaderResource::InitRHI()
 			{
 				RayTracingMaterialLibraryIndex = AddToRayTracingLibrary(RayTracingShader);
 			}
+
+			RayTracingShader->SetHash(OutputHash);
 		}
 	}
 #endif // RHI_RAYTRACING
@@ -1432,7 +1435,8 @@ void FShader::DumpDebugInfo()
 void FShader::SaveShaderStableKeys(EShaderPlatform TargetShaderPlatform, const FStableShaderKeyAndValue& InSaveKeyVal)
 {
 #if WITH_EDITOR
-	if (TargetShaderPlatform == EShaderPlatform::SP_NumPlatforms || EShaderPlatform(Target.Platform) == TargetShaderPlatform)
+	if ((TargetShaderPlatform == EShaderPlatform::SP_NumPlatforms || EShaderPlatform(Target.Platform) == TargetShaderPlatform) 
+		&& FShaderCodeLibrary::NeedsShaderStableKeys(TargetShaderPlatform))
 	{
 		FStableShaderKeyAndValue SaveKeyVal(InSaveKeyVal);
 		SaveKeyVal.TargetFrequency = FName(GetShaderFrequencyString((EShaderFrequency)Target.Frequency));
@@ -2067,11 +2071,7 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	}
 
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.BasePassOutputsVelocity"));
-		if (CVar && CVar->GetValueOnGameThread() != 0)
-		{
-			KeyString += TEXT("_GV");
-		}
+		KeyString += IsUsingBasePassVelocity(Platform) ? TEXT("_GV") : TEXT("");
 	}
 
 	{
@@ -2110,11 +2110,7 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	}
 
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SelectiveBasePassOutputs"));
-		if (CVar && CVar->GetValueOnGameThread() != 0)
-		{
-			KeyString += TEXT("_SO");
-		}
+		KeyString += IsUsingSelectiveBasePassOutputs(Platform) ? TEXT("_SO") : TEXT("");
 	}
 
 	{
@@ -2164,6 +2160,11 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		}
 	}
 
+	if (!AllowPixelDepthOffset(Platform))
+	{
+		KeyString += TEXT("_NoPDO");
+	}
+	
 	if (IsD3DPlatform(Platform, false))
 	{
 		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.RemoveUnusedInterpolators"));
@@ -2214,6 +2215,12 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		{
 			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.UseHWsRGBEncoding"));
 			KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("_HWsRGB") : TEXT("");
+		}
+		
+		{
+			// make it per shader platform ?
+			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.SupportGPUScene"));
+			KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("_MobGPUSc") : TEXT("");
 		}
 		
 	}
