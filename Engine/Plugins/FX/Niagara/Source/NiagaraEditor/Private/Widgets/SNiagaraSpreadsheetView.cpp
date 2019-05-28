@@ -97,8 +97,9 @@ TSharedRef< SWidget > SNiagaraSpreadsheetRow::GenerateWidgetForColumn(const FNam
 			float* Src = nullptr;
 			if (UseGlobalOffsets && ParameterStore->GetParameterDataArray().GetData() != nullptr)
 			{
-				uint32 CompBufferOffset = FieldInfo->GlobalStartOffset;
-				Src = (float*)(ParameterStore->GetParameterDataArray().GetData() + CompBufferOffset);
+				const uint32 CompBufferOffset = FieldInfo->GlobalStartOffset;
+				const uint8* SrcU8 = ParameterStore->GetParameterDataArray().GetData();
+				Src = SrcU8 ? (float*)(SrcU8 + CompBufferOffset) : nullptr;
 			}
 			else if (DataSet != nullptr && DataSet->GetCurrentDataChecked().GetNumInstances() > 0)
 			{
@@ -121,8 +122,9 @@ TSharedRef< SWidget > SNiagaraSpreadsheetRow::GenerateWidgetForColumn(const FNam
 			int32* Src = nullptr;
 			if (UseGlobalOffsets)
 			{
-				uint32 CompBufferOffset = FieldInfo->GlobalStartOffset;
-				Src = (int32*)(ParameterStore->GetParameterDataArray().GetData() + CompBufferOffset);
+				const uint32 CompBufferOffset = FieldInfo->GlobalStartOffset;
+				const uint8* SrcU8 = ParameterStore->GetParameterDataArray().GetData();
+				Src = SrcU8 ? (int32*)(SrcU8 + CompBufferOffset) : nullptr;
 			}
 			else if (DataSet && DataSet->GetCurrentDataChecked().GetNumInstances() > 0)
 			{
@@ -151,8 +153,9 @@ TSharedRef< SWidget > SNiagaraSpreadsheetRow::GenerateWidgetForColumn(const FNam
 			int32* Src = nullptr;
 			if (UseGlobalOffsets)
 			{
-				uint32 CompBufferOffset = FieldInfo->GlobalStartOffset;
-				Src = (int32*)(ParameterStore->GetParameterDataArray().GetData() + CompBufferOffset);
+				const uint32 CompBufferOffset = FieldInfo->GlobalStartOffset;
+				const uint8* SrcU8 = ParameterStore->GetParameterDataArray().GetData();
+				Src = SrcU8 ? (int32*)(SrcU8 + CompBufferOffset) : nullptr;
 			}
 			else if (DataSet != nullptr && DataSet->GetCurrentDataChecked().GetNumInstances() > 0)
 			{
@@ -174,8 +177,9 @@ TSharedRef< SWidget > SNiagaraSpreadsheetRow::GenerateWidgetForColumn(const FNam
 			int32* Src = nullptr;
 			if (UseGlobalOffsets)
 			{
-				uint32 CompBufferOffset = FieldInfo->GlobalStartOffset;
-				Src = (int32*)(ParameterStore->GetParameterDataArray().GetData() + CompBufferOffset);
+				const uint32 CompBufferOffset = FieldInfo->GlobalStartOffset;
+				const uint8* SrcU8 = ParameterStore->GetParameterDataArray().GetData();
+				Src = SrcU8 ? (int32*)(SrcU8 + CompBufferOffset) : nullptr;
 			}
 			else if (DataSet && DataSet->GetCurrentDataChecked().GetNumInstances() > 0)
 			{
