@@ -96,6 +96,8 @@ namespace AutomationTool
 			bool bPublicTasksOnly = ParseParam("PublicTasksOnly");
 			string ReportName = ParseParamValue("ReportName", null);
 
+			CommandUtils.Run("net", "use", Options: ERunOptions.Default & ~ERunOptions.AppMustExist);
+
 			GraphPrintOptions PrintOptions = GraphPrintOptions.ShowCommandLineOptions;
 			if(ParseParam("ShowDeps"))
 			{
