@@ -413,10 +413,15 @@ void FNiagaraDataSet::CopyTo(FNiagaraDataSet& Other, int32 StartIdx, int32 NumIn
 	Other.Finalize();
 
 	//Read the most current data. Even if it's possibly partially complete simulation data.
-	FNiagaraDataBuffer& SourceBuffer = GetDestinationData() ? *GetDestinationData() : *GetCurrentData();
 	FNiagaraDataBuffer& OtherDataBuffer = Other.BeginSimulate();
-	OtherDataBuffer.Allocate(SourceBuffer.GetNumInstancesAllocated());
-	SourceBuffer.CopyTo(OtherDataBuffer, StartIdx, NumInstances);
+
+	FNiagaraDataBuffer* SourceBuffer = GetDestinationData() ? GetDestinationData() : GetCurrentData();
+	if (SourceBuffer != nullptr)
+	{
+		OtherDataBuffer.Allocate(SourceBuffer->GetNumInstancesAllocated());
+		SourceBuffer->CopyTo(OtherDataBuffer, StartIdx, NumInstances);
+	}
+
 	Other.EndSimulate();
 }
 

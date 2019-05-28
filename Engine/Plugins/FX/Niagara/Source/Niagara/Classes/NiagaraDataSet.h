@@ -40,6 +40,7 @@ public:
 	FORCEINLINE void Destroy()
 	{
 		FScopeLock Lock(&CritSec);
+		check(DeferredDeletionList.Contains(this) == false);
 		DeferredDeletionList.Add(this);
 	}
 	static void FlushDeletionList();
@@ -208,6 +209,7 @@ public:
 
 	FNiagaraDataSet();
 	~FNiagaraDataSet();
+	FNiagaraDataSet& operator=(const FNiagaraDataSet&) = delete;
 
 	void Init(FNiagaraDataSetID InID, ENiagaraSimTarget InSimTarget, const FString& InDebugName);
 

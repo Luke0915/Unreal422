@@ -1022,8 +1022,7 @@ void SNiagaraSpreadsheetView::HandleTimeChange()
 					if (FoundEntry != nullptr)
 					{
 						CaptureData[i].CaptureData = *FoundEntry;
-						//CaptureData[i].CaptureData->Frame.CopyCurToPrev();
-						CaptureData[i].DataSet = CaptureData[i].CaptureData->Frame;
+						CaptureData[i].CaptureData->Frame.CopyTo(CaptureData[i].DataSet);
 						CaptureData[i].InputParams = CaptureData[i].CaptureData->Parameters;
 						CaptureData[i].LastCaptureHandleId = SelectedEmitterHandles[0]->GetId();
 
