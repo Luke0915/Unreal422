@@ -437,6 +437,7 @@ public:
 
 	NIAGARA_API bool CanBeRunOnGpu() const;
 	NIAGARA_API bool IsReadyToRun(ENiagaraSimTarget SimTarget) const;
+	NIAGARA_API bool ShouldCacheShadersForCooking() const;
 
 #if WITH_EDITORONLY_DATA
 	class UNiagaraScriptSourceBase *GetSource() { return Source; }

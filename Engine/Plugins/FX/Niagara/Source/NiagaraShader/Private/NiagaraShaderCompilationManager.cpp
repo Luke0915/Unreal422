@@ -439,10 +439,10 @@ void FNiagaraShaderCompilationManager::ProcessCompiledNiagaraShaderMaps(
 
 					if (CurrentJob.Output.Errors.Num())
 					{
-						UE_LOG(LogNiagaraShaderCompiler, Warning, TEXT("There were errors for job \"%s\""), *CurrentJob.Input.DebugGroupName)
+						UE_LOG(LogNiagaraShaderCompiler, Error, TEXT("There were errors for job \"%s\""), *CurrentJob.Input.DebugGroupName)
 							for (const FShaderCompilerError& Error : CurrentJob.Output.Errors)
 							{
-								UE_LOG(LogShaders, Log, TEXT("Error: %s"), *Error.GetErrorString())
+								UE_LOG(LogNiagaraShaderCompiler, Error, TEXT("Error: %s"), *Error.GetErrorString())
 							}
 					}
 				}
