@@ -695,27 +695,34 @@ namespace AutomationTool
 				FileReference SharedFileListLocation = GetTaggedFileListLocation(SharedDir, NodeName, TagName);
 				if(!FileReference.Exists(SharedFileListLocation))
 				{
-					for (DirectoryReference ParentDir = SharedFileListLocation.Directory; ParentDir != null; ParentDir = ParentDir.ParentDirectory)
+					int Tries = 0;
+					while (Tries < 100)
 					{
-						bool bExists = DirectoryReference.Exists(ParentDir);
-						Log.TraceInformation("{0}: {1}", ParentDir, bExists);
-						try
+						for (DirectoryReference ParentDir = SharedFileListLocation.Directory; ParentDir != null; ParentDir = ParentDir.ParentDirectory)
 						{
-							if (bExists)
+							bool bExists = DirectoryReference.Exists(ParentDir);
+							Log.TraceInformation("{0}: {1}", ParentDir, bExists);
+							try
 							{
-								foreach (DirectoryReference Item in DirectoryReference.EnumerateDirectories(ParentDir))
+								if (bExists)
 								{
-									Log.TraceInformation(" DIR: {0}", Item);
+									foreach (DirectoryReference Item in DirectoryReference.EnumerateDirectories(ParentDir))
+									{
+										Log.TraceInformation(" DIR: {0}", Item);
+									}
+									foreach (FileReference Item in DirectoryReference.EnumerateFiles(ParentDir))
+									{
+										Log.TraceInformation(" FILE: {0}", Item);
+									}
 								}
-								foreach (FileReference Item in DirectoryReference.EnumerateFiles(ParentDir))
-								{
-									Log.TraceInformation(" FILE: {0}", Item);
-								}
+								break;
 							}
-						}
-						catch(Exception Ex)
-						{
-							Log.WriteException(Ex, null);
+							catch (Exception Ex)
+							{
+								Log.WriteException(Ex, null);
+								Thread.Sleep(1000);
+								Tries++;
+							}
 						}
 					}
 					throw new AutomationException("Missing local or shared file list - {0}", SharedFileListLocation.FullName);
