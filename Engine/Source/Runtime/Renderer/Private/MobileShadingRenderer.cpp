@@ -572,7 +572,7 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	{
 	    RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
 		// flush
-		RHICmdList.SubmitCommandsAndFlushGPU();
+		RHICmdList.SubmitCommandsHint();
 		// Issue occlusion queries
 	    RenderOcclusion(RHICmdList);
 	    RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
@@ -586,6 +586,12 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	
 	// End of scene color rendering
 	RHICmdList.EndRenderPass();
+
+	if (!bGammaSpace || bRenderToSceneColor)
+	{
+		// transition scene color to Readable for post-processing
+		RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, SceneColor);
+	}
 
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Post));
 
