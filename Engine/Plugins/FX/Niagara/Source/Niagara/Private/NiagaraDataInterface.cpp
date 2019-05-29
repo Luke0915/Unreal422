@@ -185,6 +185,11 @@ void UNiagaraDataInterfaceCurveBase::GetParameterDefinitionHLSL(FNiagaraDataInte
 
 void UNiagaraDataInterfaceCurveBase::PushToRenderThread()
 {
+	if (!GSupportsResourceView)
+	{
+		return;
+	}
+
 	FNiagaraDataInterfaceProxyCurveBase* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyCurveBase>();
 
 	int32 rtNumElems = GetCurveNumElems();
