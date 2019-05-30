@@ -65,6 +65,12 @@ namespace AutomationTool
 
 				// Log the operating environment. Since we usually compile to AnyCPU, we may be executed using different system paths under WOW64.
 				Log.TraceVerbose("{2}: Running on {0} as a {1}-bit process.", HostPlatform.Current.GetType().Name, Environment.Is64BitProcess ? 64 : 32, DateTime.UtcNow.ToString("o"));
+				
+				
+				FileReference TestFileReferenceP = new FileReference("P:\\Builds\\UE4\\TempStorage\\TestFile.txt");
+				FileReference TestFileReferenceEpicGamesNet = new FileReference("\\\\epicgames.net\\root\\Builds\\UE4\\TempStorage\\TestFile.txt");
+				Log.TraceInformation("P Builds reference exists? {0} {1}", FileReference.Exists(TestFileReferenceP), FileReference.ReadAllText(TestFileReferenceP));
+				Log.TraceInformation("EpicGamesNet Builds reference exists? {0} {1}", FileReference.Exists(TestFileReferenceEpicGamesNet), FileReference.ReadAllText(TestFileReferenceEpicGamesNet));
 
 				// Log if we're running from the launcher
 				string ExecutingAssemblyLocation = Assembly.GetExecutingAssembly().Location;
