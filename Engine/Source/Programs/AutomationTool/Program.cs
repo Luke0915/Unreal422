@@ -13,6 +13,8 @@ using System.IO;
 using System.Collections.Generic;
 using System.Text;
 
+using static AutomationTool.CommandUtils;
+
 namespace AutomationTool
 {
 	public class Program
