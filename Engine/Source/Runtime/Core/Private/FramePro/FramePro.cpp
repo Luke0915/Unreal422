@@ -1917,7 +1917,7 @@ namespace FramePro
 		enum Enum
 		{
 			Windows = 0,
-			Windows_UWP,
+			Windows_HoloLens,
 			XBoxOne,
 			XBox360,
 			Unix,
@@ -4052,7 +4052,7 @@ namespace FramePro
 
 	FRAMEPRO_FORCE_INLINE int GetCore()
 	{
-	#if FRAMEPRO_PLATFORM_XBOXONE || FRAMEPRO_PLATFORM_UWP
+	#if FRAMEPRO_PLATFORM_XBOXONE || FRAMEPRO_PLATFORM_HOLOLENS
 		int cpu_info[4];
 		__cpuid(cpu_info, 1);
 		return (cpu_info[1] >> 24) & 0xff;
@@ -5725,7 +5725,7 @@ namespace FramePro
 
 		if(!started)
 		{
-			#if FRAMEPRO_PLATFORM_WIN || FRAMEPRO_PLATFORM_UWP
+			#if FRAMEPRO_PLATFORM_WIN || FRAMEPRO_PLATFORM_HOLOLENS
 				FramePro::DebugWrite(FRAMEPRO_STRING("FramePro Warning: Failed to start recording context switches. Please make sure that you are running with administrator privileges.\n"));
 			#else
 				FramePro::DebugWrite(FRAMEPRO_STRING("FramePro Warning: Failed to start recording context switches. Context switches may not be supported for this platform\n"));
@@ -5825,8 +5825,8 @@ namespace FramePro
 	{
 #if FRAMEPRO_PLATFORM_WIN
 		return Platform::Windows;
-#elif FRAMEPRO_PLATFORM_UWP
-		return Platform::Windows_UWP;
+#elif FRAMEPRO_PLATFORM_HOLOLENS
+		return Platform::Windows_HoloLens;
 #elif FRAMEPRO_PLATFORM_XBOXONE
 		return Platform::XBoxOne;
 #elif FRAMEPRO_PLATFORM_XBOX360
@@ -8574,7 +8574,7 @@ void FramePro::Thread::SetPriority(int priority)
 //------------------------------------------------------------------------
 void FramePro::Thread::SetAffinity(int affinity)
 {
-#if FRAMEPRO_WIN_BASED_PLATFORM && !FRAMEPRO_PLATFORM_UWP
+#if FRAMEPRO_WIN_BASED_PLATFORM && !FRAMEPRO_PLATFORM_HOLOLENS
 	SetThreadAffinityMask(m_Handle, affinity);
 #endif
 }

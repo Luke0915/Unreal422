@@ -30,6 +30,7 @@
 #include "Templates/UniquePtr.h"
 #include "RenderGraph.h"
 #include "MeshDrawCommands.h"
+#include "DepthRendering.h"
 
 // Forward declarations.
 class FScene;
@@ -1317,6 +1318,11 @@ public:
 	/** Only used if we are going to delay the deletion of the scene renderer until later. */
 	FMemMark* RootMark;
 
+	/** Defines which objects we want to render in the EarlyZPass. */
+	EDepthDrawingMode EarlyZPassMode;
+	bool bEarlyZPassMovable;
+	bool bDitheredLODTransitionsUseStencil;
+
 public:
 
 	FSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyConsumer* HitProxyConsumer);
@@ -1543,6 +1549,38 @@ protected:
 	void RenderPlanarReflection(class FPlanarReflectionSceneProxy* ReflectionSceneProxy);
 
 	void ResolveSceneColor(FRHICommandList& RHICmdList);
+
+	/**
+	 * Renders the scene's prepass for a particular view
+	 * @return true if anything was rendered
+	 */
+	void RenderPrePassView(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState);
+
+	/**
+	 * Renders the scene's prepass for a particular view in parallel
+	 * @return true if the depth was cleared
+	 */
+	bool RenderPrePassViewParallel(const FViewInfo& View, FRHICommandListImmediate& ParentCmdList, const FMeshPassProcessorRenderState& DrawRenderState, TFunctionRef<void()> AfterTasksAreStarted, bool bDoPrePre);
+
+	/**
+	* Setup the prepass. This is split out so that in parallel we can do the fx prerender after we start the parallel tasks
+	* @return true if the depth was cleared
+	*/
+	bool PreRenderPrePass(FRHICommandListImmediate& RHICmdList);
+
+	void RenderPrePassEditorPrimitives(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState, EDepthDrawingMode DepthDrawingMode, bool bRespectUseAsOccluderFlag);
+
+	/**
+	 * Renders the scene's prepass and occlusion queries.
+	 * @return true if the depth was cleared
+	 */
+	bool RenderPrePass(FRHICommandListImmediate& RHICmdList, TFunctionRef<void()> AfterTasksAreStarted);
+
+	/**
+	 * Renders the active HMD's hidden area mask as a depth prepass, if available.
+	 * @return true if depth is cleared
+	 */
+	bool RenderPrePassHMD(FRHICommandListImmediate& RHICmdList);
 
 private:
 	void ComputeFamilySize();

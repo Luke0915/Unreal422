@@ -22,6 +22,10 @@
 #include "HAL/ThreadSafeCounter.h"
 #include "Misc/FileHelper.h"
 
+// For mesh occlusion
+#include "MRMeshComponent.h"
+#include "AROriginActor.h"
+
 // To separate out the face ar library linkage from standard ar apps
 #include "AppleARKitFaceSupport.h"
 
@@ -1264,13 +1268,15 @@ bool FAppleARKitSystem::Run(UARSessionConfig* SessionConfig)
 		SetDeviceOrientation( ScreenOrientation );
 	}
 
+
 #if SUPPORTS_ARKIT_1_0
+	// Don't do the conversion work if they don't want this
+	FAppleARKitAnchorData::bGenerateGeometry = SessionConfig->bGenerateMeshDataFromTrackedGeometry;
 	// Set this based upon the project settings
 	bShouldWriteCameraImagePerFrame = GetDefault<UAppleARKitSettings>()->bShouldWriteCameraImagePerFrame;
 	WrittenCameraImageScale = GetDefault<UAppleARKitSettings>()->WrittenCameraImageScale;
 	WrittenCameraImageRotation = GetDefault<UAppleARKitSettings>()->WrittenCameraImageRotation;
 	WrittenCameraImageQuality = GetDefault<UAppleARKitSettings>()->WrittenCameraImageQuality;
-
 	if (FAppleARKitAvailability::SupportsARKit10())
 	{
 		ARSessionRunOptions options = 0;
@@ -1456,6 +1462,7 @@ void FAppleARKitSystem::SessionDidFailWithError_DelegateThread(const FString& Er
 #if SUPPORTS_ARKIT_1_0
 
 TArray<int32> FAppleARKitAnchorData::FaceIndices;
+bool FAppleARKitAnchorData::bGenerateGeometry = false;
 
 static TSharedPtr<FAppleARKitAnchorData> MakeAnchorData( ARAnchor* Anchor, double Timestamp, uint32 FrameNumber )
 {
@@ -1468,19 +1475,37 @@ static TSharedPtr<FAppleARKitAnchorData> MakeAnchorData( ARAnchor* Anchor, doubl
 			FAppleARKitConversion::ToFTransform(PlaneAnchor.transform),
 			FAppleARKitConversion::ToFVector(PlaneAnchor.center),
 			// @todo use World Settings WorldToMetersScale
-			0.5f*FAppleARKitConversion::ToFVector(PlaneAnchor.extent).GetAbs()
+			0.5f*FAppleARKitConversion::ToFVector(PlaneAnchor.extent).GetAbs(),
+			FAppleARKitConversion::ToEARPlaneOrientation(PlaneAnchor.alignment)
 		);
 
 #if SUPPORTS_ARKIT_1_5
 		if (FAppleARKitAvailability::SupportsARKit15())
 		{
-			//@todo All this copying should really happen on-demand.
-			const int32 NumBoundaryVerts = PlaneAnchor.geometry.boundaryVertexCount;
-			NewAnchor->BoundaryVerts.Reset(NumBoundaryVerts);
-			for(int32 i=0; i<NumBoundaryVerts; ++i)
+			if (FAppleARKitAnchorData::bGenerateGeometry)
 			{
-				const vector_float3& Vert = PlaneAnchor.geometry.boundaryVertices[i];
-				NewAnchor->BoundaryVerts.Add(FAppleARKitConversion::ToFVector(Vert));
+				const int32 NumBoundaryVerts = PlaneAnchor.geometry.boundaryVertexCount;
+				NewAnchor->BoundaryVerts.Reset(NumBoundaryVerts);
+				for(int32 i=0; i<NumBoundaryVerts; ++i)
+				{
+					const vector_float3& Vert = PlaneAnchor.geometry.boundaryVertices[i];
+					NewAnchor->BoundaryVerts.Add(FAppleARKitConversion::ToFVector(Vert));
+				}
+				// Generate the mesh from the plane
+				NewAnchor->Vertices.Reset(4);
+				NewAnchor->Vertices.Add(NewAnchor->Center + NewAnchor->Extent);
+				NewAnchor->Vertices.Add(NewAnchor->Center + FVector(NewAnchor->Extent.X, -NewAnchor->Extent.Y, NewAnchor->Extent.Z));
+				NewAnchor->Vertices.Add(NewAnchor->Center + FVector(-NewAnchor->Extent.X, -NewAnchor->Extent.Y, NewAnchor->Extent.Z));
+				NewAnchor->Vertices.Add(NewAnchor->Center + FVector(-NewAnchor->Extent.X, NewAnchor->Extent.Y, NewAnchor->Extent.Z));
+
+				// Two triangles
+				NewAnchor->Indices.Reset(6);
+				NewAnchor->Indices.Add(0);
+				NewAnchor->Indices.Add(1);
+				NewAnchor->Indices.Add(2);
+				NewAnchor->Indices.Add(2);
+				NewAnchor->Indices.Add(3);
+				NewAnchor->Indices.Add(0);
 			}
 		}
 #endif
@@ -1499,6 +1524,27 @@ static TSharedPtr<FAppleARKitAnchorData> MakeAnchorData( ARAnchor* Anchor, doubl
 		if (FAppleARKitAvailability::SupportsARKit20())
 		{
 			NewAnchor->bIsTracked = ImageAnchor.isTracked;
+		}
+		if (FAppleARKitAnchorData::bGenerateGeometry)
+		{
+			FVector Extent(ImageAnchor.referenceImage.physicalSize.width, ImageAnchor.referenceImage.physicalSize.height, 0.f);
+			// Scale by half since this is an extent around the center (same as scale then divide by 2)
+			Extent *= 50.f;
+			// Generate the mesh from the reference image's sizes
+			NewAnchor->Vertices.Reset(4);
+			NewAnchor->Vertices.Add(Extent);
+			NewAnchor->Vertices.Add(FVector(Extent.X, -Extent.Y, Extent.Z));
+			NewAnchor->Vertices.Add(FVector(-Extent.X, -Extent.Y, Extent.Z));
+			NewAnchor->Vertices.Add(FVector(-Extent.X, Extent.Y, Extent.Z));
+			
+			// Two triangles
+			NewAnchor->Indices.Reset(6);
+			NewAnchor->Indices.Add(0);
+			NewAnchor->Indices.Add(1);
+			NewAnchor->Indices.Add(2);
+			NewAnchor->Indices.Add(2);
+			NewAnchor->Indices.Add(3);
+			NewAnchor->Indices.Add(0);
 		}
 #endif
 	}
@@ -1651,6 +1697,30 @@ void FAppleARKitSystem::SessionDidAddAnchors_Internal( TSharedRef<FAppleARKitAnc
 			NewAnchorDebugName = FString::Printf(TEXT("PLN-%02d"), LastTrackedGeometry_DebugId++);
 			UARPlaneGeometry* NewGeo = NewObject<UARPlaneGeometry>();
 			NewGeo->UpdateTrackedGeometry(ARComponent.ToSharedRef(), AnchorData->FrameNumber, AnchorData->Timestamp, AnchorData->Transform, GetARCompositionComponent()->GetAlignmentTransform(), AnchorData->Center, AnchorData->Extent);
+			NewGeo->SetOrientation(AnchorData->Orientation);
+			const UARSessionConfig& SessionConfig = GetARCompositionComponent()->GetSessionConfig();
+			// Add the occlusion geo if configured
+			if (SessionConfig.bGenerateMeshDataFromTrackedGeometry)
+			{
+				AAROriginActor* OriginActor = AAROriginActor::GetOriginActor();
+				UMRMeshComponent* MRMesh = NewObject<UMRMeshComponent>(OriginActor);
+
+				// Set the occlusion and wireframe defaults
+				MRMesh->SetEnableMeshOcclusion(SessionConfig.bUseMeshDataForOcclusion);
+				MRMesh->SetUseWireframe(SessionConfig.bRenderMeshDataInWireframe);
+				MRMesh->SetNeverCreateCollisionMesh(!SessionConfig.bGenerateCollisionForMeshData);
+				MRMesh->SetEnableNavMesh(SessionConfig.bGenerateNavMeshForMeshData);
+
+				// Set parent and register
+				MRMesh->SetupAttachment(OriginActor->GetRootComponent());
+				MRMesh->RegisterComponent();
+
+				// MRMesh takes ownership of the data in the arrays at this point
+				MRMesh->UpdateMesh(AnchorData->Transform.GetLocation(), AnchorData->Transform.GetRotation(), AnchorData->Transform.GetScale3D(), AnchorData->Vertices, AnchorData->Indices);
+
+				// Connect the tracked geo to the MRMesh
+				NewGeo->SetUnderlyingMesh(MRMesh);
+			}
 			NewGeometry = NewGeo;
 			break;
 		}
@@ -1676,6 +1746,29 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			FVector2D PhysicalSize((*CandidateImage)->GetPhysicalWidth(), (*CandidateImage)->GetPhysicalHeight());
 			NewImage->UpdateTrackedGeometry(ARComponent.ToSharedRef(), AnchorData->FrameNumber, AnchorData->Timestamp, AnchorData->Transform, GetARCompositionComponent()->GetAlignmentTransform(), PhysicalSize, *CandidateImage);
 			NewGeometry = NewImage;
+			const UARSessionConfig& SessionConfig = GetARCompositionComponent()->GetSessionConfig();
+			// Add the occlusion geo if configured
+			if (SessionConfig.bGenerateMeshDataFromTrackedGeometry)
+			{
+				AAROriginActor* OriginActor = AAROriginActor::GetOriginActor();
+				UMRMeshComponent* MRMesh = NewObject<UMRMeshComponent>(OriginActor);
+				
+				// Set the occlusion and wireframe defaults
+				MRMesh->SetEnableMeshOcclusion(SessionConfig.bUseMeshDataForOcclusion);
+				MRMesh->SetUseWireframe(SessionConfig.bRenderMeshDataInWireframe);
+				MRMesh->SetNeverCreateCollisionMesh(!SessionConfig.bGenerateCollisionForMeshData);
+				MRMesh->SetEnableNavMesh(SessionConfig.bGenerateNavMeshForMeshData);
+				
+				// Set parent and register
+				MRMesh->SetupAttachment(OriginActor->GetRootComponent());
+				MRMesh->RegisterComponent();
+				
+				// MRMesh takes ownership of the data in the arrays at this point
+				MRMesh->UpdateMesh(AnchorData->Transform.GetLocation(), AnchorData->Transform.GetRotation(), AnchorData->Transform.GetScale3D(), AnchorData->Vertices, AnchorData->Indices);
+				
+				// Connect the tracked geo to the MRMesh
+				NewImage->SetUnderlyingMesh(MRMesh);
+			}
 			break;
 		}
 		case EAppleAnchorType::EnvironmentProbeAnchor:
@@ -1759,6 +1852,15 @@ void FAppleARKitSystem::SessionDidUpdateAnchors_Internal( TSharedRef<FAppleARKit
 						const FTransform Pin_LocalToTrackingTransform_PostUpdate = Pin->GetLocalToTrackingTransform_NoAlignment() * AnchorDeltaTransform;
 						Pin->OnTransformUpdated(Pin_LocalToTrackingTransform_PostUpdate);
 					}
+					PlaneGeo->SetOrientation(AnchorData->Orientation);
+					// Update the occlusion geo if configured
+					if (GetARCompositionComponent()->GetSessionConfig().bGenerateMeshDataFromTrackedGeometry)
+					{
+						UMRMeshComponent* MRMesh = PlaneGeo->GetUnderlyingMesh();
+						check(MRMesh != nullptr);
+						// MRMesh takes ownership of the data in the arrays at this point
+						MRMesh->UpdateMesh(AnchorData->Transform.GetLocation(), AnchorData->Transform.GetRotation(), AnchorData->Transform.GetScale3D(), AnchorData->Vertices, AnchorData->Indices);
+					}
 				}
 				break;
 			}
@@ -1798,6 +1900,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 						const FTransform Pin_LocalToTrackingTransform_PostUpdate = Pin->GetLocalToTrackingTransform_NoAlignment() * AnchorDeltaTransform;
 						Pin->OnTransformUpdated(Pin_LocalToTrackingTransform_PostUpdate);
 					}
+					// Update the occlusion geo if configured
+					if (GetARCompositionComponent()->GetSessionConfig().bGenerateMeshDataFromTrackedGeometry)
+					{
+						UMRMeshComponent* MRMesh = ImageAnchor->GetUnderlyingMesh();
+						check(MRMesh != nullptr);
+						// MRMesh takes ownership of the data in the arrays at this point
+						MRMesh->UpdateMesh(AnchorData->Transform.GetLocation(), AnchorData->Transform.GetRotation(), AnchorData->Transform.GetScale3D(), AnchorData->Vertices, AnchorData->Indices);
+					}
 				}
                 break;
             }
@@ -1833,7 +1943,14 @@ void FAppleARKitSystem::SessionDidRemoveAnchors_Internal( FGuid AnchorGuid )
 	{
 		UARTrackedGeometry* TrackedGeometryBeingRemoved = TrackedGeometries.FindChecked(AnchorGuid);
 		TrackedGeometryBeingRemoved->UpdateTrackingState(EARTrackingState::StoppedTracking);
-		
+		// Remove the occlusion mesh if present
+		UMRMeshComponent* MRMesh = TrackedGeometryBeingRemoved->GetUnderlyingMesh();
+		if (MRMesh != nullptr)
+		{
+			MRMesh->UnregisterComponent();
+			TrackedGeometryBeingRemoved->SetUnderlyingMesh(nullptr);
+		}
+
 		TArray<UARPin*> ARPinsBeingOrphaned = ARKitUtil::PinsFromGeometry(TrackedGeometryBeingRemoved, Pins);
 		for(UARPin* PinBeingOrphaned : ARPinsBeingOrphaned)
 		{
@@ -2004,6 +2121,50 @@ UTimecodeProvider* UAppleARKitSettings::GetTimecodeProvider()
 	}
 	return TimecodeProvider;
 }
+
+
+/** Used to run Exec commands */
+static bool MeshARTestingExec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	bool bHandled = false;
+
+	if (FParse::Command(&Cmd, TEXT("ARKIT")))
+	{
+		if (FParse::Command(&Cmd, TEXT("MRMESH")))
+		{
+			AAROriginActor* OriginActor = AAROriginActor::GetOriginActor();
+			UMRMeshComponent* NewComp = NewObject<UMRMeshComponent>(OriginActor);
+			NewComp->RegisterComponent();
+			NewComp->SetUseWireframe(true);
+			// Send a fake update to it
+			FTransform Transform = FTransform::Identity;
+			TArray<FVector> Vertices;
+			TArray<MRMESH_INDEX_TYPE> Indices;
+
+			Vertices.Reset(4);
+			Vertices.Add(FVector(100.f, 100.f, 0.f));
+			Vertices.Add(FVector(100.f, -100.f, 0.f));
+			Vertices.Add(FVector(-100.f, -100.f, 0.f));
+			Vertices.Add(FVector(-100.f, 100.f, 0.f));
+
+			Indices.Reset(6);
+			Indices.Add(0);
+			Indices.Add(1);
+			Indices.Add(2);
+			Indices.Add(2);
+			Indices.Add(3);
+			Indices.Add(0);
+
+			NewComp->UpdateMesh(Transform.GetLocation(), Transform.GetRotation(), Transform.GetScale3D(), Vertices, Indices);
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+FStaticSelfRegisteringExec MeshARTestingExecRegistration(MeshARTestingExec);
 
 #if PLATFORM_IOS
 	#pragma clang diagnostic pop

@@ -313,7 +313,7 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering)
 	uint8 bVisibleInReflectionCaptures:1;
 
-	/** If true, this component will be rendered in the main pass (z prepass, basepass, transparency) */
+	/** If true, this component will be rendered in the main pass (basepass, transparency) */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering)
 	uint8 bRenderInMainPass:1;
 

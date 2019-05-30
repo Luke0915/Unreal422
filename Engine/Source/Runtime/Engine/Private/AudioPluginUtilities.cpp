@@ -41,6 +41,9 @@ FORCEINLINE const TCHAR* GetPlatformConfigSection(EAudioPlatform AudioPlatform)
 		case EAudioPlatform::Lumin:
 			return TEXT("/Script/LuminRuntimeSettings.LuminRuntimeSettings");
 
+		case EAudioPlatform::HoloLens:
+			return TEXT("/Script/HoloLensRuntimeSettings.HoloLensRuntimeSettings");
+
 		case EAudioPlatform::Unknown:
 			return TEXT("");
 

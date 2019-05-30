@@ -4,6 +4,7 @@
 #include "ARSystem.h"
 #include "ARDebugDrawHelpers.h"
 #include "DrawDebugHelpers.h"
+#include "MRMeshComponent.h"
 
 //
 //
@@ -57,7 +58,7 @@ bool UARTrackedGeometry::IsTracked() const
 
 void UARTrackedGeometry::SetTrackingState(EARTrackingState NewState)
 {
-	TrackingState = NewState;
+	UpdateTrackingState(NewState);
 }
 
 FTransform UARTrackedGeometry::GetLocalToWorldTransform() const
@@ -87,16 +88,21 @@ void UARTrackedGeometry::UpdateTrackedGeometry(const TSharedRef<FARSupportInterf
 	LastUpdateFrameNumber = FrameNumber;
 	LastUpdateTimestamp = Timestamp;
 	UpdateAlignmentTransform(InAlignmentTransform);
+	// We were updated, so we're clearly being tracked ;)
+	SetTrackingState(EARTrackingState::Tracking);
 }
 
 void UARTrackedGeometry::UpdateTrackingState( EARTrackingState NewTrackingState )
 {
 	TrackingState = NewTrackingState;
 
-	if (TrackingState == EARTrackingState::StoppedTracking && NativeResource)
+	if (TrackingState == EARTrackingState::StoppedTracking)
 	{
-		// Remove reference to the native resource since the tracked geometry is stopped tracking.
-		NativeResource->RemoveRef();
+		if (NativeResource.IsValid())
+		{
+			// Remove reference to the native resource since the tracked geometry is stopped tracking.
+			NativeResource->RemoveRef();
+		}
 	}
 }
 
@@ -113,6 +119,16 @@ void UARTrackedGeometry::SetDebugName( FName InDebugName )
 IARRef* UARTrackedGeometry::GetNativeResource()
 {
 	return NativeResource.Get();
+}
+
+UMRMeshComponent* UARTrackedGeometry::GetUnderlyingMesh()
+{
+	return UnderlyingMesh;
+}
+
+void UARTrackedGeometry::SetUnderlyingMesh(UMRMeshComponent* InMRMeshComponent)
+{
+	UnderlyingMesh = InMRMeshComponent;
 }
 
 //
@@ -186,6 +202,7 @@ void UARTrackedImage::UpdateTrackedGeometry(const TSharedRef<FARSupportInterface
 	Super::UpdateTrackedGeometry(InTrackingSystem, FrameNumber, Timestamp, InLocalToTrackingTransform, InAlignmentTransform);
 	EstimatedSize = InEstimatedSize;
 	DetectedImage = InDetectedImage;
+	ObjectClassification = EARObjectClassification::Image;
 }
 
 FVector2D UARTrackedImage::GetEstimateSize()
@@ -207,6 +224,7 @@ void UARFaceGeometry::UpdateFaceGeometry(const TSharedRef<FARSupportInterface, E
 	LeftEyeTransform = InLeftEyeTransform;
 	RightEyeTransform = InRightEyeTransform;
 	LookAtTarget = InLookAtTarget;
+	ObjectClassification = EARObjectClassification::Face;
 }
 
 void UARTrackedPoint::DebugDraw(UWorld* World, const FLinearColor& OutlineColor, float OutlineThickness, float PersistForSeconds /*= 0.0f*/) const
@@ -310,5 +328,6 @@ void UARTrackedObject::UpdateTrackedGeometry(const TSharedRef<FARSupportInterfac
 {
 	Super::UpdateTrackedGeometry(InTrackingSystem, FrameNumber, Timestamp, InLocalToTrackingTransform, InAlignmentTransform);
 	DetectedObject = InDetectedObject;
+	ObjectClassification = EARObjectClassification::SceneObject;
 }
 

@@ -16,7 +16,6 @@
 #include "MeshMaterialShaderType.h"
 #include "MeshMaterialShader.h"
 #include "SceneRendering.h"
-#include "DeferredShadingRenderer.h"
 #include "ScenePrivate.h"
 #include "OneColorShader.h"
 #include "IHeadMountedDisplay.h"
@@ -251,7 +250,7 @@ static void RenderHiddenAreaMaskView(FRHICommandList& RHICmdList, FGraphicsPipel
 	}
 }
 
-void FDeferredShadingSceneRenderer::RenderPrePassView(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState)
+void FSceneRenderer::RenderPrePassView(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState)
 {
 	SetupPrePassView(RHICmdList, View, this);
 
@@ -283,7 +282,7 @@ public:
 	}
 };
 
-bool FDeferredShadingSceneRenderer::RenderPrePassViewParallel(const FViewInfo& View, FRHICommandListImmediate& ParentCmdList, const FMeshPassProcessorRenderState& DrawRenderState, TFunctionRef<void()> AfterTasksAreStarted, bool bDoPrePre)
+bool FSceneRenderer::RenderPrePassViewParallel(const FViewInfo& View, FRHICommandListImmediate& ParentCmdList, const FMeshPassProcessorRenderState& DrawRenderState, TFunctionRef<void()> AfterTasksAreStarted, bool bDoPrePre)
 {
 	bool bDepthWasCleared = false;
 
@@ -353,11 +352,10 @@ public:
 IMPLEMENT_SHADER_TYPE(, FDitheredTransitionStencilPS, TEXT("/Engine/Private/DitheredTransitionStencil.usf"), TEXT("Main"), SF_Pixel);
 
 /** Possibly do the FX prerender and setup the prepass*/
-bool FDeferredShadingSceneRenderer::PreRenderPrePass(FRHICommandListImmediate& RHICmdList)
+bool FSceneRenderer::PreRenderPrePass(FRHICommandListImmediate& RHICmdList)
 {
 	SCOPED_GPU_MASK(RHICmdList, FRHIGPUMask::All()); // Required otherwise emulatestereo gets broken.
 
-	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_PrePass));
 	// RenderPrePassHMD clears the depth buffer. If this changes we must change RenderPrePass to maintain the correct behavior!
 	bool bDepthWasCleared = RenderPrePassHMD(RHICmdList);
 
@@ -421,7 +419,7 @@ bool FDeferredShadingSceneRenderer::PreRenderPrePass(FRHICommandListImmediate& R
 	return bDepthWasCleared;
 }
 
-void FDeferredShadingSceneRenderer::RenderPrePassEditorPrimitives(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState, EDepthDrawingMode DepthDrawingMode, bool bRespectUseAsOccluderFlag) 
+void FSceneRenderer::RenderPrePassEditorPrimitives(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState, EDepthDrawingMode DepthDrawingMode, bool bRespectUseAsOccluderFlag)
 {
 	SetupPrePassView(RHICmdList, View, this, true);
 
@@ -515,11 +513,11 @@ void CreateDepthPassUniformBuffer(
 	}
 }
 
-bool FDeferredShadingSceneRenderer::RenderPrePass(FRHICommandListImmediate& RHICmdList, TFunctionRef<void()> AfterTasksAreStarted)
+bool FSceneRenderer::RenderPrePass(FRHICommandListImmediate& RHICmdList, TFunctionRef<void()> AfterTasksAreStarted)
 {
 	check(RHICmdList.IsOutsideRenderPass());
 
-	SCOPED_NAMED_EVENT(FDeferredShadingSceneRenderer_RenderPrePass, FColor::Emerald);
+	SCOPED_NAMED_EVENT(FSceneRenderer_RenderPrePass, FColor::Emerald);
 	bool bDepthWasCleared = false;
 
 	extern const TCHAR* GetDepthPassReason(bool bDitheredLODTransitionsUseStencil, EShaderPlatform ShaderPlatform);
@@ -645,7 +643,7 @@ static FORCEINLINE bool HasHiddenAreaMask()
 		GEngine->XRSystem->GetHMDDevice()->HasHiddenAreaMesh());
 }
 
-bool FDeferredShadingSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& RHICmdList)
+bool FSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& RHICmdList)
 {
 	// Early out before we change any state if there's not a mask to render
 	if (!HasHiddenAreaMask())
@@ -751,7 +749,9 @@ void FDepthPassMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
 			// Only render primitives marked as occluders.
 			bDraw = PrimitiveSceneProxy->ShouldUseAsOccluder()
 				// Only render static objects unless movable are requested.
-				&& (!PrimitiveSceneProxy->IsMovable() || bEarlyZPassMovable);
+				&& (!PrimitiveSceneProxy->IsMovable() || bEarlyZPassMovable)
+				// Only render meshes in the depth pass on tiled GPUs if they aren't already drawn in the main pass.
+				&& (!PrimitiveSceneProxy->ShouldRenderInMainPass() || !RHIHasTiledGPU(Scene->GetShaderPlatform()));
 
 			// Filter dynamic mesh commands by screen size.
 			if (ViewIfDynamicMeshCommand)
@@ -781,7 +781,6 @@ void FDepthPassMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
 		const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
 
 		if (!bIsTranslucent
-			&& (!PrimitiveSceneProxy || PrimitiveSceneProxy->ShouldRenderInMainPass())
 			&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain()))
 		{
 			if (BlendMode == BLEND_Opaque
@@ -848,3 +847,4 @@ FMeshPassProcessor* CreateDepthPassProcessor(const FScene* Scene, const FSceneVi
 }
 
 FRegisterPassProcessorCreateFunction RegisterDepthPass(&CreateDepthPassProcessor, EShadingPath::Deferred, EMeshPass::DepthPass, EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView);
+FRegisterPassProcessorCreateFunction RegisterMobileDepthPass(&CreateDepthPassProcessor, EShadingPath::Mobile, EMeshPass::DepthPass, EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView);

@@ -123,6 +123,44 @@ enum class EARWorldMappingState : uint8
 	Mapped
 };
 
+/** Describes the tracked plane orientation */
+UENUM(BlueprintType)
+enum class EARPlaneOrientation : uint8
+{
+	Horizontal,
+	Vertical,
+	/** For AR systems that can match planes to slopes */
+	Diagonal,
+};
+
+/** Indicates what type of object the scene understanding system thinks it is */
+UENUM(BlueprintType)
+enum class EARObjectClassification : uint8
+{
+	/** Not applicable to scene understanding */
+	NotApplicable,
+	/** Scene understanding doesn't know what this is */
+	Unknown,
+	/** A vertical plane that is a wall */
+	Wall,
+	/** A horizontal plane that is the ceiling */
+	Ceiling,
+	/** A horizontal plane that is the floor */
+	Floor,
+	/** A horizontal plane that is a table */
+	Table,
+	/** A horizontal plane that is a seat */
+	Seat,
+	/** A human face */
+	Face,
+	/** A recognized image in the scene */
+	Image,
+	/** A chunk of mesh that does not map to a specific object type but is seen by the AR system */
+	World,
+	/** A closed mesh that was identified in the scene */
+	SceneObject,
+	// Add other types here...
+};
 
 /** The current state of the AR subsystem including an optional explanation string. */
 USTRUCT(BlueprintType)

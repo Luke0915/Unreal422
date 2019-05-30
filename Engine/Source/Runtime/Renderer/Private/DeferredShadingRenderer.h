@@ -13,7 +13,6 @@
 #include "ScenePrivateBase.h"
 #include "LightSceneInfo.h"
 #include "SceneRendering.h"
-#include "DepthRendering.h"
 
 class FDistanceFieldAOParameters;
 class UStaticMeshComponent;
@@ -32,12 +31,6 @@ public:
 class FDeferredShadingSceneRenderer : public FSceneRenderer
 {
 public:
-
-	/** Defines which objects we want to render in the EarlyZPass. */
-	EDepthDrawingMode EarlyZPassMode;
-	bool bEarlyZPassMovable;
-	bool bDitheredLODTransitionsUseStencil;
-	
 	FComputeFenceRHIRef TranslucencyLightingVolumeClearEndFence;
 
 	FDeferredShadingSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyConsumer* HitProxyConsumer);
@@ -53,18 +46,6 @@ public:
 
 	/** Propagates LPVs for all views */
 	void UpdateLPVs(FRHICommandListImmediate& RHICmdList);
-
-	/**
-	 * Renders the scene's prepass for a particular view
-	 * @return true if anything was rendered
-	 */
-	void RenderPrePassView(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState);
-
-	/**
-	 * Renders the scene's prepass for a particular view in parallel
-	 * @return true if the depth was cleared
-	 */
-	bool RenderPrePassViewParallel(const FViewInfo& View, FRHICommandListImmediate& ParentCmdList, const FMeshPassProcessorRenderState& DrawRenderState, TFunctionRef<void()> AfterTasksAreStarted, bool bDoPrePre);
 
 	/** Culls local lights to a grid in frustum space.  Needed for forward shading or translucency using the Surface lighting mode. */
 	void ComputeLightGrid(FRHICommandListImmediate& RHICmdList, bool bNeedLightGrid);
@@ -155,27 +136,6 @@ private:
 	void UpdateTranslucencyTimersAndSeparateTranslucencyBufferSize(FRHICommandListImmediate& RHICmdList);
 
 	void CreateIndirectCapsuleShadows();
-
-	/**
-	* Setup the prepass. This is split out so that in parallel we can do the fx prerender after we start the parallel tasks
-	* @return true if the depth was cleared
-	*/
-	bool PreRenderPrePass(FRHICommandListImmediate& RHICmdList);
-
-	void RenderPrePassEditorPrimitives(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState, EDepthDrawingMode DepthDrawingMode, bool bRespectUseAsOccluderFlag);
-
-	/**
-	 * Renders the scene's prepass and occlusion queries.
-	 * @return true if the depth was cleared
-	 */
-	bool RenderPrePass(FRHICommandListImmediate& RHICmdList, TFunctionRef<void()> AfterTasksAreStarted);
-
-	/**
-	 * Renders the active HMD's hidden area mask as a depth prepass, if available.
-	 * @return true if depth is cleared
-	 */
-	bool RenderPrePassHMD(FRHICommandListImmediate& RHICmdList);
-
 
 	/** Renders the scene's fogging. */
 	bool RenderFog(FRHICommandListImmediate& RHICmdList, const FLightShaftsOutput& LightShaftsOutput);

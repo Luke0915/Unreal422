@@ -22,6 +22,7 @@
 #include "Engine/Engine.h"
 #include "UObject/UObjectThreadContext.h"
 #include "Stats/Stats.h"
+#include "UObject/ConstructorHelpers.h"
 
 DECLARE_CYCLE_STAT(TEXT("MrMesh SetCollisionProfileName"), STAT_MrMesh_SetCollisionProfileName, STATGROUP_Physics);
 
@@ -79,6 +80,19 @@ public:
 
 		// Write the indices to the index buffer.
 		FMemory::Memcpy(Buffer, Indices.GetData(), Indices.Num() * sizeof(int32));
+		RHIUnlockIndexBuffer(IndexBufferRHI);
+	}
+
+	void InitRHIWith(const TArray<uint16>& Indices)
+	{
+		NumIndices = Indices.Num();
+
+		FRHIResourceCreateInfo CreateInfo;
+		void* Buffer = nullptr;
+		IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint16), Indices.Num() * sizeof(uint16), BUF_Static, CreateInfo, Buffer);
+
+		// Write the indices to the index buffer.
+		FMemory::Memcpy(Buffer, Indices.GetData(), Indices.Num() * sizeof(uint16));
 		RHIUnlockIndexBuffer(IndexBufferRHI);
 	}
 };
@@ -179,10 +193,21 @@ public:
 	}
 
 	FMRMeshProxy(const UMRMeshComponent* InComponent)
-	: FPrimitiveSceneProxy(InComponent, InComponent->GetFName())
-	, MaterialToUse((InComponent->Material!=nullptr) ? InComponent->Material : UMaterial::GetDefaultMaterial(MD_Surface) )
-	, FeatureLevel(GetScene().GetFeatureLevel())
+		: FPrimitiveSceneProxy(InComponent, InComponent->GetFName())
+		, MaterialToUse(InComponent->Material)
+		, FeatureLevel(GetScene().GetFeatureLevel())
+		, bEnableOcclusion(InComponent->GetEnableMeshOcclusion())
+		, bUseWireframe(InComponent->GetUseWireframe())
 	{
+		if (bUseWireframe)
+		{
+			MaterialToUse = InComponent->WireframeMaterial;
+		}
+		// If this is still null, use the default material
+		if (MaterialToUse == nullptr)
+		{
+			MaterialToUse = UMaterial::GetDefaultMaterial(MD_Surface);
+		}
 	}
 
 	virtual ~FMRMeshProxy()
@@ -320,7 +345,11 @@ private:
 						FMeshBatch& Mesh = Collector.AllocateMesh();
 						FMeshBatchElement& BatchElement = Mesh.Elements[0];
 						BatchElement.IndexBuffer = &Section->IndexBuffer;
-						Mesh.bWireframe = false;
+						Mesh.bWireframe = bUseWireframe;
+						Mesh.bUseAsOccluder = bEnableOcclusion;
+
+						Mesh.bUseForDepthPass = bEnableOcclusion;
+
 						Mesh.VertexFactory = &Section->VertexFactory;
 						Mesh.MaterialRenderProxy = MaterialProxy;
 
@@ -349,9 +378,14 @@ private:
 		Result.bDrawRelevance = IsShown(View);
 		Result.bShadowRelevance = IsShadowCast(View);
 		Result.bDynamicRelevance = true;
-		Result.bRenderInMainPass = ShouldRenderInMainPass();
+		// If there is a material set that is not the default material, then this wants to be rendered in the main pass
+		Result.bRenderInMainPass = (bUseWireframe || MaterialToUse != UMaterial::GetDefaultMaterial(MD_Surface)) && ShouldRenderInMainPass();
+
+		Result.bRenderInDepthPass = bEnableOcclusion;
+
 		Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
 		Result.bRenderCustomDepth = ShouldRenderCustomDepth();
+		Result.bSeparateTranslucencyRelevance = MaterialToUse && MaterialToUse->GetMaterial()->bEnableSeparateTranslucency;
 		//MaterialRelevance.SetPrimitiveViewRelevance(Result);
 		return Result;
 	}
@@ -369,12 +403,18 @@ private:
 	TArray<FMRMeshProxySection*> ProxySections;
 	UMaterialInterface* MaterialToUse;
 	ERHIFeatureLevel::Type FeatureLevel;
+	bool bEnableOcclusion;
+	bool bUseWireframe;
 };
 
 
 UMRMeshComponent::UMRMeshComponent(const FObjectInitializer& ObjectInitializer)
-: Super(ObjectInitializer)
+	: Super(ObjectInitializer)
+	, bEnableOcclusion(false)
+	, bUseWireframeForNoMaterial(false)
 {
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> WireframeMaterialRef(TEXT("/Engine/EngineDebugMaterials/WireframeMaterial"));
+	WireframeMaterial = WireframeMaterialRef.Object;
 }
 
 void UMRMeshComponent::BeginPlay()
@@ -531,6 +571,10 @@ void UMRMeshComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterial
 	{
 		OutMaterials.Add(Material);
 	}
+	if (WireframeMaterial != nullptr)
+	{
+		OutMaterials.Add(WireframeMaterial);
+	}
 }
 
 FBoxSphereBounds UMRMeshComponent::CalcBounds(const FTransform& LocalToWorld) const
@@ -602,6 +646,8 @@ void UMRMeshComponent::SendBrickData_Internal(IMRMesh::FSendBrickDataArgs Args)
 
 	UE_LOG(LogMrMesh, Log, TEXT("SendBrickData_Internal() processing brick %llu with %i triangles"), Args.BrickId, Args.Indices.Num() / 3);
 
+	const bool bHasBrickData = Args.Indices.Num() > 0 && Args.PositionData.Num() > 0;
+
 	if (!IsPendingKill() && !bNeverCreateCollisionMesh)
 	{
 		// Physics update
@@ -610,7 +656,7 @@ void UMRMeshComponent::SendBrickData_Internal(IMRMesh::FSendBrickDataArgs Args)
 		{
 			int32 BodyIndex = BodyIds.Find(Args.BrickId);
 
-			if (const bool bBrickHasData = Args.Indices.Num() > 0)
+			if (bHasBrickData)
 			{
 				bPhysicsStateCreated = true;
 
@@ -669,7 +715,7 @@ void UMRMeshComponent::SendBrickData_Internal(IMRMesh::FSendBrickDataArgs Args)
 				}
 			}
 		}
-		if (bUpdateNavMeshOnMeshUpdate && bHasCustomNavigableGeometry)
+		if (bHasBrickData && bUpdateNavMeshOnMeshUpdate && bHasCustomNavigableGeometry)
 		{
 			UpdateNavigationData();
 		}
@@ -686,14 +732,14 @@ void UMRMeshComponent::SendBrickData_Internal(IMRMesh::FSendBrickDataArgs Args)
 			// Graphics update
 			UMRMeshComponent* This = this;
 			ENQUEUE_RENDER_COMMAND(FSendBrickDataLambda)(
-				[This, Args](FRHICommandListImmediate& RHICmdList)
+				[This, Args, bHasBrickData](FRHICommandListImmediate& RHICmdList)
 				{
 					FMRMeshProxy* MRMeshProxy = static_cast<FMRMeshProxy*>(This->SceneProxy);
 					if (MRMeshProxy)
 					{
 						MRMeshProxy->RenderThread_RemoveSection(Args.BrickId);
 
-						if (const bool bBrickHasData = Args.Indices.Num() > 0)
+						if (bHasBrickData)
 						{
 							MRMeshProxy->RenderThread_UploadNewSection(Args);
 						}
@@ -807,3 +853,49 @@ void UMRMeshComponent::Clear()
 	ClearAllBrickData();
 	UE_LOG(LogMrMesh, Log, TEXT("Clearing all brick data"));
 }
+
+struct FMeshArrayHolder :
+	public IMRMesh::FBrickDataReceipt
+{
+	TArray<FVector> Vertices;
+	TArray<MRMESH_INDEX_TYPE> Indices;
+	// Super wasteful of memory and perf, but the vertex factory requires these to be filled
+	// @todo Write a vertex factory that doesn't need all this overhead
+	TArray<FVector2D> BogusUVs;
+	TArray<FPackedNormal> BogusTangents;
+	TArray<FColor> BogusColors;
+
+	FMeshArrayHolder(TArray<FVector>& InVertices, TArray<MRMESH_INDEX_TYPE>& InIndices)
+		: Vertices(MoveTemp(InVertices))
+		, Indices(MoveTemp(InIndices))
+	{
+		int32 CurrentNumVertices = Vertices.Num();
+
+		BogusUVs.AddZeroed(CurrentNumVertices);
+		BogusColors.AddZeroed(CurrentNumVertices);
+		BogusTangents.AddZeroed(CurrentNumVertices * 2);
+	}
+};
+
+void UMRMeshComponent::UpdateMesh(const FVector& InLocation, const FQuat& InRotation, const FVector& Scale, TArray<FVector>& Vertices, TArray<MRMESH_INDEX_TYPE>& Indices)
+{
+	SetRelativeLocationAndRotation(InLocation, InRotation);
+	SetRelativeScale3D(Scale);
+
+	// Create our struct that will hold the data until the render thread is done with it
+	TSharedPtr<FMeshArrayHolder, ESPMode::ThreadSafe> MeshHolder(new FMeshArrayHolder(Vertices, Indices));
+	// NOTE: Vertices and Indices are empty due to MoveTemp()!!!
+
+	SendBrickData_Internal(IMRMesh::FSendBrickDataArgs
+		{
+			MeshHolder,
+			0,
+			MeshHolder->Vertices,
+			MeshHolder->BogusUVs,
+			MeshHolder->BogusTangents,
+			MeshHolder->BogusColors,
+			MeshHolder->Indices
+		}
+	);
+}
+

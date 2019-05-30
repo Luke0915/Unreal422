@@ -43,6 +43,7 @@
 #include "VisualizeTexturePresent.h"
 #include "RendererModule.h"
 #include "EngineModule.h"
+#include "DepthRendering.h"
 
 #include "VisualizeTexture.h"
 
@@ -81,6 +82,14 @@ DECLARE_CYCLE_STAT(TEXT("Shadows"), STAT_CLMM_Shadows, STATGROUP_CommandListMark
 FGlobalDynamicIndexBuffer FMobileSceneRenderer::DynamicIndexBuffer;
 FGlobalDynamicVertexBuffer FMobileSceneRenderer::DynamicVertexBuffer;
 TGlobalResource<FGlobalDynamicReadBuffer> FMobileSceneRenderer::DynamicReadBuffer;
+
+/**
+ * Returns true if the depth Prepass needs to run
+ */
+static FORCEINLINE bool NeedsPrePass(const FMobileSceneRenderer* Renderer)
+{
+	return (Renderer->EarlyZPassMode != DDM_None || Renderer->bEarlyZPassMovable != 0);
+}
 
 FMobileSceneRenderer::FMobileSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyConsumer* HitProxyConsumer)
 	:	FSceneRenderer(InViewFamily, HitProxyConsumer)
@@ -324,6 +333,24 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	FRHICommandListExecutor::GetImmediateCommandList().PollOcclusionQueries();
 	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 
+	auto AfterTasksAreStarted = []()
+	{
+	};
+
+	// Draw the scene pre-pass / early z pass, populating the scene depth buffer and HiZ
+	GRenderTargetPool.AddPhaseEvent(TEXT("EarlyZPass"));
+	const bool bNeedsPrePass = NeedsPrePass(this);
+	bool bDepthWasCleared;
+	if (bNeedsPrePass)
+	{
+		bDepthWasCleared = RenderPrePass(RHICmdList, AfterTasksAreStarted);
+	}
+	else
+	{
+		// we didn't do the prepass, but we still want the HMD mask if there is one
+		bDepthWasCleared = RenderPrePassHMD(RHICmdList);
+	}
+
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Shadows));
 
 	RenderShadowDepthMaps(RHICmdList);
@@ -375,7 +402,7 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	FTextureRHIParamRef SceneColorResolve = nullptr;
 	FTextureRHIParamRef SceneDepth = nullptr;
 	ERenderTargetActions ColorTargetAction = ERenderTargetActions::Clear_Store;
-	EDepthStencilTargetActions DepthTargetAction = EDepthStencilTargetActions::ClearDepthStencil_DontStoreDepthStencil;
+	EDepthStencilTargetActions DepthTargetAction = bDepthWasCleared ? EDepthStencilTargetActions::LoadDepthStencil_DontStoreDepthStencil : EDepthStencilTargetActions::ClearDepthStencil_DontStoreDepthStencil;
 	bool bMobileMSAA = false;
 	
 	if (bGammaSpace && !bRenderToSceneColor)
@@ -396,13 +423,13 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		{	
 			// store targets after opaque so trancluceny render pass can be restarted
 			ColorTargetAction = ERenderTargetActions::Clear_Store;
-			DepthTargetAction = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
+			DepthTargetAction = bDepthWasCleared ? EDepthStencilTargetActions::LoadDepthStencil_StoreDepthStencil : EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
 		}
 						
 		if (bKeepDepthContent)
 		{
 			// store depth if post-processing/capture needs it
-			DepthTargetAction = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
+			DepthTargetAction = bDepthWasCleared ? EDepthStencilTargetActions::LoadDepthStencil_StoreDepthStencil : EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
 		}
 	}
 

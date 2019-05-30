@@ -11,8 +11,6 @@ import com.google.firebase.FirebaseApp;
 import com.google.firebase.iid.FirebaseInstanceId;
 import com.google.firebase.iid.FirebaseInstanceIdService;
 
-import static com.epicgames.ue4.GameApplication.MESSAGING_CONFIG;
-
 public class EpicFirebaseInstanceIDService extends FirebaseInstanceIdService {
 	private static final Logger Log = new Logger("UE4-" + EpicFirebaseInstanceIDService.class.getSimpleName());
 	private static final String PREFS_FILE_FIREBASE = "com.epicgames.firebase";
@@ -22,7 +20,7 @@ public class EpicFirebaseInstanceIDService extends FirebaseInstanceIdService {
 
 	@Override
 	public void onTokenRefresh() {
-		String firebaseToken = getFirebaseInstanceId().getToken();
+		String firebaseToken = getFirebaseInstanceToken();
 		Log.debug("Refreshed Firebase token: " + firebaseToken);
 		if (TextUtils.isEmpty(firebaseToken)) {
 			Log.error("Firebase token is empty or null");
@@ -31,9 +29,19 @@ public class EpicFirebaseInstanceIDService extends FirebaseInstanceIdService {
 		}
 	}
 
+	private static String getFirebaseInstanceToken() {
+		FirebaseInstanceId id = getFirebaseInstanceId();
+		return (id == null) ? "" : id.getToken();
+	}
+	
 	private static FirebaseInstanceId getFirebaseInstanceId() {
-		FirebaseApp app = FirebaseApp.getInstance(MESSAGING_CONFIG);
-		return FirebaseInstanceId.getInstance(app);
+		try {
+			FirebaseApp app = FirebaseApp.getInstance();
+			return FirebaseInstanceId.getInstance(app);
+		} catch (Exception e) {
+			Log.error("FirebaseApp doesn't exist");
+			return null;
+		}
 	}
 	
 	private static void saveFirebaseToken(@NonNull Context context, @NonNull String firebaseToken) {
@@ -69,6 +77,15 @@ public class EpicFirebaseInstanceIDService extends FirebaseInstanceIdService {
 		editor.apply();
 	}
 
+	public static void unregisterFirebaseToken(@NonNull Context context) {
+		setFirebaseTokenRegistered(context, false);
+		SharedPreferences sharedPreferences = context.getSharedPreferences(PREFS_FILE_FIREBASE, Context.MODE_PRIVATE);
+		SharedPreferences.Editor editor = sharedPreferences.edit();
+		editor.remove(KEY_FIREBASE_TOKEN);
+		editor.apply();
+		Log.debug("Firebase token cleared");
+	}
+
 	private static String getFirebaseTokenFromCache(@NonNull Context context) {
 		SharedPreferences sharedPreferences = context.getSharedPreferences(PREFS_FILE_FIREBASE, Context.MODE_PRIVATE);
 		return sharedPreferences.getString(KEY_FIREBASE_TOKEN, null);
@@ -80,7 +97,7 @@ public class EpicFirebaseInstanceIDService extends FirebaseInstanceIdService {
 		Log.debug("Firebase token retrieved from cache: " + token);
 		if(TextUtils.isEmpty(token)) {
 			// handle edge case where we missed onTokenRefresh - ex. App Upgrade
-			token = getFirebaseInstanceId().getToken();
+			token = getFirebaseInstanceToken();
 			if(!TextUtils.isEmpty(token)) {
 				Log.debug("Firebase token retrieved from Firebase: " + token);
 				saveFirebaseToken(context, token);
@@ -88,4 +105,5 @@ public class EpicFirebaseInstanceIDService extends FirebaseInstanceIdService {
 		}
 		return token;
 	}
+
 }

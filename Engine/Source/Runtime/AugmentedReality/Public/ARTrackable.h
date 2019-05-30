@@ -7,6 +7,7 @@
 
 class FARSupportInterface ;
 class UAREnvironmentCaptureProbeTexture;
+class UMRMeshComponent;
 
 UCLASS(BlueprintType)
 class AUGMENTEDREALITY_API UARTrackedGeometry : public UObject
@@ -25,7 +26,7 @@ public:
 	void UpdateTrackingState( EARTrackingState NewTrackingState );
 	
 	void UpdateAlignmentTransform( const FTransform& NewAlignmentTransform );
-	
+
 	void SetDebugName( FName InDebugName );
 
 	IARRef* GetNativeResource();
@@ -54,6 +55,14 @@ public:
 	UFUNCTION(BlueprintPure, Category="AR AugmentedReality|Tracked Geometry")
 	float GetLastUpdateTimestamp() const;
 	
+	UFUNCTION(BlueprintPure, Category="AR AugmentedReality|Tracked Geometry")
+	UMRMeshComponent* GetUnderlyingMesh();
+	void SetUnderlyingMesh(UMRMeshComponent* InMRMeshComponent);
+
+	UFUNCTION(BlueprintPure, Category = "AR AugmentedReality|Scene Understanding")
+	EARObjectClassification GetObjectClassification() const { return ObjectClassification; }
+	void SetObjectClassification(EARObjectClassification InClassification) { ObjectClassification = InClassification; }
+
 protected:
 	TSharedPtr<FARSupportInterface , ESPMode::ThreadSafe> GetARSystem() const;
 	
@@ -69,6 +78,14 @@ protected:
 	/** A pointer to the native resource in the native AR system */
 	TUniquePtr<IARRef> NativeResource;
 	
+	/** For AR systems that support arbitrary mesh geometry associated with a tracked point */
+	UPROPERTY()
+	UMRMeshComponent* UnderlyingMesh;
+
+	/** What the scene understanding system thinks this object is */
+	UPROPERTY()
+	EARObjectClassification ObjectClassification;
+
 private:
 	TWeakPtr<FARSupportInterface , ESPMode::ThreadSafe> ARSystem;
 	
@@ -108,7 +125,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "AR AugmentedReality|Plane Geometry")
 	UARPlaneGeometry* GetSubsumedBy() const { return SubsumedBy; };
 
+	UFUNCTION(BlueprintPure, Category="AR AugmentedReality|Plane Geometry")
+	EARPlaneOrientation GetOrientation() const { return Orientation; }
+	void SetOrientation(EARPlaneOrientation InOrientation) { Orientation = InOrientation; }
+
 private:
+	UPROPERTY()
+	EARPlaneOrientation Orientation;
+
 	UPROPERTY()
 	FVector Center;
 	

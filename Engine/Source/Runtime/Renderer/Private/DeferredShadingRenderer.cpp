@@ -223,32 +223,6 @@ bool ShouldForceFullDepthPass(EShaderPlatform ShaderPlatform)
 	return bDBufferAllowed || bStencilLODDither || bEarlyZMaterialMasking || IsForwardShadingEnabled(ShaderPlatform) || UseSelectiveBasePassOutputs();
 }
 
-void GetEarlyZPassMode(EShaderPlatform ShaderPlatform, EDepthDrawingMode& EarlyZPassMode, bool& bEarlyZPassMovable)
-{
-	EarlyZPassMode = DDM_NonMaskedOnly;
-	bEarlyZPassMovable = false;
-
-	// developer override, good for profiling, can be useful as project setting
-	{
-		const int32 CVarValue = CVarEarlyZPass.GetValueOnAnyThread();
-
-		switch(CVarValue)
-		{
-			case 0: EarlyZPassMode = DDM_None; break;
-			case 1: EarlyZPassMode = DDM_NonMaskedOnly; break;
-			case 2: EarlyZPassMode = DDM_AllOccluders; break;
-			case 3: break;	// Note: 3 indicates "default behavior" and does not specify an override
-		}
-	}
-
-	if (ShouldForceFullDepthPass(ShaderPlatform))
-	{
-		// DBuffer decals and stencil LOD dithering force a full prepass
-		EarlyZPassMode = DDM_AllOpaque;
-		bEarlyZPassMovable = true;
-	}
-}
-
 const TCHAR* GetDepthPassReason(bool bDitheredLODTransitionsUseStencil, EShaderPlatform ShaderPlatform)
 {
 	if (IsForwardShadingEnabled(ShaderPlatform))
@@ -278,17 +252,6 @@ const TCHAR* GetDepthPassReason(bool bDitheredLODTransitionsUseStencil, EShaderP
 FDeferredShadingSceneRenderer::FDeferredShadingSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyConsumer* HitProxyConsumer)
 	: FSceneRenderer(InViewFamily, HitProxyConsumer)
 {
-	static const auto StencilLODDitherCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.StencilForLODDither"));
-	bDitheredLODTransitionsUseStencil = StencilLODDitherCVar->GetValueOnAnyThread() != 0;
-
-	GetEarlyZPassMode(ShaderPlatform, EarlyZPassMode, bEarlyZPassMovable);
-
-	// Shader complexity requires depth only pass to display masked material cost correctly
-	if (ViewFamily.UseDebugViewPS() && ViewFamily.GetDebugViewShaderMode() != DVSM_OutputMaterialTextureScales)
-	{
-		EarlyZPassMode = DDM_AllOpaque;
-		bEarlyZPassMovable = true;
-	}
 }
 
 float GetSceneColorClearAlpha()
@@ -475,8 +438,7 @@ TGlobalResource<FGlobalDynamicReadBuffer> FDeferredShadingSceneRenderer::Dynamic
  */
 static FORCEINLINE bool NeedsPrePass(const FDeferredShadingSceneRenderer* Renderer)
 {
-	return (RHIHasTiledGPU(Renderer->ViewFamily.GetShaderPlatform()) == false) && 
-		(Renderer->EarlyZPassMode != DDM_None || Renderer->bEarlyZPassMovable != 0);
+	return (Renderer->EarlyZPassMode != DDM_None || Renderer->bEarlyZPassMovable != 0);
 }
 
 bool FDeferredShadingSceneRenderer::RenderHzb(FRHICommandListImmediate& RHICmdList)
@@ -1293,6 +1255,7 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	bool bDepthWasCleared;
 	if (bNeedsPrePass)
 	{
+		RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_PrePass));
 		bDepthWasCleared = RenderPrePass(RHICmdList, AfterTasksAreStarted);
 	}
 	else

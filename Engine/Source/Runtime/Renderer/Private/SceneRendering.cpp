@@ -1796,6 +1796,34 @@ void FSortedShadowMaps::Release()
 	FSceneRenderer
 -----------------------------------------------------------------------------*/
 
+void GetEarlyZPassMode(EShaderPlatform ShaderPlatform, EDepthDrawingMode& EarlyZPassMode, bool& bEarlyZPassMovable)
+{
+	EarlyZPassMode = DDM_NonMaskedOnly;
+	bEarlyZPassMovable = false;
+
+	// developer override, good for profiling, can be useful as project setting
+	{
+		static const auto EarlyZPassCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.EarlyZPass"));
+		const int32 CVarValue = EarlyZPassCVar->GetValueOnAnyThread();
+
+		switch(CVarValue)
+		{
+			case 0: EarlyZPassMode = DDM_None; break;
+			case 1: EarlyZPassMode = DDM_NonMaskedOnly; break;
+			case 2: EarlyZPassMode = DDM_AllOccluders; break;
+			case 3: break;	// Note: 3 indicates "default behavior" and does not specify an override
+		}
+	}
+
+	extern bool ShouldForceFullDepthPass(EShaderPlatform ShaderPlatform);
+	if (ShouldForceFullDepthPass(ShaderPlatform))
+	{
+		// DBuffer decals and stencil LOD dithering force a full prepass
+		EarlyZPassMode = DDM_AllOpaque;
+		bEarlyZPassMovable = true;
+	}
+}
+
 FSceneRenderer::FSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyConsumer* HitProxyConsumer)
 :	Scene(InViewFamily->Scene ? InViewFamily->Scene->GetRenderScene() : NULL)
 ,	ViewFamily(*InViewFamily)
@@ -1924,6 +1952,18 @@ FSceneRenderer::FSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyCon
 
 	bDumpMeshDrawCommandInstancingStats = !!GDumpInstancingStats;
 	GDumpInstancingStats = 0;
+
+	static const auto StencilLODDitherCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.StencilForLODDither"));
+	bDitheredLODTransitionsUseStencil = StencilLODDitherCVar->GetValueOnAnyThread() != 0;
+
+	GetEarlyZPassMode(ShaderPlatform, EarlyZPassMode, bEarlyZPassMovable);
+
+	// Shader complexity requires depth only pass to display masked material cost correctly
+	if (ViewFamily.UseDebugViewPS() && ViewFamily.GetDebugViewShaderMode() != DVSM_OutputMaterialTextureScales)
+	{
+		EarlyZPassMode = DDM_AllOpaque;
+		bEarlyZPassMovable = true;
+	}
 }
 
 // static
