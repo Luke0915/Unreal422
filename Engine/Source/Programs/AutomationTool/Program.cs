@@ -77,6 +77,7 @@ namespace AutomationTool
 				catch(Exception ex)
 				{
 					Log.TraceInformation("Couldn't hit the share via P, message: ", ex.ToString());
+					CommandUtils.RunAndLog("net", "use", Options: ERunOptions.Default & ~ERunOptions.AppMustExist);
 					CommandUtils.RunAndLog("net", "use P: /DELETE", Options: ERunOptions.Default & ~ERunOptions.AppMustExist);
 					CommandUtils.RunAndLog("net", "use P: \\\\epicgames.net\\root", Options: ERunOptions.Default & ~ERunOptions.AppMustExist);
 					try
