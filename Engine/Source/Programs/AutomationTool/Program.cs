@@ -66,7 +66,6 @@ namespace AutomationTool
 				// Log the operating environment. Since we usually compile to AnyCPU, we may be executed using different system paths under WOW64.
 				Log.TraceVerbose("{2}: Running on {0} as a {1}-bit process.", HostPlatform.Current.GetType().Name, Environment.Is64BitProcess ? 64 : 32, DateTime.UtcNow.ToString("o"));
 				
-				
 				FileReference TestFileReferenceP = new FileReference("P:\\Builds\\UE4\\TempStorage\\TestFile.txt");
 				FileReference TestFileReferenceEpicGamesNet = new FileReference("\\\\epicgames.net\\root\\Builds\\UE4\\TempStorage\\TestFile.txt");
 				try
@@ -75,7 +74,17 @@ namespace AutomationTool
 				}
 				catch(Exception ex)
 				{
-					Log.TraceInformation("Couldn't hit the share via P, message: ", ex.Message);
+					Log.TraceInformation("Couldn't hit the share via P, message: ", ex.ToString());
+					CommandUtils.RunAndLog("net", "use P: /DELETE", Options: ERunOptions.Default & ~ERunOptions.AppMustExist);
+					CommandUtils.RunAndLog("net", "use P: \\\\epicgames.net\\root", Options: ERunOptions.Default & ~ERunOptions.AppMustExist);
+					try
+					{
+						Log.TraceInformation("P Builds reference exists? {0} {1}", FileReference.Exists(TestFileReferenceP), FileReference.ReadAllText(TestFileReferenceP));
+					}
+					catch(Exception ex2)
+					{
+						Log.TraceInformation("Still couldn't hit the share via P, message: ", ex2.ToString());
+					}
 				}
 				try
 				{
@@ -83,7 +92,7 @@ namespace AutomationTool
 				}
 				catch (Exception ex)
 				{
-					Log.TraceInformation("Couldn't hit the share via epicgames.net/root, message: ", ex.Message);
+					Log.TraceInformation("Couldn't hit the share via epicgames.net/root, message: ", ex.ToString());
 				}
 				// Log if we're running from the launcher
 				string ExecutingAssemblyLocation = Assembly.GetExecutingAssembly().Location;
