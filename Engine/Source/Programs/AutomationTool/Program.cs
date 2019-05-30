@@ -69,9 +69,22 @@ namespace AutomationTool
 				
 				FileReference TestFileReferenceP = new FileReference("P:\\Builds\\UE4\\TempStorage\\TestFile.txt");
 				FileReference TestFileReferenceEpicGamesNet = new FileReference("\\\\epicgames.net\\root\\Builds\\UE4\\TempStorage\\TestFile.txt");
-				Log.TraceInformation("P Builds reference exists? {0} {1}", FileReference.Exists(TestFileReferenceP), FileReference.ReadAllText(TestFileReferenceP));
-				Log.TraceInformation("EpicGamesNet Builds reference exists? {0} {1}", FileReference.Exists(TestFileReferenceEpicGamesNet), FileReference.ReadAllText(TestFileReferenceEpicGamesNet));
-
+				try
+				{
+					Log.TraceVerbose("P Builds reference exists? {0} {1}", FileReference.Exists(TestFileReferenceP), FileReference.ReadAllText(TestFileReferenceP));
+				}
+				catch(Exception ex)
+				{
+					Log.TraceVerbose("Couldn't hit the share via P, message: ", ex.Message);
+				}
+				try
+				{
+					Log.TraceVerbose("EpicGamesNet Builds reference exists? {0} {1}", FileReference.Exists(TestFileReferenceEpicGamesNet), FileReference.ReadAllText(TestFileReferenceEpicGamesNet));
+				}
+				catch (Exception ex)
+				{
+					Log.TraceVerbose("Couldn't hit the share via epicgames.net/root, message: ", ex.Message);
+				}
 				// Log if we're running from the launcher
 				string ExecutingAssemblyLocation = Assembly.GetExecutingAssembly().Location;
 				if (string.Compare(ExecutingAssemblyLocation, Assembly.GetEntryAssembly().GetOriginalLocation(), StringComparison.OrdinalIgnoreCase) != 0)
