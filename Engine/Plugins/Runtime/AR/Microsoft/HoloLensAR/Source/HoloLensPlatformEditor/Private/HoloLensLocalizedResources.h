@@ -24,25 +24,7 @@ struct FHoloLensCorePackageStringResources
 };
 
 USTRUCT()
-struct FHoloLensDlcStringResources
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, config, Category = Packaging)
-	FString PackageDisplayName;
-
-	UPROPERTY(EditAnywhere, config, Category = Packaging)
-	FString PackageDescription;
-};
-
-USTRUCT()
 struct FHoloLensCorePackageImageResources
-{
-	GENERATED_BODY()
-};
-
-USTRUCT()
-struct FHoloLensDlcImageResources
 {
 	GENERATED_BODY()
 };
@@ -60,22 +42,4 @@ struct FHoloLensCorePackageLocalizedResources
 
 	UPROPERTY(EditAnywhere, config, Category = Packaging)
 	FHoloLensCorePackageImageResources Images;
-};
-
-USTRUCT()
-struct FHoloLensDlcLocalizedResources
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, config, Category = Packaging)
-	FString AppliesToDlcPlugin;
-
-	UPROPERTY(EditAnywhere, config, Category = Packaging)
-	FString CultureId;
-
-	UPROPERTY(EditAnywhere, config, Category = Packaging, Meta = (ShowOnlyInnerProperties))
-	FHoloLensDlcStringResources Strings;
-
-	UPROPERTY(EditAnywhere, config, Category = Packaging)
-	FHoloLensDlcImageResources Images;
 };
